@@ -1,0 +1,104 @@
+{
+  "tested_at": "2026-10-23 Asia/Shanghai",
+  "package_install": "isolated venv inheriting the existing IsaacLab/Isaac Sim runtime",
+  "summary": {
+    "status": "passed",
+    "installed_package_import": "isolated venv site-packages/trackerlab_supermimic/__init__.py",
+    "supervised_iterations": 5,
+    "resumed_iteration": 7,
+    "evaluated_motions": 40,
+    "reward_terms": 8,
+    "artifact_hashes_verified": 22,
+    "video_full_decode": "passed by supervisor",
+    "policy_serialization": "passed by export script",
+    "scope": "Release execution checks; no tracking-quality claim for five iterations"
+  },
+  "rewards": {
+    "table": "SuperMimic Appendix A, Table A.2 (8 motion-tracking terms); dt=0.02",
+    "reward_config": {
+      "w_body_pos": 1,
+      "w_body_ori": 1,
+      "w_body_linvel": 1,
+      "w_body_angvel": 1,
+      "w_root_pos": 0.5,
+      "w_root_ori": 0.5,
+      "body_pos_std": 0.3,
+      "body_ori_std": 0.4,
+      "body_linvel_std": 1,
+      "body_angvel_std": 3.14,
+      "root_pos_std": 0.3,
+      "root_ori_std": 0.4,
+      "w_action_rate": -0.1,
+      "w_joint_limit": -2,
+      "soft_limit_factor": 0.9,
+      "term_height": 0.25,
+      "term_tilt": 0.8
+    },
+    "analytic_cases": {
+      "cases": 10,
+      "maximum_component_error": 2.5331974029541016e-7,
+      "component_sum_error": 1.4901161193847656e-8,
+      "termination_boundaries": "passed",
+      "perfect_reward": 0.09999962896108627
+    },
+    "vibed_parity": {
+      "reward_max_error": 0,
+      "gradient_max_error": 0,
+      "other_heads_max_error": {
+        "obs": 0,
+        "termination": 0,
+        "soft_termination": 0,
+        "critic_features": 0
+      },
+      "yaw90_observation_change": 1.3658831119537354,
+      "finite_gradients": true,
+      "upstream_sha256": "f19186f70e259ee37b2d8dd6b9beb1ae0c2fd875b67902bb5544779b9792d074"
+    },
+    "status": "passed"
+  },
+  "simulation": {
+    "clips": 40,
+    "cuda": "12.8",
+    "domain_randomization_validated": true,
+    "env_steps": 256,
+    "fk_gradients_finite": true,
+    "frames_50hz": 441140,
+    "gpu": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+    "mujoco_fk_max_errors_pos_rot_vel_angvel": [
+      7.590092065967724e-7,
+      2.7707064276238924e-7,
+      0.000002003290841656735,
+      0.0000034448310266554927
+    ],
+    "observation_dim": 99,
+    "partial_reset_validated": true,
+    "physx_com_shape": [
+      4,
+      30,
+      7
+    ],
+    "physx_fk_position_error_m": 7.152557373046875e-7,
+    "physx_fk_rotation_matrix_error": 0.0000020265579223632812,
+    "physx_material_shape": [
+      4,
+      33,
+      3
+    ],
+    "replay_validated": true,
+    "reset_noise_position_max": [
+      0.047905586659908295,
+      0.04729725793004036,
+      0.00851583480834961
+    ],
+    "reset_noise_training_only": true,
+    "reset_sampler_truncation_bootstrap": true,
+    "reset_sampler_uniform_initialization": true,
+    "status": "passed",
+    "terminal_transition_preserved": true,
+    "terminations": 5,
+    "torch": "2.7.0+cu128",
+    "training_timeout_truncation": true,
+    "truncations": 2,
+    "vector_steps": 64
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "num_envs": 4,
+  "iterations": 5,
+  "obs_mode": "relative_ori99",
+  "reset_noise": true,
+  "buffer_steps": 64,
+  "warmup_steps": 16,
+  "wm_only_iters": 0,
+  "wm_batches": 1,
+  "wm_batch": 8,
+  "pi_batch": 8,
+  "horizon": 32,
+  "wm_window": 8,
+  "log_every": 1,
+  "ckpt_every": 5,
+  "amp": "bf16",
+  "compile": false
+}

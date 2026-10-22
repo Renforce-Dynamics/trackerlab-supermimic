@@ -1,0 +1,8 @@
+# Install in the IsaacLab 2.3.2 / Isaac Sim 5.1 Python 3.11 environment.
+# Install the CUDA 12.8 PyTorch wheels as described in README.md.
+torch==2.7.0
+numpy==1.26.0
+mujoco==3.3.7
+matplotlib==3.10.3
+pillow==11.3.0
+imageio-ffmpeg==0.6.0

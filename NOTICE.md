@@ -10,7 +10,8 @@
   commit `a1508d42c9d1699a52e8233ab16d08c488441ab9`.
   Copyright (c) 2026 ETH Zurich, Chong Zhang.
   The full MIT notice is retained at
-  `src/trackerlab_supermimic/LICENSE.upstream` and in the Python package.
+  `source/trackerLab/trackerLab/algorithms/supermimic/LICENSE.upstream`
+  and in the Python package.
   World-model/policy architecture, rotations, motion processing, differentiable
   MDP heads and training flow build on that implementation. This is an
   adaptation and extraction, not a claim of independent algorithm authorship.
@@ -23,6 +24,10 @@ The TrackerLab work adds the PhysX environment adaptation, resource and
 validation workflow, episode-boundary handling, reward-component metrics,
 policy packaging and reproducibility records. Public-release packaging
 removes machine-specific paths and unrelated TrackerLab tasks.
+The version 0.2 refactor adopts TrackerLab's module ownership and source
+layout, adds a reference buffer and motion manager, and provides a backed-up
+overlay installer for existing TrackerLab checkouts. Algorithm authorship
+and inherited licenses remain as described above.
 
 ## External Resources
 

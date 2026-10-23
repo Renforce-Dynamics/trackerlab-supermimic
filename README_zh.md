@@ -1,14 +1,15 @@
 # TrackerLab SuperMimic
 
-从 TrackerLab 提取的 G1 动作跟踪实现，覆盖原始数据下载、格式检查、
-重采样、运动学计算、PhysX 仿真、世界模型训练、策略优化、评测、视频和策略导出。
+按照 TrackerLab 的目录与数据流组织 G1 动作跟踪代码，同一份源码支持独立运行，
+也支持安装到已有 TrackerLab。任务、动作库、参考缓存、动作管理、仿真环境、
+算法和指标各有独立模块。
 
 这是 SuperMimic 的非官方复现，算法实现参考 `supermimic_vibed`，
 使用 IsaacLab 2.3.2、Isaac Sim 5.1 和 PhysX。代码保留原作者声明与 MIT 许可证。
 本仓库聚焦 40 个 G1 LAFAN1 动作，完整论文的多目标任务、BONES-SEED
 实验及实机迁移留待后续验证。
 
-## 使用流程
+## 独立运行
 
 环境要求为 Linux、Python 3.11 和可运行 Isaac Sim 5.1 的 NVIDIA GPU。
 具体安装步骤见 [安装文档](docs/installation.md)。
@@ -19,29 +20,67 @@ cd trackerlab-supermimic
 python -m pip install -r requirements.txt
 python -m pip install --no-deps -e .
 
-python scripts/prepare_resources.py --with_reference
-python scripts/prepare_resources.py --verify_only --with_reference
-python scripts/validate_rewards.py \
+python scripts/rls/supermimic/prepare_resources.py --with_reference
+python scripts/rls/supermimic/prepare_resources.py --verify_only --with_reference
+python scripts/rls/supermimic/validate_rewards.py \
   --upstream_mdp data/supermimic_reference/mdp.py \
   --output logs/validation/rewards.json
-python scripts/smoke_test.py --headless
-python scripts/train.py --config configs/smoke.json --headless \
-  --log_dir logs/smoke
+python scripts/rls/supermimic/smoke_test.py --headless
+python scripts/rls/supermimic/train.py \
+  --config scripts/rls/supermimic/configs/smoke.json --headless \
+  --motion_config data/configs/supermimic_lafan1.json --log_dir logs/smoke
 ```
 
 root 容器运行仿真命令时添加 `--kit_args=--allow-root`。
 Isaac Sim 许可由使用者阅读并同意，资源脚本保留源文件的许可声明。
 
+## 安装到已有 TrackerLab
+
+在原 TrackerLab Python 环境中，从本仓库运行：
+
+```bash
+python scripts/install_trackerlab.py --trackerlab /path/to/trackerLab
+python scripts/install_trackerlab.py --trackerlab /path/to/trackerLab --apply
+cd /path/to/trackerLab
+python -m pip install -r /path/to/trackerlab-supermimic/requirements.txt
+python scripts/rls/supermimic/prepare_resources.py
+python scripts/rls/supermimic/train.py \
+  --config scripts/rls/supermimic/configs/smoke.json --headless \
+  --motion_config data/configs/supermimic_lafan1.json --log_dir logs/supermimic_smoke
+```
+
+第一条命令显示文件计划，`--apply` 写入扩展。安装器保留原仓库的顶层
+`__init__.py` 与 `setup.py`；涉及的父模块改为按需加载原导出内容，
+并保存原文件及备份。重复安装会跳过相同文件，扩展文件冲突会报错。
+详细行为与恢复方式见 [安装文档](docs/installation.md#existing-trackerlab)。
+
+已有 TrackerLab 环境使用该安装器，独立模式使用根目录的 `pip install -e .`，
+两种模式分别管理同名 Python 包。
+
+## LAFAN1 数据
+
+训练使用 `lvhaidong/LAFAN1_Retargeting_Dataset` 的 G1 子集。
+上游作者已经通过 Interaction Mesh 与逆运动学，将人体动作转换为 G1
+根部位姿及 29 个关节角。当前代码加载这些 CSV，在内存中完成
+30 Hz 到 50 Hz 重采样、速度计算与正向运动学计算。
+
+上游 retarget 主要考虑运动学约束；动力学、力矩限制与仿真跟踪效果仍需训练和评测。
+下载文件放在 `data/retargeted/lafan1_g1/`，动作清单、原始帧率和关节顺序记录于
+`data/configs/supermimic_lafan1.json`。来源和版本详见
+[数据文档](docs/data_flow.md) 与 [NOTICE.md](NOTICE.md)。
+
 ## 训练与产物
 
 ```bash
-python scripts/supervise.py --config configs/lafan1_8096.json \
+python scripts/rls/supermimic/supervise.py \
+  --config scripts/rls/supermimic/configs/lafan1_8096.json \
+  --motion_config data/configs/supermimic_lafan1.json \
   --run_dir logs/lafan1_8096
 ```
 
 此配置从零初始化，运行 8,096 个环境、100,000 轮。
-`configs/lafan1_4096.json` 提供 4,096 环境、320,000 轮配置。
-`configs/smoke.json` 提供 4 环境、5 轮的功能测试。
+同目录 `lafan1_4096.json` 提供 4,096 环境、320,000 轮配置，
+`smoke.json` 提供 4 环境、5 轮的功能测试。
 命令行参数可以覆盖 JSON 中的值。
 
 监督程序持续训练，并在指定轮次评测所有动作、记录八项奖励、
@@ -61,7 +100,7 @@ python scripts/supervise.py --config configs/lafan1_8096.json \
 
 原 TrackerLab 实验第 2,000 轮，8,096 个环境的完整动作平均回报为
 **0.5416**，失败 **12/40**，训练耗时 **23.71 分钟**。
-这些数据来自提取前的实验，精简版的发布测试见 `docs/validation.md`。
+这些数据来自原训练实验，重构版的发布测试见 `docs/validation.md`。
 其他实现采用不同仿真后端，公共 checkpoint 尚未在本框架内复测。
 分项结果与比较范围见 [实验记录](docs/results.md)。
 
@@ -69,10 +108,18 @@ python scripts/supervise.py --config configs/lafan1_8096.json \
 
 | 模块 | 位置 |
 | --- | --- |
-| 数据处理流程 | `scripts/prepare_data.py`、`src/trackerlab_supermimic/motion.py` |
-| 任务与环境 | `task.py`、`env.py` |
-| 奖励与观测 | `mdp.py` |
-| 算法与网络 | `networks.py`、`buffer.py`、`scripts/train.py` |
-| 评测与导出 | `scripts/evaluate.py`、`scripts/export_policy.py` |
+| 任务与机器人 | `source/trackerTask/trackerTask/supermimic/` |
+| 动作库与参考缓存 | `source/trackerLab/trackerLab/motion_buffer/` |
+| 参考状态与重置采样 | `source/trackerLab/trackerLab/managers/supermimic.py` |
+| 运动学 | `source/trackerLab/trackerLab/kinematics/supermimic/` |
+| 仿真环境 | `source/trackerLab/trackerLab/tracker_env/supermimic/` |
+| 奖励、观测与终止 | `source/trackerLab/trackerLab/tracker_env/mdp/supermimic.py` |
+| 网络、经验缓存与训练器 | `source/trackerLab/trackerLab/algorithms/supermimic/` |
+| 指标 | `source/trackerLab/trackerLab/metrics/supermimic.py` |
+| 命令、配置与导出 | `scripts/rls/supermimic/` |
+
+SuperMimic 使用专用的 MotionBuffer、MotionManager 与 `InteractiveScene`
+环境，保留已有训练的计算方式和终止状态。它们采用 TrackerLab 的职责划分，
+独立于原通用管理器的继承体系；训练入口由所附脚本提供。
 
 详细流程见 [数据文档](docs/data_flow.md)，来源见 [NOTICE.md](NOTICE.md)。

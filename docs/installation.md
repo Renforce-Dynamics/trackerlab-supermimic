@@ -15,7 +15,7 @@
 Use NVIDIA's versioned instructions for
 [IsaacLab 2.3](https://isaac-sim.github.io/IsaacLab/v2.3.0/source/setup/installation/index.html)
 and [Isaac Sim 5.1](https://docs.isaacsim.omniverse.nvidia.com/5.1.0/installation/install_python.html).
-The source commit in `resources.lock.json` identifies the exact code used.
+The source commit in `scripts/rls/supermimic/resources.lock.json` identifies the exact code used.
 IsaacLab's Python package reports `isaaclab==0.54.2` at that commit;
 the repository version is 2.3.2.
 
@@ -46,6 +46,56 @@ python -m pip install --no-deps -e .
 These commands are run from the cloned `trackerlab-supermimic` directory.
 The task imports the core `isaaclab` package; it needs no separate `robotlib`
 installation and no complete TrackerLab checkout.
+
+## Existing TrackerLab
+
+Use the host's Python environment and editable `trackerLab`/`trackerTask`
+installations. From this SuperMimic checkout:
+
+```bash
+python scripts/install_trackerlab.py --trackerlab /path/to/trackerLab
+python scripts/install_trackerlab.py --trackerlab /path/to/trackerLab --apply
+cd /path/to/trackerLab
+python -m pip install -r /path/to/trackerlab-supermimic/requirements.txt
+python scripts/rls/supermimic/prepare_resources.py
+python scripts/rls/supermimic/train.py \
+  --config scripts/rls/supermimic/configs/smoke.json --headless \
+  --motion_config data/configs/supermimic_lafan1.json --log_dir logs/supermimic_smoke
+```
+
+The installed source modules are byte-identical to the standalone modules.
+The CLI selects that checkout's two source roots, so a separately installed
+package cannot silently replace them. Use the root `pip install -e .` only for
+the standalone environment; installing another distribution owning the same
+top-level packages in the host environment creates overlapping installations.
+The host still needs its existing task dependencies for its other tasks.
+
+The installer copies only the SuperMimic module paths and
+`scripts/rls/supermimic/`. It keeps root package `__init__.py` and `setup.py`
+intact. Existing parent initializers for algorithms, kinematics, managers,
+metrics, motion_buffer and tracker_env are retained as
+`_supermimic_original_init.py`; a lazy initializer loads their original exports
+on demand. This avoids loading unrelated tasks while launching SuperMimic.
+Original import side effects are delayed until those exports are used.
+
+Before writing, the installer checks every destination and saves overwritten
+files in `.supermimic-backups/<timestamp>/`, mirroring the host paths. The
+`.supermimic-install.json` record contains installed hashes. Local modifications
+to extension files are reported as conflicts; `--replace_extensions` permits
+replacement after review and retains backups. Modified parent wrappers or
+preserved initializers require manual review. Repeated identical installations
+make no changes. A failed file write restores the previous file contents.
+
+To undo an overlay, review the installation record and backup directory:
+restore overwritten files from the corresponding backup and remove only
+new extension files created by that installation. Keep backups across upgrades.
+The installer never changes datasets, logs, active processes or Git remotes.
+
+Validation uses TrackerLab base `1e5ccc062b445712a0aa7308cfb99edd7296cc88`.
+Custom forks can have other dependency or import requirements; the installer
+does not claim compatibility with every generic TrackerLab task.
+
+## Simulator Startup
 
 Isaac Sim prompts for its EULA on first use. After reading and agreeing to its
 terms, its documented noninteractive option is:

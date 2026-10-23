@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "trackerlab-supermimic"
-version = "0.1.0"
+version = "0.2.0"
 description = "TrackerLab's SuperMimic G1 motion-tracking workflow on IsaacLab and PhysX"
 readme = "README.md"
 requires-python = ">=3.11,<3.12"
@@ -22,7 +22,8 @@ render = ["matplotlib==3.10.3", "pillow==11.3.0", "imageio-ffmpeg==0.6.0"]
 Repository = "https://github.com/ZouYan93/trackerlab-supermimic"
 
 [tool.setuptools.packages.find]
-where = ["src"]
+where = ["source/trackerLab", "source/trackerTask"]
+namespaces = false
 
 [tool.setuptools.package-data]
-trackerlab_supermimic = ["LICENSE.upstream"]
+"trackerLab.algorithms.supermimic" = ["LICENSE.upstream"]

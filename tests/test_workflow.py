@@ -14,11 +14,13 @@ import unittest
 from unittest.mock import patch
 
 REPO = Path(__file__).resolve().parents[1]
-sys.path[:0] = [str(REPO / "scripts"), str(REPO / "src")]
+sys.path[:0] = [str(REPO / "scripts/rls/supermimic")]
+from bootstrap import configure_paths
+configure_paths()
 
 from configuration import apply_config
 import prepare_data
-from trackerlab_supermimic.metrics import summarize_motion_returns
+from trackerLab.metrics.supermimic import summarize_motion_returns
 
 
 class ConfigurationTests(unittest.TestCase):

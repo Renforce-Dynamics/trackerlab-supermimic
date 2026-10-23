@@ -14,17 +14,16 @@ def train(args, app_launcher, run_start):
     import torch
     import torch.nn as nn
 
-    from trackerTask.supermimic.g1_env_cfg import SuperMimicG1TaskCfg
+    from trackerTask.supermimic.robots import get_robot, get_task_cfg
     from trackerLab.algorithms.supermimic.buffer import ReplayBuffer
     from trackerLab.tracker_env.supermimic.env import TrackingSim, launch_simulation, make_sim
-    from trackerLab.kinematics.supermimic.g1 import G1Kinematics
-    from trackerLab.tracker_env.mdp.supermimic import CRITIC_EXTRA, INV_DIM, MAX_STEP_REWARD, MDP, REWARD_TERMS, invariant_features, normalize_xi, unflatten_state
+    from trackerLab.kinematics.supermimic.robot import RobotKinematics
+    from trackerLab.tracker_env.mdp.supermimic import MAX_STEP_REWARD, MDP, REWARD_TERMS, RewardCfg, invariant_features, normalize_xi, unflatten_state
     from trackerLab.motion_buffer.motion_lib.supermimic import MotionLib
     import trackerLab.algorithms.supermimic.networks as networks
     from trackerLab.algorithms.supermimic.networks import Critic, Policy, WorldModel
-    from trackerTask.supermimic.robot import default_joint_pos_list
-
-    task_cfg = SuperMimicG1TaskCfg()
+    spec = get_robot(args.task)
+    task_cfg = get_task_cfg(args.task)
     task_cfg.num_envs = args.num_envs
     task_cfg.env_spacing = args.env_spacing
     task_cfg.observation_mode = args.obs_mode
@@ -52,16 +51,20 @@ def train(args, app_launcher, run_start):
         indent=2,
     )
 
-    kin = G1Kinematics(dev)
+    kin = RobotKinematics(dev, spec)
     motion = (MotionLib.from_config(args.motion_config, kin, dev) if args.motion_config
               else MotionLib.from_dir(args.motion_dir, kin, dev))
     with (Path(args.log_dir) / "motion_library.json").open("w") as stream:
         json.dump({"names": motion.names, "clip_lengths": motion.clip_len.cpu().tolist(),
                    "num_frames": motion.num_frames, "control_dt": task_cfg.control_dt,
+                   "provenance": motion.provenance,
                    "motion_config": args.motion_config, "motion_dir": args.motion_dir}, stream, indent=2)
-    mdp = MDP(kin, motion, torch.tensor(default_joint_pos_list(), device=dev), obs_mode=args.obs_mode)
+    mdp = MDP(kin, motion, torch.tensor(spec.default_q, device=dev),
+              cfg=RewardCfg(**task_cfg.reward_overrides), obs_mode=args.obs_mode)
     with open(Path(args.log_dir, "reward_config.json"), "w") as reward_file:
         json.dump({
+            "task": spec.name,
+            "task_overrides": task_cfg.reward_overrides,
             "source": "SuperMimic Table A.2; vibed a1508d42c9d1699a52e8233ab16d08c488441ab9",
             "config": asdict(mdp.cfg),
             "control_dt": task_cfg.control_dt,
@@ -72,11 +75,12 @@ def train(args, app_launcher, run_start):
             "joint_limits": "90 percent soft limits, following vibed/BeyondMimic",
         }, reward_file, indent=2)
     K, Hh, HZ = args.goal_frames, args.hist, args.horizon
-    GOAL_DIM = 73 * K
-    CRITIC_IN = INV_DIM + CRITIC_EXTRA + GOAL_DIM
+    GOAL_DIM = spec.goal_frame_dim * K
+    CRITIC_IN = spec.state_dim + spec.critic_extra + GOAL_DIM
 
-    wm = WorldModel().to(dev)
-    pi = Policy(mdp.obs_dim, GOAL_DIM, hist=Hh).to(dev)
+    wm = WorldModel(num_joints=spec.num_joints).to(dev)
+    pi = Policy(mdp.obs_dim, GOAL_DIM, hist=Hh, num_joints=spec.num_joints,
+                action_limit=args.action_limit).to(dev)
     critic = Critic(CRITIC_IN).to(dev)
     opt_wm = torch.optim.Adam(wm.parameters(), lr=args.lr)
     opt_pi = torch.optim.Adam(pi.parameters(), lr=args.lr, betas=(0.9, 0.95))
@@ -85,6 +89,8 @@ def train(args, app_launcher, run_start):
     pi_skipped_updates = 0
     if args.resume:
         ck = torch.load(args.resume, map_location=dev)
+        if ck["args"].get("task", "g1") != args.task:
+            raise ValueError("Robot task must match the resumed checkpoint")
         missing = {"critic", "opt_pi", "opt_wm", "opt_v"} - ck.keys()
         if missing:
             raise ValueError("Resume needs last.pt with critic and optimizer state; ckpt_*.pt and policy.pt are evaluation exports")
@@ -94,6 +100,9 @@ def train(args, app_launcher, run_start):
             raise ValueError("Reward configuration must match the resumed checkpoint")
         for key in ("hist", "goal_frames"):
             if ck["args"][key] != getattr(args, key):
+                raise ValueError(f"{key} must match the resumed checkpoint")
+        for key, default in (("action_limit", None), ("bounded_critic", False)):
+            if ck["args"].get(key, default) != getattr(args, key):
                 raise ValueError(f"{key} must match the resumed checkpoint")
         wm.load_state_dict(ck["wm"]), pi.load_state_dict(ck["pi"]), critic.load_state_dict(ck["critic"])
         opt_wm.load_state_dict(ck["opt_wm"]), opt_pi.load_state_dict(ck["opt_pi"]), opt_v.load_state_dict(ck["opt_v"])
@@ -105,7 +114,7 @@ def train(args, app_launcher, run_start):
 
     # per-component floors on the error normalization (pos, rot, lin vel, ang vel, q, qd increments)
     ERR_FLOOR = torch.cat((torch.full((3,), 3e-3), torch.full((3,), 5e-3), torch.full((3,), 2e-2), torch.full((3,), 5e-2),
-                           torch.full((29,), 3e-3), torch.full((29,), 5e-2))).to(dev)  # fmt: skip
+                           torch.full((spec.num_joints,), 3e-3), torch.full((spec.num_joints,), 5e-2))).to(dev)  # fmt: skip
 
 
     def _wm_rollout(s, a, xi):
@@ -140,6 +149,13 @@ def train(args, app_launcher, run_start):
     def _critic_input(S, f, xi_n, g):
         return torch.cat((mdp.critic_features(S, f, xi_n), g), -1)
 
+    def value_estimate(x):
+        value = critic(x)
+        # Six positive tracking terms sum to MAX_STEP_REWARD; all other terms are nonpositive.
+        # Bound bootstrap values, while fitting the raw critic so overestimates retain gradients.
+        if args.bounded_critic:
+            value = value.clamp(max=MAX_STEP_REWARD / (1 - args.gamma))
+        return value
 
     if args.compile:
         wm_rollout = torch.compile(_wm_rollout)
@@ -234,7 +250,7 @@ def train(args, app_launcher, run_start):
         r_sum = (c_t * r).detach().sum(0)
         rews, dones = r.detach(), d.detach()
         if not args.no_critic:
-            J = J + (args.gamma**HZ) * c * critic(_critic_input(S, f, xi_n, g))
+            J = J + (args.gamma**HZ) * c * value_estimate(_critic_input(S, f, xi_n, g))
         loss = -J.mean()
         if PROFILE:
             torch.cuda.synchronize(); tq1 = time.time()
@@ -261,7 +277,7 @@ def train(args, app_launcher, run_start):
                 X = critic_input_c(S_c, f_c, xi_c, g_c).view(HZ + 1, B, -1)
             critic.norm.update(X)
             with torch.no_grad():
-                V = critic(X)
+                V = value_estimate(X)
                 R = V[-1]
                 targets = []
                 for t in range(HZ - 1, -1, -1):
@@ -298,7 +314,7 @@ def train(args, app_launcher, run_start):
             gamma=args.gamma,
             task_cfg=task_cfg,
         )
-        buffer = ReplayBuffer(args.buffer_steps, args.num_envs, dev)
+        buffer = ReplayBuffer(args.buffer_steps, args.num_envs, dev, num_joints=spec.num_joints)
         obs_hist = torch.zeros(args.num_envs, Hh, mdp.obs_dim, device=dev)
 
         @torch.no_grad()
@@ -313,7 +329,8 @@ def train(args, app_launcher, run_start):
                 pi.obs_norm.update(o)
                 pi.goal_norm.update(g)
                 a = pi(obs_hist, g)
-                a = torch.clamp(a + args.action_noise * torch.randn_like(a), -20, 20)
+                limit = args.action_limit if args.action_limit is not None else 20.0
+                a = torch.clamp(a + args.action_noise * torch.randn_like(a), -limit, limit)
                 out = env.step(a)
                 buffer.add(out)
                 S0, S1 = unflatten_state(out["s"]), unflatten_state(out["s1"])

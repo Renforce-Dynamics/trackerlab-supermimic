@@ -27,6 +27,15 @@ OBS_MODES = {
     "paper_obs93": OBS_DIM_93,
     "relative_ori99": OBS_DIM_99,
 }
+OBS_MODE_NAMES = (*OBS_MODES, "proprioception", "relative_orientation")
+
+
+def observation_dim(mode: str, num_joints: int = 29) -> int:
+    if mode not in OBS_MODE_NAMES:
+        raise ValueError(f"Unknown observation mode {mode!r}")
+    if mode in OBS_MODES and num_joints != 29:
+        raise ValueError("G1 observation aliases require 29 joints; use relative_orientation or proprioception")
+    return 3 * num_joints + 6 + (6 if mode in ("relative_ori99", "relative_orientation") else 0)
 
 # Table A.1 sensor noise (uniform half-widths), plus the reference-relative orientation
 OBS_NOISE = torch.cat(
@@ -77,7 +86,10 @@ def flatten_state(S) -> torch.Tensor:
 
 
 def unflatten_state(x: torch.Tensor):
-    return x[..., 0:3], quat_to_mat(x[..., 3:7]), x[..., 7:10], x[..., 10:13], x[..., 13:42], x[..., 42:71]
+    if x.shape[-1] < 15 or (x.shape[-1] - 13) % 2:
+        raise ValueError("State must contain root pose/velocities and equally sized joint position/velocity arrays")
+    n = (x.shape[-1] - 13) // 2
+    return x[..., 0:3], quat_to_mat(x[..., 3:7]), x[..., 7:10], x[..., 10:13], x[..., 13:13+n], x[..., 13+n:]
 
 
 def invariant_features(S) -> torch.Tensor:
@@ -110,32 +122,36 @@ class MDP:
         cfg: RewardCfg = RewardCfg(),
         obs_mode: str = "paper_obs93",
     ):
-        if obs_mode not in OBS_MODES:
-            raise ValueError(f"unknown observation mode {obs_mode!r}; expected one of {tuple(OBS_MODES)}")
         self.kin, self.motion, self.cfg = kin, motion, cfg
         self.default_q = default_q
+        self.num_joints = len(default_q)
         self.set_obs_mode(obs_mode)
         mid, half = (kin.q_lo + kin.q_hi) / 2, (kin.q_hi - kin.q_lo) / 2
         self.soft_lo, self.soft_hi = mid - half * cfg.soft_limit_factor, mid + half * cfg.soft_limit_factor
 
     def set_obs_mode(self, obs_mode: str) -> None:
-        if obs_mode not in OBS_MODES:
-            raise ValueError(f"unknown observation mode {obs_mode!r}; expected one of {tuple(OBS_MODES)}")
+        self.obs_dim = observation_dim(obs_mode, self.num_joints)
         self.obs_mode = obs_mode
-        self.obs_dim = OBS_MODES[obs_mode]
         dev = self.default_q.device
-        self.obs_noise = OBS_NOISE[: self.obs_dim].to(dev)
-        self.obs_scale = OBS_SCALE[: self.obs_dim].to(dev)
+        n = self.num_joints
+        self.obs_noise = torch.cat((
+            torch.full((n,), 0.01), torch.full((n,), 0.5), torch.full((3,), 0.2),
+            torch.full((3,), 0.05), torch.zeros(n), torch.full((6,), 0.05),
+        ))[:self.obs_dim].to(dev)
+        self.obs_scale = torch.cat((
+            torch.ones(n), torch.full((n,), 0.1), torch.full((3,), 0.25),
+            torch.ones(3), torch.ones(n), torch.ones(6),
+        ))[:self.obs_dim].to(dev)
 
     # ---------------- observation ----------------
     def obs(self, S, a_prev, xi, f) -> torch.Tensor:
         """Noise-free proprioceptive observation (+ reference-relative root orientation)."""
         p, R, v, w, q, qd = S
         Rt = R.transpose(-1, -2)
-        dq0 = xi[..., 1:30]
+        dq0 = xi[..., 1:1+self.num_joints]
         g_b = -R[..., 2, :]  # R^T (0,0,-1)
         parts = (q - self.default_q - dq0, qd, (Rt @ w.unsqueeze(-1)).squeeze(-1), g_b, a_prev)
-        if self.obs_mode == "relative_ori99":
+        if self.obs_mode in ("relative_ori99", "relative_orientation"):
             parts += (mat_to_6d(Rt @ self.motion.root_R[f]),)
         return torch.cat(parts, -1)
 
@@ -229,4 +245,4 @@ CRITIC_EXTRA = 29 + 14 * 3 + 3 + 6 + XI_DIM
 
 
 def normalize_xi(xi: torch.Tensor) -> torch.Tensor:
-    return torch.cat(((xi[..., :1] - 0.75) / 0.45, xi[..., 1:30] / 0.01, xi[..., 30:33] / 0.05), -1)
+    return torch.cat(((xi[..., :1] - 0.75) / 0.45, xi[..., 1:-3] / 0.01, xi[..., -3:] / 0.05), -1)

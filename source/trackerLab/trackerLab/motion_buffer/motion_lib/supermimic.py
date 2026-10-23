@@ -1,4 +1,4 @@
-"""Reference motion library: LAFAN1 G1 retargets resampled to 50 Hz, with FK of tracked bodies."""
+"""Task-selected reference CSVs resampled to 50 Hz, with FK of tracked bodies."""
 
 from __future__ import annotations
 
@@ -24,21 +24,26 @@ BIN_FRAMES = 50  # 1 s bins for return-based reset sampling
 class MotionLib:
     def __init__(self, files: list[str], kin: G1Kinematics, device: str, src_fps: float = 30.0):
         if not files:
-            raise FileNotFoundError("no motion CSV files found; expected retargeted G1 trajectories")
+            raise FileNotFoundError("no motion CSV files found")
         if not math.isfinite(src_fps) or src_fps <= 0:
             raise ValueError("Source frame rate must be finite and positive")
         self.device = device
+        self.provenance = {"source": "User-supplied reference CSVs"}
+        self.num_joints = getattr(kin, "num_joints", 29)
         self.names = [os.path.splitext(os.path.basename(f))[0] for f in files]
         ps, qs, js = [], [], []
         lens = []
         for f in files:
             raw_np = np.loadtxt(f, delimiter=",", ndmin=2)
-            if raw_np.shape[0] < 2 or raw_np.shape[1] != 36:
-                raise ValueError(f"{f} must contain at least two rows and exactly 36 columns; got {raw_np.shape}")
+            columns = 7 + self.num_joints
+            if raw_np.shape[0] < 2 or raw_np.shape[1] != columns:
+                raise ValueError(f"{f} must contain at least two rows and exactly {columns} columns; got {raw_np.shape}")
             if not np.isfinite(raw_np).all():
                 raise ValueError(f"{f} contains NaN or infinite values")
+            if not np.allclose(np.linalg.norm(raw_np[:, 3:7], axis=-1), 1, atol=1e-3):
+                raise ValueError(f"{f} must contain unit quaternions in XYZW order")
             raw = torch.tensor(raw_np, dtype=torch.float32)
-            p, q_xyzw, j = raw[:, :3], raw[:, 3:7], raw[:, 7:36]
+            p, q_xyzw, j = raw[:, :3], raw[:, 3:7], raw[:, 7:]
             quat = torch.cat((q_xyzw[:, 3:4], q_xyzw[:, :3]), -1)
             # resample to 50 Hz
             T_src = raw.shape[0]
@@ -118,8 +123,9 @@ class MotionLib:
         if (not isinstance(config, dict) or config.keys() - allowed
                 or required - config.keys() or config.get("version") != 1):
             raise ValueError("Unsupported SuperMimic motion configuration")
-        if config.get("quaternion_order") != "xyzw" or config.get("joint_names") != G1_JOINT_NAMES:
-            raise ValueError("Motion configuration must declare XYZW and the G1 CSV joint order")
+        joint_names = list(getattr(kin, "joint_names", G1_JOINT_NAMES))
+        if config.get("quaternion_order") != "xyzw" or config.get("joint_names") != joint_names:
+            raise ValueError("Motion configuration must declare XYZW and the task CSV joint order")
         if not isinstance(config["root"], str) or not config["root"].strip():
             raise ValueError("Motion root must be a nonempty path string")
         fps = config["source_fps"]
@@ -138,7 +144,16 @@ class MotionLib:
             if len(names) != len(set(names)):
                 raise ValueError("Motion files must have no duplicates")
             files = [root / name for name in names]
-        return cls([str(file) for file in files], kin, device, src_fps=fps)
+        library = cls([str(file) for file in files], kin, device, src_fps=fps)
+        manifest_path = root / "manifest.json"
+        if manifest_path.exists():
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            library.provenance = {
+                key: manifest[key] for key in
+                ("source", "dataset", "revision", "retargeted_from_mocap", "source_pipeline", "pipeline_revision")
+                if key in manifest
+            }
+        return library
 
     def future_frames(self, f: torch.Tensor, K: int) -> torch.Tensor:
         """Frames f+1..f+K clamped to the clip's last frame, shape (B, K)."""
@@ -155,7 +170,7 @@ class MotionLib:
         rot = mat_to_6d(Ht @ self.root_R[fut])
         feats = torch.cat(
             (dp, rot, self.root_v_local[fut], self.root_w_local[fut], self.q[fut], self.qd[fut] * 0.1), -1
-        )  # (B,K,73)
+        )  # (B,K,15+2*J)
         return feats.reshape(f.shape[0], -1)
 
     def ref_state(self, f: torch.Tensor):

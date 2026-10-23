@@ -21,7 +21,7 @@ from PIL import Image, ImageDraw, ImageFont
 REPO = Path(__file__).resolve().parents[3]
 from bootstrap import configure_paths
 configure_paths()
-from trackerTask.supermimic.robot import G1_JOINT_NAMES, MJCF_PATH
+from trackerTask.supermimic.robots import get_robot
 
 DEFAULT_CLIPS = [
     "walk1_subject1", "run2_subject1", "dance2_subject1",
@@ -29,8 +29,9 @@ DEFAULT_CLIPS = [
 ]
 
 
-def render_model(width, height):
-    source = Path(MJCF_PATH)
+def render_model(width, height, spec=None):
+    spec = spec or get_robot()
+    source = Path(spec.mjcf_path)
     root = ET.parse(source).getroot()
     compiler = root.find("compiler")
     compiler.set("meshdir", str((source.parent / compiler.get("meshdir", ".")).resolve()))
@@ -78,7 +79,7 @@ def main():
     parser.add_argument("--trajectory", type=Path, required=True)
     parser.add_argument("--evaluation", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--clips", nargs="+", default=DEFAULT_CLIPS)
+    parser.add_argument("--clips", nargs="+", default=None)
     parser.add_argument("--seconds", type=float, default=12.0)
     parser.add_argument("--start", type=float, default=0.0)
     parser.add_argument("--iteration", type=int, default=None)
@@ -86,24 +87,34 @@ def main():
     args = parser.parse_args()
     archive = np.load(args.trajectory)
     trajectory = {name: archive[name] for name in archive.files}
+    spec = get_robot(str(trajectory.get("task", "g1")))
     evaluation = json.loads(args.evaluation.read_text())
+    provenance = evaluation.get("protocol", {}).get("data_provenance", {})
+    reference_label = "G1 LAFAN1 motion" if spec.name == "g1" else (
+        "Go2 Kine2Go retarget" if provenance.get("dataset") == "MIMUW-Robotics/kine2go"
+        else "Go2 reference motion")
     iteration = args.iteration if args.iteration is not None else int(trajectory["iteration"])
     if evaluation.get("iteration", iteration) != iteration:
         raise ValueError("Trajectory and evaluation checkpoint iterations differ")
     if args.seconds <= 0 or args.start < 0:
         parser.error("--seconds must be positive and --start must be nonnegative")
     names = trajectory["names"].tolist()
+    args.clips = args.clips or ([n for n in DEFAULT_CLIPS if n in names] if spec.name == "g1" else names)
+    if not args.clips:
+        args.clips = names[:6]
     missing = set(args.clips).difference(names)
     if missing:
         raise ValueError(f"Unknown clips: {sorted(missing)}")
     width, height, top, bottom = 1280, 720, 84, 64
     pane_width, pane_height = width // 2, height - top - bottom
-    model = render_model(pane_width, pane_height)
+    model = render_model(pane_width, pane_height, spec)
     data = mujoco.MjData(model)
-    joint_qpos_ids = [int(model.jnt_qposadr[model.joint(name).id]) for name in G1_JOINT_NAMES]
+    joint_qpos_ids = [int(model.jnt_qposadr[model.joint(name).id]) for name in spec.joint_names]
     renderer = mujoco.Renderer(model, pane_height, pane_width)
     camera = mujoco.MjvCamera()
     camera.distance, camera.azimuth, camera.elevation = 2.7, 135, -15
+    if spec.name == "go2":
+        camera.distance, camera.azimuth, camera.elevation = 1.5, 135, -20
     args.output.parent.mkdir(parents=True, exist_ok=True)
     ffmpeg = subprocess.Popen([
         imageio_ffmpeg.get_ffmpeg_exe(), "-y", "-loglevel", "error",
@@ -118,7 +129,7 @@ def main():
     def pose_image(position, quaternion, joints):
         data.qpos[:3], data.qpos[3:7], data.qpos[joint_qpos_ids] = position, quaternion, joints
         mujoco.mj_forward(model, data)
-        camera.lookat[:] = [position[0], position[1], max(0.5, float(position[2]))]
+        camera.lookat[:] = [position[0], position[1], max(0.25, float(position[2]))]
         renderer.update_scene(data, camera=camera)
         return Image.fromarray(renderer.render().copy())
 
@@ -162,7 +173,7 @@ def main():
                 draw = ImageDraw.Draw(frame)
                 draw.text((18, 10), f"TrackerLab SuperMimic | iteration {iteration} | {clip}", font=font(23), fill="#193337")
                 draw.text((18, 46), "POLICY: recorded PhysX rollout", font=font(19), fill="#08786f")
-                draw.text((pane_width + 18, 46), "REFERENCE: G1 LAFAN1 motion", font=font(19), fill="#4b5094")
+                draw.text((pane_width + 18, 46), f"REFERENCE: {reference_label}", font=font(19), fill="#4b5094")
                 if failed and step > last_alive:
                     draw.rectangle((18, top + 16, pane_width - 18, top + 62), fill="#a92d3b")
                     draw.text((30, top + 24), f"Terminated at {(last_alive + 1) / 50:.2f}s; pose held",
@@ -211,7 +222,9 @@ def main():
         "fps": args.fps,
         "frames": output_frames,
         "duration_seconds": output_frames / args.fps,
-        "clip_selection": "fixed representative set, selected before the 2000-iteration evaluation",
+        "task": spec.name,
+        "data_provenance": provenance,
+        "clip_selection": "explicit CLI selection or task default",
         "clips": selections,
         "pixel_and_frame_count_checks": "passed",
     }

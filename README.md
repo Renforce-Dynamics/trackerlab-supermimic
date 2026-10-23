@@ -2,7 +2,7 @@
 
 [中文说明](README_zh.md)
 
-A focused implementation of TrackerLab's **G1 motion-tracking workflow**,
+A focused implementation of TrackerLab's **G1 and Go2 motion-tracking workflow**,
 with one source tree for standalone use and installation into an existing
 TrackerLab checkout:
 
@@ -26,6 +26,11 @@ environments. This is one seed from the TrackerLab parent implementation.
 Version 0.2 also re-evaluated the same 32,000-iteration parent checkpoint:
 **0.8694663**, **0/40** failures. Every per-motion return matched the
 pre-refactor evaluation exactly. [Refactor validation](docs/validation.md).
+
+**Go2 extension:** a task-selected 12-joint robot uses the same data library,
+manager, simulation and SuperMimic algorithm. Pinned Kine2Go retargeted trot data
+feed an 8,096-environment, 10,000-iteration preset.
+[Go2 resources, data provenance and training commands](docs/go2.md).
 
 ## Install
 

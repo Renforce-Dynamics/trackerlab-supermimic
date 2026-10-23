@@ -17,8 +17,10 @@ configure_paths()
 
 from isaaclab.app import AppLauncher
 from configuration import apply_config
+from trackerTask.supermimic.robots import TASKS
 
 parser = argparse.ArgumentParser()
+parser.add_argument("--task", choices=TASKS, default="g1")
 parser.add_argument("--config", help="JSON training preset; explicit CLI flags take precedence")
 parser.add_argument("--num_envs", type=int, default=4096)
 parser.add_argument("--env_spacing", type=float, default=2.0)
@@ -38,6 +40,10 @@ parser.add_argument("--lr", type=float, default=2e-4)
 parser.add_argument("--gamma", type=float, default=0.99)
 parser.add_argument("--lam", type=float, default=0.95)
 parser.add_argument("--action_noise", type=float, default=0.1)
+parser.add_argument("--action_limit", type=float, default=None,
+                    help="Optional smooth policy action bound, shared by real and imagined rollouts")
+parser.add_argument("--bounded_critic", action=argparse.BooleanOptionalAction, default=False,
+                    help="Cap critic bootstrap at the maximum discounted tracking reward")
 parser.add_argument("--critic_epochs", type=int, default=5)
 parser.add_argument("--critic_minibatches", type=int, default=4)
 parser.add_argument("--no_critic", action="store_true")
@@ -52,17 +58,27 @@ motions.add_argument("--motion_config", type=str, help="TrackerLab reference-mot
 parser.add_argument("--log_dir", type=str, default=str(REPO / "logs" / "supermimic"))
 parser.add_argument("--seed", type=int, default=0)
 parser.add_argument("--resume", type=str, default=None)
-parser.add_argument("--obs_mode", type=str, default="relative_ori99", choices=["paper_obs93", "relative_ori99"])
+parser.add_argument("--obs_mode", type=str, default=None,
+                    choices=["paper_obs93", "relative_ori99", "proprioception", "relative_orientation"])
 parser.add_argument("--reset_noise", action=argparse.BooleanOptionalAction, default=True)
 parser.add_argument("--friction_range", type=float, nargs=2, default=(0.3, 1.2))
 parser.add_argument("--joint_offset_range", type=float, default=0.01)
-parser.add_argument("--com_offset_range", type=float, nargs=3, default=(0.025, 0.05, 0.05))
+parser.add_argument("--com_offset_range", type=float, nargs=3, default=None)
 parser.add_argument("--amp", type=str, default="bf16", choices=["none", "bf16"], help="autocast dtype for MLP matmuls")
 parser.add_argument("--compile", action=argparse.BooleanOptionalAction, default=True)
 AppLauncher.add_app_launcher_args(parser)
 parser.set_defaults(headless=True, device="cuda:0")
 apply_config(parser)
 args = parser.parse_args()
+args.obs_mode = args.obs_mode or ("relative_ori99" if args.task == "g1" else "relative_orientation")
+args.com_offset_range = args.com_offset_range or (
+    (0.025, 0.05, 0.05) if args.task == "g1" else (0.01, 0.01, 0.01))
+if args.action_limit is not None and (not math.isfinite(args.action_limit) or not 0 < args.action_limit <= 20):
+    parser.error("--action_limit must be finite, positive and at most the simulator limit of 20")
+if args.task == "go2" and not args.motion_config:
+    parser.error("Go2 requires --motion_config produced by prepare_resources.py --task go2")
+if args.task != "g1" and args.obs_mode in ("paper_obs93", "relative_ori99"):
+    parser.error("Use --obs_mode relative_orientation or proprioception for Go2")
 if args.buffer_steps < args.wm_window or args.wm_window < 1:
     parser.error("--buffer_steps must cover a positive --wm_window")
 if min(args.num_envs, args.iterations, args.horizon, args.hist, args.goal_frames, args.wm_batches,

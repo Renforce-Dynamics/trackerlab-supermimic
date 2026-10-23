@@ -2,7 +2,7 @@
 
 ```mermaid
 flowchart LR
-    A[G1 retargeted CSVs] --> B[data/configs motion JSON]
+    A[G1 retargets or Go2 IK gait CSVs] --> B[data/configs motion JSON]
     B --> C[MotionLib: resample and FK]
     C --> D[SuperMimicMotionBuffer: IDs and frame times]
     D --> E[SuperMimicMotionManager: reset and reference lifecycle]
@@ -56,7 +56,7 @@ Choose one of these options.
 | `root` | CSV directory, relative to the JSON file or absolute |
 | `source_fps` | Finite positive source frame rate |
 | `quaternion_order` | `"xyzw"` |
-| `joint_names` | Exact `G1_JOINT_NAMES` list |
+| `joint_names` | Exact joint order of the selected `RobotSpec` |
 | `files` | Optional ordered list of plain CSV filenames; omission loads all sorted CSVs |
 
 This schema belongs to the SuperMimic loader. Other TrackerLab loaders retain
@@ -133,6 +133,13 @@ order. The loader rejects empty, malformed and nonfinite inputs.
 To change source frame rate, use the JSON's `source_fps` field. A different
 robot also requires matching articulation, kinematics, action scaling and
 reference-body definitions.
+
+The Go2 extension supplies these through `trackerTask.supermimic`, while the
+shared algorithm derives dimensions from the immutable robot specification.
+Go2 CSVs contain 19 columns and use a required motion JSON. Kine2Go source
+references run at 60 Hz; the optional procedural data runs at 50 Hz. The
+loader resamples either source to 50 Hz and computes velocities and body FK.
+[Go2 data generation and extension contract](go2.md).
 
 ## Evaluation And Export
 

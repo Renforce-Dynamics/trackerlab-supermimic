@@ -25,6 +25,8 @@ configure_paths()
 from isaaclab.app import AppLauncher
 
 parser = argparse.ArgumentParser()
+parser.add_argument("--task", choices=("g1", "go2"), default=None,
+                    help="Optional assertion; robot is inferred from checkpoint arguments")
 parser.add_argument("--run_dir", type=str, required=True)
 parser.add_argument("--watch", action="store_true")
 parser.add_argument("--ckpt", type=str, default=None, help="evaluate one checkpoint")
@@ -43,40 +45,54 @@ app_launcher = AppLauncher(args)
 import numpy as np
 import torch
 
-from trackerTask.supermimic.g1_env_cfg import SuperMimicG1TaskCfg
+from trackerTask.supermimic.robots import get_robot, get_task_cfg
 import trackerLab.algorithms.supermimic.networks as networks
 from trackerLab.tracker_env.supermimic.env import TrackingSim, launch_simulation, make_sim
-from trackerLab.kinematics.supermimic.g1 import G1Kinematics
+from trackerLab.kinematics.supermimic.robot import RobotKinematics
 from trackerLab.tracker_env.mdp.supermimic import MAX_STEP_REWARD, MDP, REWARD_TERMS, RewardCfg
 from trackerLab.metrics.supermimic import summarize_motion_returns, write_json
 from trackerLab.motion_buffer.motion_lib.supermimic import MotionLib
 from trackerLab.algorithms.supermimic.networks import Policy
-from trackerTask.supermimic.robot import default_joint_pos_list
 from trackerLab.kinematics.supermimic.rotations import mat_to_quat
 
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.manual_seed(0)
 dev = args.device
-kin = G1Kinematics(dev)
+initial_config = (torch.load(args.ckpt, map_location="cpu", weights_only=False)["args"] if args.ckpt
+                  else json.loads((Path(args.run_dir) / "args.json").read_text())["arguments"])
+task_name = initial_config.get("task", "g1")
+if args.task is not None and args.task != task_name:
+    raise ValueError("Requested task differs from checkpoint")
+args.task = task_name
+if args.motion_config is None and "--motion_dir" not in sys.argv:
+    args.motion_config = initial_config.get("motion_config")
+    args.motion_dir = initial_config.get("motion_dir", args.motion_dir)
+if task_name == "go2" and not args.motion_config:
+    raise ValueError("Go2 evaluation requires --motion_config declaring the source frame rate")
+spec = get_robot(task_name)
+kin = RobotKinematics(dev, spec)
 motion = (MotionLib.from_config(args.motion_config, kin, dev) if args.motion_config
           else MotionLib.from_dir(args.motion_dir, kin, dev))
-_obs_mode = "paper_obs93"
-mdp = MDP(kin, motion, torch.tensor(default_joint_pos_list(), device=dev), obs_mode=_obs_mode)
+_obs_mode = initial_config.get("obs_mode", "paper_obs93")
+mdp = MDP(kin, motion, torch.tensor(spec.default_q, device=dev), obs_mode=_obs_mode)
 C = len(motion.names)
-task_cfg = SuperMimicG1TaskCfg()
+task_cfg = get_task_cfg(task_name)
 task_cfg.num_envs = C
 
 
 @torch.no_grad()
 def evaluate(env: TrackingSim, ck: dict, record: str | None = None) -> dict:
     a_ = ck["args"]
+    if a_.get("task", "g1") != task_name:
+        raise ValueError("Evaluation cannot mix robot tasks")
     K, Hh = a_["goal_frames"], a_["hist"]
     mdp.set_obs_mode(a_.get("obs_mode", "paper_obs93"))
     mdp.cfg = RewardCfg(**ck.get("reward_cfg", {}))
     mid, half = (kin.q_lo + kin.q_hi) / 2, (kin.q_hi - kin.q_lo) / 2
     mdp.soft_lo, mdp.soft_hi = mid - half * mdp.cfg.soft_limit_factor, mid + half * mdp.cfg.soft_limit_factor
     networks.AMP_DTYPE = torch.bfloat16 if a_.get("amp", "none") == "bf16" else None
-    pi = Policy(mdp.obs_dim, 73 * K, hist=Hh).to(dev)
+    pi = Policy(mdp.obs_dim, spec.goal_frame_dim * K, hist=Hh, num_joints=spec.num_joints,
+                action_limit=a_.get("action_limit")).to(dev)
     pi.load_state_dict(ck["pi"])
     pi.eval()
     ids = torch.arange(C, device=dev)
@@ -91,6 +107,7 @@ def evaluate(env: TrackingSim, ck: dict, record: str | None = None) -> dict:
     evaluation_start = time.monotonic()
     control_step = 0
     max_control_steps = int((motion.clip_len - 1).max().item())
+    locomotion = torch.zeros(C, 5, device=dev)
 
     def record_state(state, alive):
         traj["root_p"].append(state[0].cpu())
@@ -108,6 +125,15 @@ def evaluate(env: TrackingSim, ck: dict, record: str | None = None) -> dict:
         if record:
             record_state(S, alive)
         out = env.step(a)
+        S1 = env.state()
+        ref = motion.ref_state(env.f)
+        measured = torch.stack((
+            S1[2][:, 0], ref[2][:, 0],
+            ((S1[2] - ref[2]) ** 2).sum(-1),
+            ((S1[0] - ref[0]) ** 2).sum(-1),
+            ((S1[4] - ref[4]) ** 2).mean(-1),
+        ), -1)
+        locomotion += torch.where(alive[:, None], measured, 0)
         ret += torch.where(alive, out["r"], 0.0)
         contributions = torch.stack([out["reward_terms"][key] for key in REWARD_TERMS], -1)
         term_ret += torch.where(alive[:, None], contributions, 0.0)
@@ -145,18 +171,29 @@ def evaluate(env: TrackingSim, ck: dict, record: str | None = None) -> dict:
         per_motion[name]["survival_normalized_return"] = survival_returns[i]
         per_motion[name]["survival_steps"] = int(active_steps[i])
         per_motion[name]["reward_components"] = dict(zip(REWARD_TERMS, term_values[i]))
+        values = (locomotion[i] / max(active_steps[i], 1)).cpu().tolist()
+        per_motion[name]["tracking"] = {
+            "mean_forward_speed_m_s": values[0], "reference_forward_speed_m_s": values[1],
+            "speed_axis": "world X; not heading-aligned",
+            "root_velocity_rmse_m_s": values[2] ** 0.5,
+            "root_position_rmse_m": values[3] ** 0.5,
+            "joint_position_rmse_rad": values[4] ** 0.5,
+            "measured_seconds": active_steps[i] * 0.02,
+        }
     res = {
         "iteration": int(ck["iteration"]),
         "evaluation_seconds": time.monotonic() - evaluation_start,
         "protocol": {
-            "dataset": f"G1 motion library; {C} clips from {args.motion_config or args.motion_dir}",
+            "task": task_name,
+            "dataset": f"{task_name} motion library; {C} clips from {args.motion_config or args.motion_dir}",
+            "data_provenance": motion.provenance,
             "start": "first frame of every full clip",
             "policy": "deterministic",
             "friction": 1.0,
             "domain_randomization": False,
             "observation_noise": False,
             "max_step_reward": MAX_STEP_REWARD,
-            "termination": "reference root height error > 0.25 m or tilt component error > 0.8",
+            "termination": f"reference root height error > {mdp.cfg.term_height} m or tilt component error > {mdp.cfg.term_tilt}",
             "normalization": "reward_sum / ((clip_len - 1) * max_step_reward); zero reward after termination",
             "observation_mode": a_.get("obs_mode", "paper_obs93"),
             "mlp_dtype": a_.get("amp", "none"),
@@ -165,6 +202,7 @@ def evaluate(env: TrackingSim, ck: dict, record: str | None = None) -> dict:
                 name: importlib.metadata.version(name) for name in ("isaaclab", "isaacsim", "torch", "mujoco")
             },
             "reset_noise": False,
+            "policy_action_limit": a_.get("action_limit"),
             "reward_cfg": asdict(mdp.cfg),
         },
         "norm_return": summary["clip_weighted_return"],
@@ -192,7 +230,8 @@ def evaluate(env: TrackingSim, ck: dict, record: str | None = None) -> dict:
         np.savez_compressed(record, names=np.array(motion.names), **{k: torch.stack(v).numpy() for k, v in traj.items()},
                             ref_root_p=motion.root_p.cpu().numpy(), ref_root_R=motion.root_R.cpu().numpy(), ref_q=motion.q.cpu().numpy(),
                             clip_start=motion.clip_start.cpu().numpy(), clip_len=motion.clip_len.cpu().numpy(),
-                            iteration=np.array(int(ck["iteration"])), control_frequency_hz=np.array(50))  # fmt: skip
+                            iteration=np.array(int(ck["iteration"])), task=np.array(task_name),
+                            control_frequency_hz=np.array(50))  # fmt: skip
     return res
 
 

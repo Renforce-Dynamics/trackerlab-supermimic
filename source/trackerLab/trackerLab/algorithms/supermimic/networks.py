@@ -67,14 +67,16 @@ def run_mlp(net: nn.Module, x: torch.Tensor) -> torch.Tensor:
 class WorldModel(nn.Module):
     """Deterministic dynamics s_{t+1} = f(s_t, a_t, xi) predicting frame-local state increments."""
 
-    def __init__(self, hidden=(2048, 2048, 2048)):
+    def __init__(self, hidden=(2048, 2048, 2048), num_joints=NUM_J):
         super().__init__()
-        self.in_dim = INV_DIM + NUM_J + XI_DIM
-        self.net = mlp(self.in_dim, list(hidden), WM_OUT, act=nn.SiLU, layer_norm=True)
+        self.num_joints = num_joints
+        self.in_dim = (13 + 2 * num_joints) + num_joints + (num_joints + 4)
+        out_dim = 12 + 2 * num_joints
+        self.net = mlp(self.in_dim, list(hidden), out_dim, act=nn.SiLU, layer_norm=True)
         nn.init.zeros_(self.net[-1].weight)
         nn.init.zeros_(self.net[-1].bias)
         self.in_norm = RunningNorm(self.in_dim)
-        self.out_norm = RunningNorm(WM_OUT, eps=1e-4)
+        self.out_norm = RunningNorm(out_dim, eps=1e-4)
 
     def inputs(self, S, a, xi_n):
         return torch.cat((invariant_features(S), a, xi_n), -1)
@@ -105,7 +107,7 @@ class WorldModel(nn.Module):
         y = run_mlp(self.net, self.in_norm(self.inputs(S, a, xi_n)))
         d = y * self.out_norm.std() + self.out_norm.mean
         H = yaw_mat(R)
-        dp, dth, dv, dw, dq, dqd = d.split((3, 3, 3, 3, NUM_J, NUM_J), -1)
+        dp, dth, dv, dw, dq, dqd = d.split((3, 3, 3, 3, self.num_joints, self.num_joints), -1)
         p1 = p + (H @ dp.unsqueeze(-1)).squeeze(-1)
         R1 = R @ so3_exp(dth)
         v1 = v + (R @ dv.unsqueeze(-1)).squeeze(-1)
@@ -137,11 +139,13 @@ class WorldModel(nn.Module):
 class Policy(nn.Module):
     """a = dec(enc(g), o_{t-9:t}); deterministic, latent z in R^32 bounded by tanh."""
 
-    def __init__(self, obs_dim: int, goal_dim: int, hist: int = 10, z_dim: int = 32):
+    def __init__(self, obs_dim: int, goal_dim: int, hist: int = 10, z_dim: int = 32,
+                 num_joints=NUM_J, action_limit: float | None = None):
         super().__init__()
+        self.action_limit = action_limit
         self.hist = hist
         self.enc = mlp(goal_dim, [2048, 1024, 512, 256], z_dim)
-        self.dec = mlp(z_dim + obs_dim * hist, [2048, 1024, 512, 256], NUM_J)
+        self.dec = mlp(z_dim + obs_dim * hist, [2048, 1024, 512, 256], num_joints)
         with torch.no_grad():
             self.dec[-1].weight.mul_(0.01)
             self.dec[-1].bias.zero_()
@@ -152,7 +156,10 @@ class Policy(nn.Module):
         """obs_hist: (B, hist, obs_dim) noisy observations, newest last."""
         z = torch.tanh(run_mlp(self.enc, self.goal_norm(goal)))
         o = self.obs_norm(obs_hist).flatten(-2)
-        return run_mlp(self.dec, torch.cat((z, o), -1))
+        action = run_mlp(self.dec, torch.cat((z, o), -1))
+        if self.action_limit is not None:
+            action = self.action_limit * torch.tanh(action / self.action_limit)
+        return action
 
 
 class Critic(nn.Module):

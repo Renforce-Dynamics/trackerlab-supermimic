@@ -24,19 +24,26 @@ FIELDS = {
 
 
 class ReplayBuffer:
-    def __init__(self, T: int, N: int, device: str):
+    def __init__(self, T: int, N: int, device: str, num_joints=29):
         self.T, self.N, self.device = T, N, device
         self.data = {}
-        for k, (shape, dt) in FIELDS.items():
+        self.fields = {**FIELDS,
+                       "s": (13 + 2 * num_joints, torch.float32),
+                       "s1": (13 + 2 * num_joints, torch.float32),
+                       "a": (num_joints, torch.float32),
+                       "policy_action": (num_joints, torch.float32),
+                       "a_prev": (num_joints, torch.float32),
+                       "xi": (num_joints + 4, torch.float32)}
+        for k, (shape, dt) in self.fields.items():
             shp = (T, N) + ((shape,) if isinstance(shape, int) else shape)
             self.data[k] = torch.zeros(shp, dtype=dt, device=device)
         self.ptr, self.size = 0, 0
 
     def add(self, tr: dict):
-        missing = set(FIELDS).difference(tr)
+        missing = set(self.fields).difference(tr)
         if missing:
             raise KeyError(f"transition is missing fields: {sorted(missing)}")
-        for k in FIELDS:
+        for k in self.fields:
             self.data[k][self.ptr] = tr[k]
         self.ptr = (self.ptr + 1) % self.T
         self.size = min(self.size + 1, self.T)

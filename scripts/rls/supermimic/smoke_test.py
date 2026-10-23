@@ -1,4 +1,4 @@
-"""Validate G1 kinematics, PhysX transitions and replay on actual LAFAN1 data."""
+"""Validate task kinematics, PhysX transitions and replay on reference data."""
 
 from __future__ import annotations
 
@@ -14,14 +14,18 @@ configure_paths()
 from isaaclab.app import AppLauncher
 
 parser = argparse.ArgumentParser(description=__doc__)
+parser.add_argument("--task", choices=("g1", "go2"), default="g1")
 parser.add_argument("--motion_dir", default=str(REPO / "data" / "retargeted" / "lafan1_g1"))
+parser.add_argument("--motion_config")
 parser.add_argument("--output", default=str(REPO / "logs" / "supermimic_smoke" / "smoke.json"))
 parser.add_argument("--steps", type=int, default=64)
 parser.add_argument("--reset_noise", action=argparse.BooleanOptionalAction, default=True)
-parser.add_argument("--obs_mode", choices=["paper_obs93", "relative_ori99"], default="relative_ori99")
+parser.add_argument("--obs_mode", choices=["paper_obs93", "relative_ori99", "relative_orientation", "proprioception"])
 AppLauncher.add_app_launcher_args(parser)
 parser.set_defaults(headless=True, device="cuda:0")
 args = parser.parse_args()
+if args.task == "go2" and not args.motion_config:
+    parser.error("Go2 requires --motion_config declaring its source frame rate")
 launcher = AppLauncher(args)
 
 import mujoco
@@ -30,21 +34,26 @@ import torch
 
 from trackerLab.algorithms.supermimic.buffer import ReplayBuffer
 from trackerLab.tracker_env.supermimic.env import TrackingSim, launch_simulation, make_sim
-from trackerLab.kinematics.supermimic.g1 import G1Kinematics
-from trackerLab.tracker_env.mdp.supermimic import MAX_STEP_REWARD, MDP, REWARD_TERMS, flatten_state
+from trackerLab.kinematics.supermimic.robot import RobotKinematics
+from trackerLab.tracker_env.mdp.supermimic import MAX_STEP_REWARD, MDP, REWARD_TERMS, RewardCfg, flatten_state
 from trackerLab.metrics.supermimic import write_json
 from trackerLab.motion_buffer.motion_lib.supermimic import MotionLib
-from trackerTask.supermimic.robot import G1_JOINT_NAMES, MJCF_PATH, TRACKED_BODIES, default_joint_pos_list
+from trackerTask.supermimic.robots import get_robot, get_task_cfg
 from trackerLab.kinematics.supermimic.rotations import mat_to_quat, quat_to_mat
-from trackerTask.supermimic.g1_env_cfg import SuperMimicG1TaskCfg
 
 torch.manual_seed(0)
 torch.set_num_threads(8)
 dev = args.device
-kin = G1Kinematics(dev)
-motion = MotionLib.from_dir(args.motion_dir, kin, dev)
-mdp = MDP(kin, motion, torch.tensor(default_joint_pos_list(), device=dev), obs_mode=args.obs_mode)
+spec = get_robot(args.task)
+cfg = get_task_cfg(args.task)
+cfg.num_envs, cfg.reset_noise = 4, args.reset_noise
+kin = RobotKinematics(dev, spec)
+motion = (MotionLib.from_config(args.motion_config, kin, dev) if args.motion_config
+          else MotionLib.from_dir(args.motion_dir, kin, dev))
+mdp = MDP(kin, motion, torch.tensor(spec.default_q, device=dev),
+          cfg=RewardCfg(**cfg.reward_overrides), obs_mode=args.obs_mode or cfg.observation_mode)
 report = {
+    "task": args.task,
     "torch": torch.__version__, "cuda": torch.version.cuda,
     "gpu": torch.cuda.get_device_name(), "clips": len(motion.names),
     "frames_50hz": motion.num_frames, "observation_dim": mdp.obs_dim,
@@ -52,10 +61,10 @@ report = {
 
 
 def compare_mujoco():
-    model = mujoco.MjModel.from_xml_path(MJCF_PATH)
+    model = mujoco.MjModel.from_xml_path(spec.mjcf_path)
     data = mujoco.MjData(model)
-    ids = [model.body(name).id for name in TRACKED_BODIES]
-    jids = [model.joint(name).id for name in G1_JOINT_NAMES]
+    ids = [model.body(name).id for name in spec.tracked_bodies]
+    jids = [model.joint(name).id for name in spec.joint_names]
     qids, vids = model.jnt_qposadr[jids], model.jnt_dofadr[jids]
     frames = torch.linspace(0, motion.num_frames - 1, 12, device=dev).long()
     states = motion.ref_state(frames)
@@ -94,7 +103,6 @@ def compare_mujoco():
     report["fk_gradients_finite"] = True
 
 
-cfg = SuperMimicG1TaskCfg(num_envs=4, reset_noise=args.reset_noise)
 with launch_simulation(make_sim(dev, task_cfg=cfg), args, app_launcher=launcher) as sim:
     compare_mujoco()
     env = TrackingSim(sim.cfg, 4, motion, mdp, task_cfg=cfg)
@@ -119,12 +127,12 @@ with launch_simulation(make_sim(dev, task_cfg=cfg), args, app_launcher=launcher)
     env.reset_bin.copy_(saved_bins)
     report["reset_sampler_uniform_initialization"] = True
     report["reset_sampler_truncation_bootstrap"] = True
-    frames = motion.clip_start[:4] + 20
+    frames = motion.clip_start[torch.arange(4, device=dev) % len(motion.names)] + 20
     env.reset(ids, frames)
     if args.reset_noise:
         actual, reference = env.state(), motion.ref_state(frames)
         position_delta = (actual[0] - reference[0]).abs()
-        assert bool((position_delta <= torch.tensor([0.0501, 0.0501, 0.0101], device=dev)).all())
+        assert bool((position_delta <= torch.tensor(cfg.reset_position, device=dev) + 1e-4).all())
         assert float(position_delta.max()) > 1e-4
         assert bool((actual[4] <= kin.q_hi + 1e-4).all())
         assert bool((actual[4] >= kin.q_lo - 1e-4).all())
@@ -140,7 +148,7 @@ with launch_simulation(make_sim(dev, task_cfg=cfg), args, app_launcher=launcher)
         env.reset(ids, frames)
         report["reset_noise_training_only"] = True
     predicted = kin.forward(*env.state())
-    body_ids = [env.robot.body_names.index(name) for name in TRACKED_BODIES]
+    body_ids = [env.robot.body_names.index(name) for name in spec.tracked_bodies]
     body_pos = env.robot.data.body_link_pos_w[:, body_ids] - env.env_origins[:, None]
     body_rot = quat_to_mat(env.robot.data.body_link_quat_w[:, body_ids])
     pos_error = (predicted[0] - body_pos).abs().max().item()
@@ -159,10 +167,10 @@ with launch_simulation(make_sim(dev, task_cfg=cfg), args, app_launcher=launcher)
     report["physx_com_shape"] = list(coms.shape)
     expected_mu = env.xi[:, 0].cpu()[:, None].expand_as(materials[..., 0])
     assert torch.allclose(materials[..., 0].cpu(), expected_mu, atol=1e-5)
-    expected_com = env._default_coms[:, env._torso_body_id, :3].cpu() + env.xi[:, 30:33].cpu()
+    expected_com = env._default_coms[:, env._torso_body_id, :3].cpu() + env.xi[:, -3:].cpu()
     assert torch.allclose(coms[:, env._torso_body_id, :3].cpu(), expected_com, atol=1e-5)
 
-    replay = ReplayBuffer(32, 4, dev)
+    replay = ReplayBuffer(32, 4, dev, num_joints=spec.num_joints)
     terminations = truncations = 0
     for step in range(args.steps):
         if step == 0:
@@ -176,7 +184,7 @@ with launch_simulation(make_sim(dev, task_cfg=cfg), args, app_launcher=launcher)
         if step == 8:
             env.reset(ids[2:3], frames[2:3])
             env.ep_step[2] = env.max_episode_steps - 1
-        action = (motion.q[env.f] - env.default_q - env.xi[:, 1:30]) / env.action_scale
+        action = (motion.q[env.f] - env.default_q - env.xi[:, 1:-3]) / env.action_scale
         result = env.step(action)
         assert torch.isfinite(result["s1"]).all() and torch.isfinite(result["r"]).all()
         torch.testing.assert_close(

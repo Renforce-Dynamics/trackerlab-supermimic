@@ -121,7 +121,7 @@ def package_milestone(run_dir, iteration):
         }
         del checkpoint
         for name in ("args.json", "reward_config.json", "motion_library.json", "motion_config.json",
-                     "source_sha256.json", "commands.json", "resources.lock.json"):
+                     "data_manifest.json", "source_sha256.json", "commands.json", "resources.lock.json"):
             if (run_dir / name).exists():
                 shutil.copy2(run_dir / name, target / name)
         rows = [row for row in read_rows(run_dir / "train_log.csv") if row["iteration"] <= iteration]
@@ -201,6 +201,22 @@ def package_milestone(run_dir, iteration):
             "Held-out generalization is unmeasured. See docs/results.md for recorded comparisons.\n\n"
             "## Failed motions\n\n" + "\n".join(f"- {name}" for name in result["failed"]) + "\n"
         )
+        if training.get("task", "g1") == "go2":
+            provenance = result["protocol"].get("data_provenance", {})
+            report += (
+                "\n## Go2 gait measurements\n\n"
+                f"Reference source: {provenance.get('source', 'See data_manifest.json')}. "
+                "This is reference-conditioned gait imitation, not a free velocity-command controller.\n\n"
+                "| Motion | World-X speed (m/s) | Reference (m/s) | Root position RMSE (m) | Joint RMSE (rad) | Alive (s) |\n"
+                "| --- | ---: | ---: | ---: | ---: | ---: |\n"
+            )
+            for name, metrics in result["per_motion"].items():
+                track = metrics["tracking"]
+                report += (
+                    f"| {name} | {track['mean_forward_speed_m_s']:.4f} | "
+                    f"{track['reference_forward_speed_m_s']:.4f} | {track['root_position_rmse_m']:.4f} | "
+                    f"{track['joint_position_rmse_rad']:.4f} | {track['measured_seconds']:.2f} |\n"
+                )
         (target / "REPORT.md").write_text(report)
         save(target / "experiment_summary.json", {
             **checkpoint_meta, "evaluation": result, "configuration": configuration,
@@ -245,6 +261,7 @@ def supervise(args):
     stop = run_dir / "STOP"
     state = {
         "phase": "starting", "started_at": now(), "supervisor_pid": os.getpid(),
+        "task": config.get("task", "g1"),
         "run_dir": str(run_dir), "num_envs": args.num_envs, "target_iteration": args.iterations,
         "start_iteration": 0, "fresh_initialization": True, "resume": None,
         "observation_mode": config.get("obs_mode", "relative_ori99"),
@@ -292,6 +309,10 @@ def supervise(args):
             archive.add(path, arcname=str(path.relative_to(REPO)))
     if args.motion_config:
         shutil.copy2(args.motion_config, run_dir / "motion_config.json")
+        motion_config = load(args.motion_config)
+        data_root = (args.motion_config.resolve().parent / motion_config["root"]).resolve()
+        if (data_root / "manifest.json").exists():
+            shutil.copy2(data_root / "manifest.json", run_dir / "data_manifest.json")
     shutil.copy2(SCRIPTS / "resources.lock.json", run_dir / "resources.lock.json")
     try:
         base_commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=REPO, text=True).strip()
@@ -326,6 +347,12 @@ def supervise(args):
                     latest = rows[-1]
                     if not all(math.isfinite(value) for value in latest.values()):
                         detected_error = "nonfinite training metric"
+                        stop.touch()
+                    if config.get("bounded_critic") and (
+                        latest.get("v_loss", 0) > 1e4 or latest.get("imag_rew", 0) < -100
+                        or latest.get("sim_rew", 0) < -5
+                    ):
+                        detected_error = "bounded-critic run exceeded divergence thresholds; preserving checkpoint"
                         stop.touch()
                     state["latest_metrics"] = latest
                     # Early world-model-only timing cannot predict the later policy-update cost.

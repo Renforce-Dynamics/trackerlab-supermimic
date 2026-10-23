@@ -46,7 +46,29 @@ for that checkpoint and experiment, not held-out generalization or every
 TrackerLab task. Full measurements, hashes and limitations are recorded in
 `refactor_validation.json`.
 
-## Historical Version 0.1
+## Go2 Extension
+
+The Go2 extension was validated on the existing Linux simulator stack.
+G1 was stopped at 42,638 by user request before the Go2 experiments.
+
+| Check | Result |
+| --- | --- |
+| CPU tests | 17 passed on Linux; Windows passed 16 with one symlink-permission skip |
+| G1 numerical regression | 40 clips and 441,140 frames; 20 reference fields, goals, observations, rewards, gradients, policy and world model preserved exactly |
+| Public Kine2Go mapping | All 548 source frames; maximum foot-link FK error 6.984e-7 m |
+| Go2 public-data PhysX smoke | FK position error 2.384e-7 m; partial resets, randomization, replay and terminal transition checks passed |
+| 8,096-environment public-data preflight | 12 iterations; actor, critic and world-model updates; zero skipped updates; torch peak 12.36 GiB |
+| Existing TrackerLab overlay | Public Go2 data; training 5 iterations and resuming to 7 changed all three networks |
+| Controlled Go2 learning | 1,200 iterations, 4,096 environments; four procedural clips; full-clip return 0.923566 and 0/4 failures with action/value bounds |
+| Export and video | TorchScript parity at batches 1 and 7; artifact SHA256 checks; full video decode and frame inspection |
+
+The public-data 8,096-environment, 10,000-iteration run is separate from the
+procedural-data diagnostic. A successful preflight establishes execution,
+not convergence. [Divergence evidence](go2_divergence.md) records competing
+conditions and remaining uncertainty; [Go2 instructions](go2.md) state the
+source data, transformation and controller differences.
+
+## Historical Version 0.1 Checks
 
 The extracted package was tested in a separate directory and Python
 environment on the GPU host. The Python environment inherited the already

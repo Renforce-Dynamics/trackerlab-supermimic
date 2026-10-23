@@ -29,6 +29,15 @@ layout, adds a reference buffer and motion manager, and provides a backed-up
 overlay installer for existing TrackerLab checkouts. Algorithm authorship
 and inherited licenses remain as described above.
 
+The Go2 extension adds immutable task-selected robot descriptions, variable
+joint dimensions, procedural foot trajectories and bounded numerical inverse
+kinematics using MuJoCo Jacobians and SciPy. It uses the existing SuperMimic
+learner. Go2 actuator parameters follow IsaacLab v2.3.2's Unitree Go2 DC motor
+configuration. Generated gait references have no LAFAN1 dependency.
+The default Go2 resource importer reads pinned Kine2Go retargeted references,
+validates raw DOF ordering with full-frame FK and converts numeric NPY files
+to TrackerLab CSVs. The optional procedural IK generator remains available.
+
 ## External Resources
 
 - Robot asset repository: https://github.com/Renforce-Dynamics/assetslib,
@@ -44,6 +53,15 @@ and inherited licenses remain as described above.
 - IsaacLab and Isaac Sim are installed separately and retain their own
   licenses and terms. Resource scripts do not accept those terms on behalf
   of the person installing them.
+- Go2 reference data: `MIMUW-Robotics/kine2go` on Hugging Face, revision
+  `7f03a3fb7f6b2e684899530862ba103e81570363`. The selected `ai4_dog_trot_00`
+  originates in AI4Animation natural dog mocap, attributed to H. Zhang et al.,
+  "Mode-Adaptive Neural Networks for Quadruped Motion Control", SIGGRAPH 2018.
+  Its source metadata declares CC BY-NC 4.0. The importer preserves the source
+  README, repository license, per-source license and clip metadata.
+  The public retargeting pipeline is `nomagiclab/kine2go-pipeline`, revision
+  `65b39f104706c1b4307dfc2a7df2aa8bed8d20aa`. Source/converted motions stay
+  outside Git; this repository's MIT code license does not relicense data.
 
 The downloader stores the dataset README, repository license and source robot
 URDF beside the CSVs. Resampling is performed in memory for simulation.

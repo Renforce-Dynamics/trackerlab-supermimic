@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from dataclasses import MISSING
 from typing import Iterator
 import traceback
 
@@ -10,7 +11,7 @@ import torch
 
 from isaaclab.app import AppLauncher
 import isaaclab.sim as sim_utils
-from isaaclab.assets import AssetBaseCfg
+from isaaclab.assets import ArticulationCfg, AssetBaseCfg
 from isaaclab.scene import InteractiveScene, InteractiveSceneCfg
 from isaaclab.sim import SimulationCfg, SimulationContext
 from isaaclab.utils import configclass
@@ -18,7 +19,7 @@ from isaaclab.utils import configclass
 from trackerLab.tracker_env.mdp.supermimic import MAX_STEP_REWARD, MDP, flatten_state
 from trackerLab.motion_buffer.motion_lib.supermimic import CONTROL_DT, MotionLib
 from trackerLab.managers.supermimic import SuperMimicMotionManager
-from trackerTask.supermimic.robot import G1_JOINT_NAMES, action_scale, default_joint_pos_list, make_g1_cfg
+from trackerTask.supermimic.robots import get_robot, get_task_cfg
 from trackerLab.kinematics.supermimic.rotations import mat_to_quat, quat_to_mat, so3_exp
 
 
@@ -58,7 +59,7 @@ class SuperMimicSceneCfg(InteractiveSceneCfg):
         prim_path="/World/defaultGroundPlane",
         spawn=sim_utils.GroundPlaneCfg(),
     )
-    robot = make_g1_cfg().replace(prim_path="{ENV_REGEX_NS}/Robot")
+    robot: ArticulationCfg = MISSING
 
 
 def make_sim(device: str, args=None, task_cfg=None):
@@ -83,7 +84,7 @@ def make_sim(device: str, args=None, task_cfg=None):
 
 
 class TrackingSim:
-    """Batched G1 simulator that preserves the terminal transition before reset."""
+    """Task-selected batched simulator preserving the terminal transition before reset."""
 
     def __init__(
         self,
@@ -103,6 +104,11 @@ class TrackingSim:
         if self.sim is None:
             self.sim = SimulationContext(sim_cfg)
         self.motion, self.mdp = motion, mdp
+        self.task_cfg = task_cfg or get_task_cfg()
+        self.spec = get_robot(self.task_cfg.robot_name)
+        self.num_joints = self.spec.num_joints
+        if motion.num_joints != self.num_joints or mdp.num_joints != self.num_joints:
+            raise ValueError("Task, motion and MDP joint dimensions differ")
         self.num_envs, self.device = num_envs, sim_cfg.device
         self.physics_dt = sim_cfg.dt
         self.control_decimation = sim_cfg.render_interval
@@ -123,19 +129,21 @@ class TrackingSim:
             com_offset_range or getattr(task_cfg, "torso_com_offset_range", (0.025, 0.05, 0.05)),
             device=self.device,
         )
-        self.scene = InteractiveScene(SuperMimicSceneCfg(num_envs=num_envs, env_spacing=env_spacing))
+        scene_cfg = SuperMimicSceneCfg(num_envs=num_envs, env_spacing=env_spacing)
+        scene_cfg.robot = self.spec.make_articulation().replace(prim_path="{ENV_REGEX_NS}/Robot")
+        self.scene = InteractiveScene(scene_cfg)
         self.robot = self.scene["robot"]
         self.sim.reset()
         self.scene.reset()
         self.scene.update(self.physics_dt)
 
         name_to_id = {name: i for i, name in enumerate(self.robot.joint_names)}
-        missing = set(G1_JOINT_NAMES).difference(name_to_id)
+        missing = set(self.spec.joint_names).difference(name_to_id)
         if missing:
-            raise RuntimeError(f"G1 USD is missing expected joints: {sorted(missing)}")
-        self.joint_ids = [name_to_id[name] for name in G1_JOINT_NAMES]
-        self.default_q = torch.tensor(default_joint_pos_list(), device=self.device)
-        self.action_scale = torch.tensor([action_scale(name) for name in G1_JOINT_NAMES], device=self.device)
+            raise RuntimeError(f"{self.spec.name} USD is missing expected joints: {sorted(missing)}")
+        self.joint_ids = [name_to_id[name] for name in self.spec.joint_names]
+        self.default_q = torch.tensor(self.spec.default_q, device=self.device)
+        self.action_scale = torch.tensor(self.spec.action_scale, device=self.device)
         self.env_origins = self.scene.env_origins
 
         self.motion_manager = SuperMimicMotionManager(
@@ -144,12 +152,12 @@ class TrackingSim:
         self.ep_step = torch.zeros(num_envs, dtype=torch.int32, device=self.device)
         self.ep_return = torch.zeros(num_envs, dtype=torch.float32, device=self.device)
         self.ep_discounted_return = torch.zeros_like(self.ep_return)
-        self.a_prev = torch.zeros(num_envs, len(G1_JOINT_NAMES), device=self.device)
-        self.xi = torch.zeros(num_envs, 33, device=self.device)
+        self.a_prev = torch.zeros(num_envs, self.num_joints, device=self.device)
+        self.xi = torch.zeros(num_envs, self.spec.context_dim, device=self.device)
         self.done_eval = torch.zeros(num_envs, dtype=torch.bool, device=self.device)
         self.failed_eval = torch.zeros_like(self.done_eval)
         self._default_coms = None
-        self._torso_body_id = self.robot.body_names.index("torso_link")
+        self._torso_body_id = self.robot.body_names.index(self.spec.com_body)
         self._reset(torch.arange(num_envs, device=self.device), initialize_context=True)
 
     @property
@@ -207,10 +215,10 @@ class TrackingSim:
         if initialize:
             low, high = self.friction_range
             self.xi[env_ids, 0] = low + (high - low) * torch.rand(count, device=self.device)
-            self.xi[env_ids, 30:33] = (
+            self.xi[env_ids, -3:] = (
                 2 * torch.rand(count, 3, device=self.device) - 1
             ) * self.com_offset_range
-        self.xi[env_ids, 1:30] = (2 * torch.rand(count, 29, device=self.device) - 1) * self.joint_offset_range
+        self.xi[env_ids, 1:-3] = (2 * torch.rand(count, self.num_joints, device=self.device) - 1) * self.joint_offset_range
 
     def _set_domain_randomization(self, env_ids: torch.Tensor):
         view = self.robot.root_physx_view
@@ -228,7 +236,7 @@ class TrackingSim:
         coms = view.get_coms().clone()
         selected = env_ids.to(coms.device)
         coms[selected] = self._default_coms[selected]
-        coms[selected, self._torso_body_id, :3] += self.xi[env_ids, 30:33].to(coms.device)
+        coms[selected, self._torso_body_id, :3] += self.xi[env_ids, -3:].to(coms.device)
         view.set_coms(coms.cpu(), indices)
 
     @torch.no_grad()
@@ -258,11 +266,11 @@ class TrackingSim:
                     scale, device=self.device
                 )
 
-            root_p = root_p + uniform_delta((0.05, 0.05, 0.01))
-            root_R = so3_exp(uniform_delta((0.1, 0.1, 0.2))) @ root_R
-            root_v = root_v + uniform_delta((0.5, 0.5, 0.2))
-            root_w = root_w + uniform_delta((0.52, 0.52, 0.78))
-            q = q + (2 * torch.rand_like(q) - 1) * 0.1
+            root_p = root_p + uniform_delta(self.task_cfg.reset_position)
+            root_R = so3_exp(uniform_delta(self.task_cfg.reset_rotation)) @ root_R
+            root_v = root_v + uniform_delta(self.task_cfg.reset_linvel)
+            root_w = root_w + uniform_delta(self.task_cfg.reset_angvel)
+            q = q + (2 * torch.rand_like(q) - 1) * self.task_cfg.reset_joint
         q = torch.clamp(q, self.mdp.kin.q_lo, self.mdp.kin.q_hi)
         root_pose = torch.cat(
             (root_p + self.env_origins[env_ids], mat_to_quat(root_R)),
@@ -272,7 +280,7 @@ class TrackingSim:
         self.robot.write_root_link_velocity_to_sim(torch.cat((root_v, root_w), dim=-1), env_ids)
         self.robot.write_joint_state_to_sim(q, qd, joint_ids=self.joint_ids, env_ids=env_ids)
         self.robot.set_joint_position_target(
-            q + self.xi[env_ids, 1:30],
+            q + self.xi[env_ids, 1:-3],
             joint_ids=self.joint_ids,
             env_ids=env_ids,
         )
@@ -298,7 +306,7 @@ class TrackingSim:
         if self.eval_mode:
             a = torch.where(self.done_eval[:, None], torch.zeros_like(a), a)
         active = ~self.done_eval if self.eval_mode else torch.ones_like(self.done_eval)
-        target = self.default_q + self.xi[:, 1:30] + a * self.action_scale
+        target = self.default_q + self.xi[:, 1:-3] + a * self.action_scale
         self.robot.set_joint_position_target(target, joint_ids=self.joint_ids)
         for _ in range(self.control_decimation):
             self.scene.write_data_to_sim()

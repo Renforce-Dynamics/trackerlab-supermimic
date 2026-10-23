@@ -14,8 +14,8 @@ REPO = Path(__file__).resolve().parents[3]
 from bootstrap import configure_paths
 configure_paths()
 from trackerLab.algorithms.supermimic.networks import Policy
-from trackerLab.tracker_env.mdp.supermimic import OBS_MODES
-from trackerTask.supermimic.robot import G1_JOINT_NAMES, action_scale, default_joint_pos_list
+from trackerLab.tracker_env.mdp.supermimic import observation_dim
+from trackerTask.supermimic.robots import get_robot
 
 
 def main():
@@ -26,9 +26,12 @@ def main():
     torch.set_num_threads(4)
     checkpoint = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
     config = checkpoint["args"]
-    obs_dim = OBS_MODES[config.get("obs_mode", "paper_obs93")]
-    goal_dim = config["goal_frames"] * 73
-    policy = Policy(obs_dim, goal_dim, hist=config["hist"]).eval()
+    spec = get_robot(config.get("task", "g1"))
+    n = spec.num_joints
+    obs_dim = observation_dim(config.get("obs_mode", "paper_obs93"), n)
+    goal_dim = config["goal_frames"] * spec.goal_frame_dim
+    policy = Policy(obs_dim, goal_dim, hist=config["hist"], num_joints=n,
+                    action_limit=config.get("action_limit")).eval()
     policy.load_state_dict(checkpoint["pi"])
     if not all(bool(torch.isfinite(value).all()) for value in policy.state_dict().values()):
         raise FloatingPointError("Policy tensors contain nonfinite values")
@@ -38,6 +41,7 @@ def main():
         "pi": policy.state_dict(),
         "args": config,
         "iteration": checkpoint["iteration"],
+        "task": spec.name,
         "wall_time": checkpoint["wall_time"],
         "sim_steps": checkpoint["sim_steps"],
         "reward_cfg": checkpoint.get("reward_cfg", {}),
@@ -58,28 +62,30 @@ def main():
                 raise AssertionError("Serialized policy differs from the original FP32 policy")
             errors.append(float((actual - expected).abs().max()))
     metadata = {
+        "task": spec.name,
         "iteration": checkpoint["iteration"],
         "observation_mode": config.get("obs_mode", "paper_obs93"),
         "inputs": {
             "observation_history": ["batch", config["hist"], obs_dim],
             "goal": ["batch", goal_dim],
         },
-        "output": ["batch", 29],
+        "output": ["batch", n],
         "history_order": "oldest to newest",
         "observation_fields": [
-            {"slice": [0, 29], "value": "joint_position - default_joint_position - joint_offset"},
-            {"slice": [29, 58], "value": "joint_velocity in rad/s"},
-            {"slice": [58, 61], "value": "root angular velocity in root coordinates, rad/s"},
-            {"slice": [61, 64], "value": "unit gravity direction in root coordinates"},
-            {"slice": [64, 93], "value": "previous executed dimensionless action"},
+            {"slice": [0, n], "value": "joint_position - default_joint_position - joint_offset"},
+            {"slice": [n, 2*n], "value": "joint_velocity in rad/s"},
+            {"slice": [2*n, 2*n+3], "value": "root angular velocity in root coordinates, rad/s"},
+            {"slice": [2*n+3, 2*n+6], "value": "unit gravity direction in root coordinates"},
+            {"slice": [2*n+6, 3*n+6], "value": "previous executed dimensionless action"},
         ],
         "normalization": "Running observation and goal normalizers are included in both files.",
         "torchscript_dtype": "float32",
         "checkpoint_evaluation_mlp_dtype": config.get("amp", "none"),
         "control_frequency_hz": 50,
-        "joint_names": G1_JOINT_NAMES,
-        "default_joint_positions": default_joint_pos_list(),
-        "action_scale": [action_scale(name) for name in G1_JOINT_NAMES],
+        "joint_names": spec.joint_names,
+        "default_joint_positions": spec.default_q,
+        "action_scale": spec.action_scale,
+        "policy_action_limit": config.get("action_limit"),
         "joint_target_formula": "default_joint_position + joint_offset + clip(action, -20, 20) * action_scale",
         "source_checkpoint": str(args.checkpoint.resolve()),
         "torchscript_validation_batches": [1, 7],
@@ -88,9 +94,9 @@ def main():
     }
     with args.checkpoint.open("rb") as stream:
         metadata["source_checkpoint_sha256"] = hashlib.file_digest(stream, "sha256").hexdigest()
-    if obs_dim == 99:
+    if obs_dim == 3*n+12:
         metadata["observation_fields"].append({
-            "slice": [93, 99], "value": "reference root orientation relative to the robot root, 6D"
+            "slice": [3*n+6, 3*n+12], "value": "reference root orientation relative to the robot root, 6D"
         })
     (args.output_dir / "metadata.json").write_text(json.dumps(metadata, indent=2) + "\n")
     (args.output_dir / "README.md").write_text(
@@ -99,14 +105,14 @@ def main():
         "`policy.pt` contains policy weights, normalizers and training arguments.\n"
         "`policy.ts` is a portable FP32 TorchScript module. Its arguments are\n"
         f"observation history `(B, {config['hist']}, {obs_dim})` and motion goal `(B, {goal_dim})`.\n"
-        "It returns 29 dimensionless actions in the joint order in `metadata.json`.\n\n"
+        f"It returns {n} dimensionless actions in the joint order in `metadata.json`.\n\n"
         "Build observations and goals with the matching `MDP.obs` and `MotionLib.goal`\n"
         "implementations. Normalization is included in the exported model.\n"
         "Raw observations are in SI units with no extra input scaling. At reset, repeat\n"
         "the initial observation across the history; thereafter append each new observation.\n"
-        f"The goal contains {config['goal_frames']} future reference frames with 73 features per frame:\n"
+        f"The goal contains {config['goal_frames']} future reference frames with {spec.goal_frame_dim} features per frame:\n"
         "reference displacement (3), rotation columns (6), local linear/angular velocity\n"
-        "(3+3), joint position (29), and joint velocity scaled by 0.1 (29).\n"
+        f"(3+3), joint position ({n}), and joint velocity scaled by 0.1 ({n}).\n"
         "Use the reference's current heading frame and the matching `MotionLib.goal`.\n"
         "For deterministic simulation evaluation, joint offsets are zero.\n"
         "The adjacent experiment report contains native-checkpoint evaluation results.\n\n"

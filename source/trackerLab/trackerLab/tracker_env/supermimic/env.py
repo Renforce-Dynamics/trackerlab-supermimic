@@ -99,6 +99,7 @@ class TrackingSim:
         friction_range: tuple[float, float] | None = None,
         joint_offset_range: float | None = None,
         com_offset_range: tuple[float, float, float] | None = None,
+        scene_cfg=None,
     ):
         self.sim = SimulationContext.instance()
         if self.sim is None:
@@ -129,7 +130,7 @@ class TrackingSim:
             com_offset_range or getattr(task_cfg, "torso_com_offset_range", (0.025, 0.05, 0.05)),
             device=self.device,
         )
-        scene_cfg = SuperMimicSceneCfg(num_envs=num_envs, env_spacing=env_spacing)
+        scene_cfg = scene_cfg or SuperMimicSceneCfg(num_envs=num_envs, env_spacing=env_spacing)
         scene_cfg.robot = self.spec.make_articulation().replace(prim_path="{ENV_REGEX_NS}/Robot")
         self.scene = InteractiveScene(scene_cfg)
         self.robot = self.scene["robot"]

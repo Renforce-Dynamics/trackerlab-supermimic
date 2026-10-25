@@ -90,9 +90,12 @@ def main():
     spec = get_robot(str(trajectory.get("task", "g1")))
     evaluation = json.loads(args.evaluation.read_text())
     provenance = evaluation.get("protocol", {}).get("data_provenance", {})
-    reference_label = "G1 LAFAN1 motion" if spec.name == "g1" else (
-        "Go2 Kine2Go retarget" if provenance.get("dataset") == "MIMUW-Robotics/kine2go"
-        else "Go2 reference motion")
+    reference_label = {
+        "g1": "G1 LAFAN1 motion", "a3": "A3 public SOMA reference",
+        "t1": "T1 Booster dance reference",
+        "go2": ("Go2 Kine2Go retarget" if provenance.get("dataset") == "MIMUW-Robotics/kine2go"
+                else "Go2 reference motion"),
+    }[spec.name]
     iteration = args.iteration if args.iteration is not None else int(trajectory["iteration"])
     if evaluation.get("iteration", iteration) != iteration:
         raise ValueError("Trajectory and evaluation checkpoint iterations differ")

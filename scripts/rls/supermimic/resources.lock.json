@@ -47,6 +47,28 @@
     "raw_foot_order": ["FL", "RL", "FR", "RR"],
     "raw_quaternion_order": "wxyz"
   },
+  "a3": {
+    "repository": "https://github.com/AgibotTech/sonic_for_a3.git",
+    "revision": "c9df753d31ef63c930b825b1b6767cabd37c1549",
+    "sparse_paths": ["a3_data", "gear_sonic/data/assets/robot_description/mjcf", "gear_sonic/data/assets/robot_description/urdf/a3", "legal"],
+    "model": "gear_sonic/data/assets/robot_description/mjcf/a3_t2d5.xml",
+    "motions": "a3_data/agibot_a3",
+    "source_fps": 120,
+    "vendor": "agibot",
+    "data_name": "a3_sonic",
+    "fixed_joints": ["head_yaw_joint", "head_pitch_joint"]
+  },
+  "t1": {
+    "repository": "https://github.com/BoosterRobotics/booster_assets.git",
+    "revision": "12a97516f57469078707afb587a5f84c1cb110d1",
+    "sparse_paths": ["robots/T1", "motions/T1", "src/booster_assets"],
+    "model": "robots/T1/T1_23dof.xml",
+    "motions": "motions/T1",
+    "source_fps": 50,
+    "vendor": "booster",
+    "data_name": "t1_dance",
+    "fixed_joints": []
+  },
   "adaptation": {
     "repository": "https://github.com/zita-ch/supermimic_vibed",
     "revision": "a1508d42c9d1699a52e8233ab16d08c488441ab9",

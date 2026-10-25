@@ -1,6 +1,6 @@
 # TrackerLab SuperMimic
 
-按照 TrackerLab 的目录与数据流组织 G1 与 Go2 动作跟踪代码，同一份源码支持独立运行，
+按照 TrackerLab 的目录与数据流组织 G1、Go2、A3 与 T1 动作跟踪代码，同一份源码支持独立运行，
 也支持安装到已有 TrackerLab。任务、动作库、参考缓存、动作管理、仿真环境、
 算法和指标各有独立模块。
 
@@ -15,6 +15,29 @@ Go2 扩展复用动作库、参考缓存、管理器、环境和 SuperMimic 算�
 8,096 个环境、10,000 轮。程序生成的四条 IK 轨迹保留用于对照实验。
 数据来源、运行命令和验证范围见
 [Go2 文档](docs/go2.md)。导出的策略需要参考动作目标与观测历史。
+
+多机器人任务按“任务类型 → 机器人 → 环境与算法配置”组织。
+`tracking/a3` 使用智元公开的 20 段机器人动作，`tracking/t1` 使用
+Booster 公开的 T1 舞蹈轨迹。两套预设均为 4,096 环境、10,000 轮，
+沿用共享动作库、仿真环境、世界模型、策略训练与评测模块。
+来源版本、单位转换、电机参数及验证范围见 [多机器人任务说明](docs/multirobot_tasks.md)。
+
+```bash
+python scripts/rls/supermimic/tasks.py list
+python scripts/rls/supermimic/tasks.py prepare --task tracking/a3
+python scripts/rls/supermimic/tasks.py prepare --task tracking/t1
+python scripts/rls/supermimic/tasks.py smoke --task tracking/a3
+python scripts/rls/supermimic/tasks.py smoke --task tracking/t1
+python scripts/rls/supermimic/tasks.py supervise --task tracking/a3 \
+  --run_dir logs/a3_4096_10k --milestones 2000 10000
+python scripts/rls/supermimic/tasks.py supervise --task tracking/t1 \
+  --run_dir logs/t1_4096_10k --milestones 2000 10000
+```
+
+A3 采用 29 个运动关节，头部两关节固定；T1 为 23 关节模型。
+这些输入均为上游提供的机器人空间轨迹，本地处理包含格式、单位和采样率转换。
+仿真验证已覆盖两套模型的运动学、状态重置、回放数据和策略更新；
+动作学习效果以训练后的完整轨迹评测为依据。
 
 ## 独立运行
 

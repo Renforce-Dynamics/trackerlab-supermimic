@@ -25,7 +25,7 @@ configure_paths()
 from isaaclab.app import AppLauncher
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--task", choices=("g1", "go2"), default=None,
+parser.add_argument("--task", choices=("g1", "go2", "a3", "t1"), default=None,
                     help="Optional assertion; robot is inferred from checkpoint arguments")
 parser.add_argument("--run_dir", type=str, required=True)
 parser.add_argument("--watch", action="store_true")
@@ -67,8 +67,8 @@ args.task = task_name
 if args.motion_config is None and "--motion_dir" not in sys.argv:
     args.motion_config = initial_config.get("motion_config")
     args.motion_dir = initial_config.get("motion_dir", args.motion_dir)
-if task_name == "go2" and not args.motion_config:
-    raise ValueError("Go2 evaluation requires --motion_config declaring the source frame rate")
+if task_name != "g1" and not args.motion_config:
+    raise ValueError("Evaluation requires --motion_config declaring the source frame rate")
 spec = get_robot(task_name)
 kin = RobotKinematics(dev, spec)
 motion = (MotionLib.from_config(args.motion_config, kin, dev) if args.motion_config

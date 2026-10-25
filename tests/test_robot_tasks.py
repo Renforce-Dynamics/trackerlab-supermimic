@@ -62,7 +62,7 @@ class RobotTaskTests(unittest.TestCase):
 
     def test_both_robots_share_algorithm_with_independent_shapes_and_gradients(self):
         torch.set_num_threads(2)
-        for name in ("g1", "go2"):
+        for name in ("g1", "go2", "a3", "t1"):
             with self.subTest(task=name):
                 spec = get_robot(name)
                 n = spec.num_joints

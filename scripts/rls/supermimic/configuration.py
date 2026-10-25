@@ -25,7 +25,7 @@ def apply_config(parser: argparse.ArgumentParser, argv: list[str] | None = None)
         config = load_config(path)
         actions = {action.dest: action for action in parser._actions}
         for key, value in config.items():
-            if key not in actions or key in ("help", "config", "resume", "log_dir", "stop_file"):
+            if key not in actions or key in ("help", "config", "resume", "warm_start", "log_dir", "stop_file"):
                 raise ValueError(f"Unsupported preset key: {key}")
             action = actions[key]
             if isinstance(action, (argparse.BooleanOptionalAction, argparse._StoreTrueAction)):

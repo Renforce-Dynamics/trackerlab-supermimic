@@ -14,7 +14,7 @@ configure_paths()
 from isaaclab.app import AppLauncher
 
 parser = argparse.ArgumentParser(description=__doc__)
-parser.add_argument("--task", choices=("g1", "go2"), default="g1")
+parser.add_argument("--task", choices=("g1", "go2", "a3", "t1"), default="g1")
 parser.add_argument("--motion_dir", default=str(REPO / "data" / "retargeted" / "lafan1_g1"))
 parser.add_argument("--motion_config")
 parser.add_argument("--output", default=str(REPO / "logs" / "supermimic_smoke" / "smoke.json"))
@@ -24,8 +24,8 @@ parser.add_argument("--obs_mode", choices=["paper_obs93", "relative_ori99", "rel
 AppLauncher.add_app_launcher_args(parser)
 parser.set_defaults(headless=True, device="cuda:0")
 args = parser.parse_args()
-if args.task == "go2" and not args.motion_config:
-    parser.error("Go2 requires --motion_config declaring its source frame rate")
+if args.task != "g1" and not args.motion_config:
+    parser.error("This robot requires --motion_config declaring its source frame rate")
 launcher = AppLauncher(args)
 
 import mujoco

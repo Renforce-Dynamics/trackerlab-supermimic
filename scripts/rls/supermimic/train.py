@@ -58,6 +58,13 @@ motions.add_argument("--motion_config", type=str, help="TrackerLab reference-mot
 parser.add_argument("--log_dir", type=str, default=str(REPO / "logs" / "supermimic"))
 parser.add_argument("--seed", type=int, default=0)
 parser.add_argument("--resume", type=str, default=None)
+parser.add_argument("--warm_start", type=str, default=None, help="Initialize a new downstream task from gait or chase weights")
+parser.add_argument("--warm_start_velocity", type=str, default=None,
+                    help="Initialize a new velocity objective from a velocity/dodge checkpoint")
+parser.add_argument("--task_difficulty", type=float, default=None,
+                    help="Fixed velocity/dodge difficulty in [0,1]; omit for its training curriculum")
+parser.add_argument("--task_profile", choices=["standard", "rapid", "jump", "adaptive"], default="standard",
+                    help="Scenario curriculum for go2_velocity_dodge")
 parser.add_argument("--obs_mode", type=str, default=None,
                     choices=["paper_obs93", "relative_ori99", "proprioception", "relative_orientation"])
 parser.add_argument("--reset_noise", action=argparse.BooleanOptionalAction, default=True)
@@ -72,13 +79,14 @@ apply_config(parser)
 args = parser.parse_args()
 args.obs_mode = args.obs_mode or ("relative_ori99" if args.task == "g1" else "relative_orientation")
 args.com_offset_range = args.com_offset_range or (
-    (0.025, 0.05, 0.05) if args.task == "g1" else (0.01, 0.01, 0.01))
+    (0.025, 0.05, 0.05) if args.task in ("g1", "a3") else
+    (0.01, 0.02, 0.02) if args.task == "t1" else (0.01, 0.01, 0.01))
 if args.action_limit is not None and (not math.isfinite(args.action_limit) or not 0 < args.action_limit <= 20):
     parser.error("--action_limit must be finite, positive and at most the simulator limit of 20")
-if args.task == "go2" and not args.motion_config:
-    parser.error("Go2 requires --motion_config produced by prepare_resources.py --task go2")
+if args.task != "g1" and not args.motion_config:
+    parser.error("This task requires --motion_config produced by prepare_resources.py")
 if args.task != "g1" and args.obs_mode in ("paper_obs93", "relative_ori99"):
-    parser.error("Use --obs_mode relative_orientation or proprioception for Go2")
+    parser.error("Use --obs_mode relative_orientation or proprioception for this robot")
 if args.buffer_steps < args.wm_window or args.wm_window < 1:
     parser.error("--buffer_steps must cover a positive --wm_window")
 if min(args.num_envs, args.iterations, args.horizon, args.hist, args.goal_frames, args.wm_batches,
@@ -92,7 +100,24 @@ if not 0 < args.gamma < 1 or not 0 <= args.lam <= 1 or args.lr <= 0 or args.lr_d
     parser.error("invalid discount, GAE or learning-rate configuration")
 if args.warmup_steps < 0 or args.wm_only_iters < 0:
     parser.error("warmup sizes must be nonnegative")
-for name in ("motion_dir", "motion_config", "log_dir", "resume", "stop_file", "config"):
+if sum(bool(value) for value in (args.resume, args.warm_start, args.warm_start_velocity)) > 1:
+    parser.error("Choose only one of --resume, --warm_start or --warm_start_velocity")
+if args.warm_start and args.task not in ("go2_chase_dodge", "go2_velocity_dodge"):
+    parser.error("--warm_start is supported by go2_chase_dodge and go2_velocity_dodge")
+if args.task in ("go2_chase_dodge", "go2_velocity_dodge") and (
+        args.action_limit != 4.0 or args.obs_mode != "relative_orientation" or args.no_critic):
+    parser.error(f"{args.task} requires action_limit=4, relative_orientation and the critic")
+if args.task_difficulty is not None and (
+        args.task != "go2_velocity_dodge" or not math.isfinite(args.task_difficulty) or
+        not 0 <= args.task_difficulty <= 1):
+    parser.error("--task_difficulty requires go2_velocity_dodge and a finite value in [0,1]")
+if args.task_profile != "standard" and args.task != "go2_velocity_dodge":
+    parser.error("--task_profile requires go2_velocity_dodge")
+if args.warm_start_velocity and args.task != "go2_velocity_dodge":
+    parser.error("--warm_start_velocity requires go2_velocity_dodge")
+if args.task == "go2_velocity_dodge" and not (args.warm_start or args.warm_start_velocity or args.resume):
+    parser.error("go2_velocity_dodge requires a compatible warm-start or resume checkpoint")
+for name in ("motion_dir", "motion_config", "log_dir", "resume", "warm_start", "warm_start_velocity", "stop_file", "config"):
     if getattr(args, name):
         setattr(args, name, str(Path(getattr(args, name)).expanduser().resolve()))
 if (Path(args.log_dir) / "last.pt").exists() or (Path(args.log_dir) / "train_log.csv").exists():
@@ -101,6 +126,11 @@ run_start = time.monotonic()
 app_launcher = AppLauncher(args)
 
 
-from trackerLab.algorithms.supermimic.runner import train
+if args.task == "go2_velocity_dodge":
+    from trackerLab.algorithms.supermimic.velocity_runner import train
+elif args.task == "go2_chase_dodge":
+    from trackerLab.algorithms.supermimic.chase_runner import train
+else:
+    from trackerLab.algorithms.supermimic.runner import train
 
 train(args, app_launcher, run_start)

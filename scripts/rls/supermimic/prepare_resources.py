@@ -57,6 +57,11 @@ def prepare_assets(directory: Path, verify_only: bool, task: str = "g1") -> dict
 
 
 def main():
+    probe = argparse.ArgumentParser(add_help=False)
+    probe.add_argument("--task", default="g1")
+    if probe.parse_known_args()[0].task in ("a3", "t1"):
+        from prepare_humanoids import main as prepare_humanoids
+        return prepare_humanoids()
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--task", choices=("g1", "go2"), default="g1")
     parser.add_argument("--asset_root", type=Path, default=Path(

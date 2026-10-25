@@ -2,7 +2,7 @@
 
 [中文说明](README_zh.md)
 
-A focused implementation of TrackerLab's **G1 and Go2 motion-tracking workflow**,
+A focused implementation of TrackerLab's **G1, Go2, A3 and T1 motion-tracking workflow**,
 with one source tree for standalone use and installation into an existing
 TrackerLab checkout:
 
@@ -32,7 +32,36 @@ manager, simulation and SuperMimic algorithm. Pinned Kine2Go retargeted trot dat
 feed an 8,096-environment, 10,000-iteration preset.
 [Go2 resources, data provenance and training commands](docs/go2.md).
 
+**Go2 chase/dodge task:** transfer the gait actor and world model into moving
+target pursuit, high-bar ducking and low-bar crossing. Task configuration,
+scenario replay, physical collision measurements and separate per-task
+evaluations follow the same TrackerLab source layout.
+[Task design, transfer limits and commands](docs/go2_chase_dodge.md).
+
+**Go2 velocity/dodge task:** initialize from a chase checkpoint and train
+body-frame velocity commands with repeated bars approaching from varied
+directions and heights. The 8,096-environment preset preserves the actor and
+world-model weights while starting a new task critic and iteration count.
+[Configuration, reward bound and commands](docs/go2_velocity_dodge.md).
+
+**Go2 rapid-bar profile:** the same task supports a curriculum from 1.0-1.2
+seconds per bar to 0.5-1.0 seconds, with changing directions and heights.
+Evaluation records actual intervals, contacts, falls, and command errors.
+[Rapid profile and timing constraints](docs/go2_rapid_dodge.md).
+
+**Go2 autonomous passage profile:** mixed bar heights at 1.0-2.0 seconds per
+encounter, without a jump/duck command. A geometry-based objective allows one
+policy to choose its maneuver; the 8,096-environment preset runs 30,000 updates.
+Evaluation reports actual passage behavior and success for each height group.
+[Task, reward and evaluation details](docs/go2_adaptive_dodge.md).
+
 ## Install
+
+**Multiple robot tasks:** `tasks.py list` discovers tracking and locomotion
+tasks by category and robot. A3 uses the public SONIC A3 motions; T1 uses
+Booster's public dance clip. Each has a robot definition, environment config,
+agent preset and reproducible data converter.
+[Task layout, data provenance and commands](docs/multirobot_tasks.md).
 
 Supported training platform: Linux x86-64, Python 3.11, an NVIDIA GPU supported
 by Isaac Sim 5.1, CUDA 12.8 PyTorch wheels, and a working NVIDIA Vulkan driver.

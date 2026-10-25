@@ -1,6 +1,8 @@
 """Immutable robot contracts shared by data preparation, learning and simulation."""
 
 from dataclasses import dataclass
+from importlib import import_module
+from .registry import get_task
 
 
 @dataclass(frozen=True)
@@ -38,14 +40,20 @@ class RobotSpec:
         if self.name == "g1":
             from .robot import make_g1_cfg
             return make_g1_cfg()
-        from .go2_robot import make_go2_cfg
-        return make_go2_cfg()
+        if self.name == "go2":
+            from .go2_robot import make_go2_cfg
+            return make_go2_cfg()
+        if self.name in ("a3", "t1"):
+            module = import_module(f".tracking.humanoid.robots.{self.name}.robot", __package__)
+            return module.make_cfg()
+        raise ValueError(f"Unknown robot {self.name}")
 
 
-TASKS = ("g1", "go2")
+TASKS = ("g1", "go2", "a3", "t1", "go2_chase_dodge", "go2_velocity_dodge")
 
 
 def get_robot(name="g1"):
+    name = get_task(name).robot
     if name == "g1":
         from .robot import G1_JOINT_NAMES, TRACKED_BODIES, MJCF_PATH, default_joint_pos_list, action_scale
         return RobotSpec(name, tuple(G1_JOINT_NAMES), tuple(TRACKED_BODIES),
@@ -55,14 +63,11 @@ def get_robot(name="g1"):
         from .go2_robot import GO2_JOINT_NAMES, TRACKED_BODIES, MJCF_PATH, DEFAULT_Q
         return RobotSpec(name, tuple(GO2_JOINT_NAMES), tuple(TRACKED_BODIES),
                          "base", "base", MJCF_PATH, tuple(DEFAULT_Q), (0.25,) * 12)
-    raise ValueError(f"Unknown task {name!r}; expected one of {TASKS}")
+    module = import_module(f".tracking.humanoid.robots.{name}.robot", __package__)
+    root, com = ("pelvis_link", "torso_Link") if name == "a3" else ("trunk", "trunk")
+    return RobotSpec(name, module.JOINT_NAMES, module.TRACKED_BODIES, root, com,
+                     module.MJCF_PATH, module.DEFAULT_Q, module.ACTION_SCALE)
 
 
 def get_task_cfg(name="g1"):
-    if name == "g1":
-        from .g1_env_cfg import SuperMimicG1TaskCfg
-        return SuperMimicG1TaskCfg()
-    if name == "go2":
-        from .go2_env_cfg import SuperMimicGo2TaskCfg
-        return SuperMimicGo2TaskCfg()
-    raise ValueError(f"Unknown task {name!r}; expected one of {TASKS}")
+    return get_task(name).make_env_cfg()

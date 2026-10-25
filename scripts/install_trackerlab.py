@@ -37,6 +37,8 @@ EXTENSIONS = (
     "source/trackerLab/trackerLab/motion_buffer/motion_lib/supermimic.py",
     "source/trackerLab/trackerLab/tracker_env/supermimic",
     "source/trackerLab/trackerLab/tracker_env/mdp/supermimic.py",
+    "source/trackerLab/trackerLab/tracker_env/mdp/supermimic_chase_dodge.py",
+    "source/trackerLab/trackerLab/tracker_env/mdp/supermimic_velocity_dodge.py",
     "source/trackerTask/trackerTask/supermimic",
     "scripts/rls/supermimic",
 )

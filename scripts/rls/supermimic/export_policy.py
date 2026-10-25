@@ -30,7 +30,18 @@ def main():
     n = spec.num_joints
     obs_dim = observation_dim(config.get("obs_mode", "paper_obs93"), n)
     goal_dim = config["goal_frames"] * spec.goal_frame_dim
-    policy = Policy(obs_dim, goal_dim, hist=config["hist"], num_joints=n,
+    velocity_task = config.get("task") == "go2_velocity_dodge"
+    downstream = config.get("task") in ("go2_chase_dodge", "go2_velocity_dodge")
+    task_dim = 24 if velocity_task else 18
+    mdp_name = "VelocityDodgeMDP" if velocity_task else "ChaseDodgeMDP"
+    policy_class = Policy
+    if velocity_task:
+        from trackerLab.algorithms.supermimic.velocity_networks import VelocityPolicy
+        policy_class = VelocityPolicy
+    elif downstream:
+        from trackerLab.algorithms.supermimic.chase_networks import TaskPolicy
+        policy_class = TaskPolicy
+    policy = policy_class(obs_dim, goal_dim, hist=config["hist"], num_joints=n,
                     action_limit=config.get("action_limit")).eval()
     policy.load_state_dict(checkpoint["pi"])
     if not all(bool(torch.isfinite(value).all()) for value in policy.state_dict().values()):
@@ -41,12 +52,15 @@ def main():
         "pi": policy.state_dict(),
         "args": config,
         "iteration": checkpoint["iteration"],
-        "task": spec.name,
+        "task": config.get("task", spec.name),
         "wall_time": checkpoint["wall_time"],
         "sim_steps": checkpoint["sim_steps"],
         "reward_cfg": checkpoint.get("reward_cfg", {}),
+        "task_cfg": checkpoint.get("task_cfg", {}),
     }, policy_path)
     examples = (torch.zeros(1, config["hist"], obs_dim), torch.zeros(1, goal_dim))
+    if downstream:
+        examples += (torch.zeros(1, task_dim),)
     with torch.no_grad():
         scripted = torch.jit.trace(policy, examples)
         scripted.save(str(args.output_dir / "policy.ts"))
@@ -56,13 +70,18 @@ def main():
         for batch in (1, 7):
             observations = torch.randn(batch, config["hist"], obs_dim)
             goals = torch.randn(batch, goal_dim)
-            expected = policy(observations, goals)
-            actual = reloaded(observations, goals)
+            inputs = (observations, goals)
+            if downstream:
+                inputs += (torch.randn(batch, task_dim),)
+            expected = policy(*inputs)
+            actual = reloaded(*inputs)
             if not torch.isfinite(actual).all() or not torch.allclose(actual, expected, atol=1e-5, rtol=1e-5):
                 raise AssertionError("Serialized policy differs from the original FP32 policy")
             errors.append(float((actual - expected).abs().max()))
     metadata = {
-        "task": spec.name,
+        "task": config.get("task", spec.name),
+        "task_profile": config.get("task_profile", "standard"),
+        "task_config": checkpoint.get("task_cfg", {}),
         "iteration": checkpoint["iteration"],
         "observation_mode": config.get("obs_mode", "paper_obs93"),
         "inputs": {
@@ -96,8 +115,33 @@ def main():
         metadata["source_checkpoint_sha256"] = hashlib.file_digest(stream, "sha256").hexdigest()
     if obs_dim == 3*n+12:
         metadata["observation_fields"].append({
-            "slice": [3*n+6, 3*n+12], "value": "reference root orientation relative to the robot root, 6D"
+            "slice": [3*n+6, 3*n+12],
+            "value": ("yaw-command lookahead heading relative to robot root, 6D" if velocity_task
+                      else "target-velocity heading relative to robot root, 6D" if downstream
+                      else "reference root orientation relative to the robot root, 6D"),
         })
+    if downstream:
+        metadata["inputs"]["task_features"] = ["batch", task_dim]
+        metadata["task_features_builder"] = f"{mdp_name}.task_features(S, scenario)"
+        metadata["task_features_fields"] = [
+            "target relative XY / 3", "target velocity XY / 2",
+            "bar relative XYZ / 3", "bar relative velocity XY / 3",
+            "duck and jump indicators", "body-frame velocity XYZ / 2",
+            "root height", "yaw rate", "desired height", "curriculum difficulty",
+        ]
+        if velocity_task:
+            metadata["task_features_fields"][:2] = [
+                "normalized virtual command target XY / 3", "body velocity command XY / 2",
+            ]
+            metadata["task_features_fields"] += [
+                "yaw command / yaw_rate_max", "heading-frame bar normal XY",
+                "encounter age / duration", "encounter duration / 5", "bar speed / 4",
+            ]
+            if config.get("task_profile") == "adaptive":
+                metadata["task_features_fields"][4] = "two zero features; no maneuver category"
+                metadata["task_features_fields"][8] = "constant nominal standing height"
+                metadata["maneuver_selection"] = "Autonomous from geometry, without jump/duck commands"
+        metadata["joint_target_formula"] = "default_joint_position + joint_offset + clip(action, -4, 4) * action_scale"
     (args.output_dir / "metadata.json").write_text(json.dumps(metadata, indent=2) + "\n")
     (args.output_dir / "README.md").write_text(
         "# SuperMimic Policy\n\n"
@@ -121,6 +165,19 @@ def main():
         "with torch.no_grad():\n"
         "    action = policy(observation_history, motion_goal)\n```\n"
     )
+    if downstream:
+        (args.output_dir / "README.md").write_text(
+            f"# Go2 {config['task']} Policy\n\n"
+            f"Task iteration {checkpoint['iteration']}. The initializer is recorded in the experiment's transfer.json.\n\n"
+            f"TorchScript takes observation history (B,{config['hist']},{obs_dim}), "
+            f"motion goal (B,{goal_dim}), and task features (B,{task_dim}).\n\n"
+            f"Construct inputs with {mdp_name}.obs, MotionLib.goal, and {mdp_name}.task_features. "
+            "The task features need the same target/bar scenario state. All learned normalizers are included.\n\n"
+            "```python\nimport torch\n"
+            "policy = torch.jit.load('policy.ts', map_location='cpu').eval()\n"
+            "with torch.no_grad():\n"
+            "    action = policy(observation_history, motion_goal, task_features)\n```\n"
+        )
     print(json.dumps(metadata, indent=2))
 
 

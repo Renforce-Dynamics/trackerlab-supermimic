@@ -92,6 +92,13 @@ def motion_arguments(options):
 
 
 def package_milestone(run_dir, iteration):
+    task = load(run_dir / "args.json")["arguments"].get("task")
+    if task == "go2_velocity_dodge":
+        from package_velocity import package
+        return package(run_dir, iteration)
+    if task == "go2_chase_dodge":
+        from package_chase import package
+        return package(run_dir, iteration)
     import torch
 
     torch.set_num_threads(2)
@@ -107,7 +114,15 @@ def package_milestone(run_dir, iteration):
         commands = load(run_dir / "commands.json")
         final = iteration == configuration["arguments"]["iterations"]
         source = run_dir / ("last.pt" if final else f"ckpt_{iteration:06d}.pt")
-        shutil.copy2(source, target / "checkpoint.pt")
+        checkpoint_path = target / "checkpoint.pt"
+        if checkpoint_path.exists():
+            if digest(checkpoint_path) != digest(source):
+                raise ValueError("Existing milestone checkpoint differs from the source")
+        else:
+            try:
+                os.link(source, checkpoint_path)
+            except OSError:
+                shutil.copy2(source, checkpoint_path)
         checkpoint = torch.load(target / "checkpoint.pt", map_location="cpu", weights_only=False)
         if checkpoint["iteration"] != iteration or checkpoint["args"].get("resume") is not None:
             raise ValueError("Checkpoint lineage differs from the fresh experiment")
@@ -262,8 +277,11 @@ def supervise(args):
     state = {
         "phase": "starting", "started_at": now(), "supervisor_pid": os.getpid(),
         "task": config.get("task", "g1"),
+        "task_profile": config.get("task_profile", "standard"),
         "run_dir": str(run_dir), "num_envs": args.num_envs, "target_iteration": args.iterations,
-        "start_iteration": 0, "fresh_initialization": True, "resume": None,
+        "start_iteration": 0, "fresh_initialization": not (args.warm_start or args.warm_start_velocity), "resume": None,
+        "warm_start": str(args.warm_start) if args.warm_start else None,
+        "warm_start_velocity": str(args.warm_start_velocity) if args.warm_start_velocity else None,
         "observation_mode": config.get("obs_mode", "relative_ori99"),
         "reset_noise": config.get("reset_noise", True),
         "milestones": args.milestones,
@@ -287,6 +305,10 @@ def supervise(args):
         "--ckpt_every", str(args.ckpt_every), "--stop_file", str(stop),
         *motion_arguments(vars(args)), "--log_dir", str(run_dir),
     ]
+    if args.warm_start:
+        command.extend(["--warm_start", str(args.warm_start.resolve())])
+    if args.warm_start_velocity:
+        command.extend(["--warm_start_velocity", str(args.warm_start_velocity.resolve())])
     save(run_dir / "commands.json", {
         "training": command, "preflight": str(args.preflight) if args.preflight else None,
         "render_seconds": args.render_seconds, "render_clips": args.render_clips,
@@ -294,8 +316,9 @@ def supervise(args):
     sources = [
         *SCRIPTS.glob("*.py"),
         *REPO.glob("source/trackerLab/trackerLab/**/supermimic/*.py"),
-        *REPO.glob("source/trackerLab/trackerLab/**/supermimic.py"),
-        *REPO.glob("source/trackerTask/trackerTask/supermimic/*.py"),
+        *REPO.glob("source/trackerLab/trackerLab/**/supermimic*.py"),
+        *REPO.glob("source/trackerTask/trackerTask/supermimic/**/*.py"),
+        *REPO.glob("source/trackerTask/trackerTask/supermimic/**/*.json"),
         *REPO.glob("source/**/__init__.py"),
         *REPO.glob("source/**/_supermimic_original_init.py"),
         *SCRIPTS.glob("configs/*.json"),
@@ -319,11 +342,32 @@ def supervise(args):
     except subprocess.CalledProcessError:
         base_commit = None
     save(run_dir / "initialization.json", {
-        "fresh": True, "start_iteration": 0, "seed": config.get("seed", 0), "resume": None,
+        "fresh": not (args.warm_start or args.warm_start_velocity), "start_iteration": 0,
+        "seed": config.get("seed", 0), "resume": None,
+        "warm_start": str(args.warm_start) if args.warm_start else None,
+        "warm_start_velocity": str(args.warm_start_velocity) if args.warm_start_velocity else None,
         "preflight_weights_loaded": False, "created_at": now(),
         "base_git_commit": base_commit,
     })
     env = runtime_environment()
+    if args.motion_config:
+        motion_config = load(args.motion_config)
+        data_root = (args.motion_config.resolve().parent / motion_config["root"]).resolve()
+        assetlib_root = run_dir.parents[2] / "data/assetslib"
+        go2_asset_dir = assetlib_root / "unitree/unitree_go2"
+        if not go2_asset_dir.exists():
+            go2_asset_dir = Path("/root/autodl-tmp/work/assetslib/unitree/unitree_go2")
+            assetlib_root = Path("/root/autodl-tmp/work/assetslib")
+        for key, value in (
+            ("SUPERMIMIC_GO2_ASSET_DIR", go2_asset_dir),
+            ("SUPERMIMIC_ASSETLIB_ROOT", assetlib_root),
+        ):
+            if not Path(value).exists() and key in os.environ:
+                continue
+            env.setdefault(key, str(value))
+        env.setdefault("SUPERMIMIC_REPO_ROOT", str(REPO))
+        env["SUPERMIMIC_MOTION_CONFIG"] = str(args.motion_config.resolve())
+        env["SUPERMIMIC_MOTION_ROOT"] = str(data_root)
     train_output = (run_dir / "stdout.log").open("w")
     gpu_output = (run_dir / "gpu.csv").open("w")
     child = subprocess.Popen(command, cwd=REPO, env=env, stdout=train_output, stderr=subprocess.STDOUT)
@@ -355,6 +399,7 @@ def supervise(args):
                         detected_error = "bounded-critic run exceeded divergence thresholds; preserving checkpoint"
                         stop.touch()
                     state["latest_metrics"] = latest
+                    state["completed_iteration"] = int(latest["iteration"])
                     # Early world-model-only timing cannot predict the later policy-update cost.
                     if latest["iteration"] > config.get("wm_only_iters", 500) + 50 and latest["it_per_s"] > 0:
                         duration = max(0, args.iterations - latest["iteration"]) / latest["it_per_s"]
@@ -421,6 +466,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run_dir", type=Path, required=True)
     parser.add_argument("--preflight", type=Path)
+    parser.add_argument("--warm_start", type=Path)
+    parser.add_argument("--warm_start_velocity", type=Path)
     parser.add_argument("--config", type=Path, default=SCRIPTS / "configs/lafan1_8096.json")
     parser.add_argument("--num_envs", type=int)
     parser.add_argument("--iterations", type=int)
@@ -450,6 +497,8 @@ def main():
         if any(i <= 0 or i > args.iterations or (i < args.iterations and i % args.ckpt_every)
                for i in args.milestones):
             parser.error("milestones must match saved checkpoint iterations within the training target")
+        if args.warm_start and args.warm_start_velocity:
+            parser.error("Choose only one of --warm_start and --warm_start_velocity")
         supervise(args)
 
 

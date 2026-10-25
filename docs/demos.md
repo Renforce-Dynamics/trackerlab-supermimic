@@ -1,6 +1,6 @@
 # Policy Demos
 
-Eight recorded simulation excerpts from the G1, Go2, A3 and T1 experiments,
+Recorded simulation excerpts from the G1, Go2, A3, T1 and Bumi experiments,
 refreshed on October 25, 2026. GIF previews loop at **1x speed**; their MP4
 versions preserve longer excerpts at 25 fps. All policies ran in
 **IsaacLab / PhysX**. MuJoCo renders the recorded poses.
@@ -102,6 +102,25 @@ RMSE **0.0652 m** and joint-position RMSE **0.0377 rad**. T1 completes its
 **32.68-second** dance evaluation; joint-position RMSE is **0.3171 rad** and
 root-position RMSE is **0.1284 m**. The T1 video shows the first 12 seconds.
 
+## Bumi
+
+Bumi's fresh 10,000-iteration policy uses 4,096 environments and the Noetix
+Bumi V3 vendor motion `2` (342 source frames, 50 Hz, 21 joints). The complete
+6.82-second clip scores **0.9372711**, with **0/1** failed clips. Joint-position
+RMSE is **0.08757 rad**, root-position RMSE **0.03188 m**, and root-velocity
+RMSE **0.12915 m/s**.
+
+| Vendor-motion tracking |
+| --- |
+| [![Bumi tracking the vendor motion](media/bumi_motion_010000.gif)](media/bumi_motion_010000.mp4?raw=true) |
+| [6.84-second MP4](media/bumi_motion_010000.mp4?raw=true) |
+
+The upstream robot-space motion is used with named-joint conversion, hard-limit
+projection for 28 elbow samples (maximum adjustment **0.33015 rad**), and body
+targets recomputed by the pinned MJCF. This is an evaluation on the one training
+clip; held-out motions and hardware performance are unmeasured. The simulation
+policy rollout is replayed as poses in MuJoCo for this video.
+
 ## Sources And Interpretation
 
 - G1: [G1-retargeted LAFAN1](https://huggingface.co/datasets/lvhaidong/LAFAN1_Retargeting_Dataset),
@@ -113,6 +132,8 @@ root-position RMSE is **0.1284 m**. The T1 video shows the first 12 seconds.
   20 public robot-space motions.
 - T1: [BoosterRobotics/booster_assets](https://github.com/BoosterRobotics/booster_assets),
   one public robot-space dance.
+- Bumi: [Noetix-Robotics/noetix_bumi_lab](https://github.com/Noetix-Robotics/noetix_bumi_lab),
+  one Bumi V3 robot-space motion.
 
 Pinned resource revisions and original attribution are in
 [resources.lock.json](../scripts/rls/supermimic/resources.lock.json) and

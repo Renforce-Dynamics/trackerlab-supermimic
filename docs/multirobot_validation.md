@@ -51,9 +51,13 @@ Pi+ uses four vendor CSV clips after named-column conversion; its model has 22
 moving joints although its filename says `pi_20dof.xml`.
 
 Fresh Bumi/Pi+ 10,000-iteration runs use the same shared learner and eight
-tracking rewards and run sequentially on the shared GPU. Their milestones
-will test whether the short source libraries are learnable; the 12-iteration
-preflights are pipeline checks only.
+tracking rewards and run sequentially on the shared GPU. Bumi completed 10,000
+iterations with normalized return **0.9372711**, **0/1** failed clips and
+**0.08757 rad** joint-position RMSE on its one 6.82-second source motion.
+Pi+'s 2,000-iteration evaluation scored **0.6541102**, **0/4** failed clips;
+its 10,000-iteration result is pending. The short source libraries
+limit generalization claims; the 12-iteration preflights are pipeline checks
+only.
 
 Existing Go2 selected policy remains iteration 10,000. The old Go2 follow-up
 was disabled. All previous Go2 models and the original stopped G1 model are

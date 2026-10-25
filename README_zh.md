@@ -17,10 +17,13 @@
 | [![Go2 小跑跟踪](docs/media/go2_trot_010000.gif)](docs/media/go2_trot_010000.mp4?raw=true) | [![Go2 按杆高选择通过动作](docs/media/go2_adaptive_010000.gif)](docs/media/go2_adaptive_010000.mp4?raw=true) |
 | **A3 交替出拳 · 10,000 轮** | **T1 舞蹈 · 10,000 轮** |
 | [![A3 交替出拳与参考动作](docs/media/a3_punch_010000.gif)](docs/media/a3_punch_010000.mp4?raw=true) | [![T1 舞蹈与参考动作](docs/media/t1_dance_010000.gif)](docs/media/t1_dance_010000.mp4?raw=true) |
+| **Bumi 厂商动作跟踪 · 10,000 轮** | |
+| [![Bumi 厂商动作跟踪](docs/media/bumi_motion_010000.gif)](docs/media/bumi_motion_010000.mp4?raw=true) | |
 
-[八段演示、G1 起身、A3 行走、分数与数据来源](docs/demos.md)。
+[九段演示、G1 起身、A3 行走、分数与数据来源](docs/demos.md)。
 完整训练动作库的平均归一化回报：G1 **0.8695**、Go2 小跑 **0.9273**、
-A3 **0.9845**、T1 **0.8703**。Go2 过杆在 16 次试验中完成 **157/173** 次尝试，
+A3 **0.9845**、T1 **0.8703**、Bumi **0.9373**。Bumi 评测覆盖一段 6.82 秒厂商动作；
+未测其他动作上的泛化。Go2 过杆在 16 次试验中完成 **157/173** 次尝试，
 时限结束时的 16 次未完成尝试计入失败。各任务的数据量、目标与训练历史各有差异。
 
 ## 实现范围

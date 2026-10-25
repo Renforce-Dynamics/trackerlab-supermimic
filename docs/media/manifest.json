@@ -8,7 +8,7 @@
   "gif_encoding": "480x270, 10 fps, 128-color palette, ordered dithering, infinite loop",
   "mp4_encoding": "960x540 to 1280x720, 25 fps, H.264, yuv420p, faststart",
   "evaluation_scope": "Simulation, training motion libraries and predefined obstacle trials",
-  "visual_review": "Five decoded GIF frames inspected for each of the eight previews",
+  "visual_review": "Five decoded GIF frames inspected for each original preview; seven GIF frames and eight source frames inspected for Bumi.",
   "runs": {
     "g1_032000": {
       "task": "tracking/g1",
@@ -1865,6 +1865,59 @@
           }
         }
       }
+    },
+    "bumi_010000": {
+      "task": "tracking/bumi",
+      "iteration": 10000,
+      "num_envs": 4096,
+      "data": "Noetix-Robotics/noetix_bumi_lab; one Bumi V3 vendor clip (2)",
+      "data_revision": "2454535c967cd1d6f04dfe0f0289f3c6c608e596",
+      "checkpoint_sha256": "6ff8d1d427ae65af69201448065087645f03843d3ccbb31e5a4c270b9121b323",
+      "source_evaluation_sha256": "849ec8fda1dd246f47ed93b861c312525075e288d38bed2146dc6635df97c4e2",
+      "source_data_manifest_sha256": "5c2aa2080f8fb5abb356c649e0aa92a92fd017ee69d74b74b7f73502671a1a75",
+      "norm_return": 0.9372711181640625,
+      "norm_return_framew": 0.9372711181640625,
+      "n_failed": 0,
+      "failed": [],
+      "reward_components": {
+        "action_smoothness": -0.0273122638463974,
+        "body_angular_velocity": 0.1849426031112671,
+        "body_linear_velocity": 0.19401615858078003,
+        "body_orientation": 0.18848510086536407,
+        "body_position": 0.19927752017974854,
+        "joint_limit_penalty": -1.3972638043924235e-05,
+        "root_orientation": 0.09899583458900452,
+        "root_position": 0.098879873752594
+      },
+      "per_motion": {
+        "2": {
+          "failed": false,
+          "frames": 341,
+          "normalized_return": 0.9372711181640625,
+          "reward_components": {
+            "action_smoothness": -0.0273122638463974,
+            "body_angular_velocity": 0.1849426031112671,
+            "body_linear_velocity": 0.19401615858078003,
+            "body_orientation": 0.18848510086536407,
+            "body_position": 0.19927752017974854,
+            "joint_limit_penalty": -1.3972638043924235e-05,
+            "root_orientation": 0.09899583458900452,
+            "root_position": 0.098879873752594
+          },
+          "reward_sum": 31.96094512939453,
+          "survival_normalized_return": 0.9372711181640625,
+          "survival_steps": 341,
+          "tracking": {
+            "joint_position_rmse_rad": 0.08756909101360726,
+            "mean_forward_speed_m_s": -0.007917260751128197,
+            "measured_seconds": 6.82,
+            "reference_forward_speed_m_s": 0.0015990319661796093,
+            "root_position_rmse_m": 0.03187634808246793,
+            "root_velocity_rmse_m_s": 0.12914911424550565,
+            "speed_axis": "world X; not heading-aligned"
+          }
+        }
+      }
     }
   },
   "previous_comparison": {
@@ -1879,6 +1932,12 @@
       "norm_return": 0.8099554801950256,
       "n_failed": 0,
       "source_evaluation_sha256": "854b3a06af3621da132648fddd0520b4384f2ec295034ba547312ffc462a685a"
+    },
+    "tracking/bumi": {
+      "iteration": 2000,
+      "norm_return": 0.90919656837441,
+      "n_failed": 0,
+      "source_evaluation_sha256": "2ec751c999debde97e4ce3e27a1b7976bb038ec4ed27adf8f8e10a5ca5b17bad"
     }
   },
   "clips": [
@@ -2201,6 +2260,69 @@
         "duration_seconds": 12.0,
         "failed": false,
         "observed_active_steps": 1634
+      }
+    },
+    {
+      "id": "bumi_motion_010000",
+      "title": "Bumi vendor motion tracking",
+      "run": "bumi_010000",
+      "motion_or_trial": "2",
+      "source_video_sha256": "4110674cbcb680f91b1217f78284f5f51cc916350d51b4e4bfdf7b1c4718ae32",
+      "source_render_metadata_sha256": "057327443e6db4864e64539d0de950dcba1ab2ff15a8ccb0ce22f9becd962fff",
+      "source_manifest_sha256": "5a96d32f8c7eabb18f963a6885ee3067db71f9c60950b920ce73525facaf9dd3",
+      "video_source_start_seconds": 0,
+      "gif_source_start_seconds": 0,
+      "playback_speed": 1.0,
+      "mp4": {
+        "sha256": "4110674cbcb680f91b1217f78284f5f51cc916350d51b4e4bfdf7b1c4718ae32",
+        "bytes": 1448786,
+        "frames": 171,
+        "fps": 25.0,
+        "duration_seconds": 6.84,
+        "width": 1280,
+        "height": 720,
+        "full_decode": "passed"
+      },
+      "gif": {
+        "sha256": "5c3878c5d3ddefec3f639db3bb7e3a523dea0b76dca62e5f408f3fa81e8dc817",
+        "bytes": 1836580,
+        "frames": 68,
+        "fps": 10,
+        "duration_seconds": 6.8,
+        "loop": 0,
+        "width": 480,
+        "height": 270,
+        "full_decode": "passed",
+        "pixel_motion_check": "passed"
+      },
+      "source_reference": {
+        "clip": "2",
+        "start_seconds": 0.0,
+        "duration_seconds": 6.84,
+        "failed": false,
+        "observed_active_steps": 341
+      },
+      "visual_review": {
+        "source_frame_indices": [
+          0,
+          24,
+          49,
+          73,
+          97,
+          121,
+          146,
+          170
+        ],
+        "gif_frame_indices": [
+          0,
+          10,
+          20,
+          30,
+          40,
+          50,
+          60
+        ],
+        "findings": "Both robots visible and upright through changing arm gestures; residual arm and root tracking differences remain."
       }
     }
   ]

@@ -47,6 +47,12 @@ _ENTRIES = (
     TaskEntry("tracking/t1", "t1", "t1",
               _HUMANOID + ".t1.env_cfg:SuperMimicT1TaskCfg",
               _preset("tracking/humanoid/robots/t1"), "data/configs/t1_dance.json"),
+    TaskEntry("tracking/bumi", "bumi", "bumi",
+              _HUMANOID + ".bumi.env_cfg:SuperMimicBumiTaskCfg",
+              _preset("tracking/humanoid/robots/bumi"), "data/configs/bumi_vendor.json"),
+    TaskEntry("tracking/pi_plus", "pi_plus", "pi_plus",
+              _HUMANOID + ".pi_plus.env_cfg:SuperMimicPiPlusTaskCfg",
+              _preset("tracking/humanoid/robots/pi_plus"), "data/configs/pi_plus_vendor.json"),
     TaskEntry("locomotion/go2/chase", "go2", "go2_chase_dodge",
               _LOCOMOTION + ".env_cfg:make_chase_cfg",
               "scripts/rls/supermimic/configs/go2_chase_dodge_8096.json", "data/configs/go2_kine2go.json"),
@@ -59,7 +65,8 @@ _ENTRIES = (
 )
 TASK_REGISTRY = {entry.id: entry for entry in _ENTRIES}
 ALIASES = {"g1": "tracking/g1", "go2": "tracking/go2", "a3": "tracking/a3",
-           "t1": "tracking/t1", "go2_chase_dodge": "locomotion/go2/chase",
+           "t1": "tracking/t1", "bumi": "tracking/bumi", "pi_plus": "tracking/pi_plus",
+           "pi+": "tracking/pi_plus", "go2_chase_dodge": "locomotion/go2/chase",
            "go2_velocity_dodge": "locomotion/go2/standard"}
 
 

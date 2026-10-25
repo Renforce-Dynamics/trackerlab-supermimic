@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "trackerlab-supermimic"
 version = "0.2.0"
-description = "TrackerLab's SuperMimic G1 and Go2 motion-tracking workflow on IsaacLab and PhysX"
+description = "TrackerLab's multi-robot SuperMimic motion-tracking workflow on IsaacLab and PhysX"
 readme = "README.md"
 requires-python = ">=3.11,<3.12"
 license = {file = "LICENSE"}

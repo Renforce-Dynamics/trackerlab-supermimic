@@ -59,7 +59,7 @@ def prepare_assets(directory: Path, verify_only: bool, task: str = "g1") -> dict
 def main():
     probe = argparse.ArgumentParser(add_help=False)
     probe.add_argument("--task", default="g1")
-    if probe.parse_known_args()[0].task in ("a3", "t1"):
+    if probe.parse_known_args()[0].task in ("a3", "t1", "bumi", "pi_plus"):
         from prepare_humanoids import main as prepare_humanoids
         return prepare_humanoids()
     parser = argparse.ArgumentParser(description=__doc__)

@@ -14,7 +14,7 @@ configure_paths()
 from isaaclab.app import AppLauncher
 
 parser = argparse.ArgumentParser(description=__doc__)
-parser.add_argument("--task", choices=("g1", "go2", "a3", "t1"), default="g1")
+parser.add_argument("--task", choices=("g1", "go2", "a3", "t1", "bumi", "pi_plus"), default="g1")
 parser.add_argument("--motion_dir", default=str(REPO / "data" / "retargeted" / "lafan1_g1"))
 parser.add_argument("--motion_config")
 parser.add_argument("--output", default=str(REPO / "logs" / "supermimic_smoke" / "smoke.json"))

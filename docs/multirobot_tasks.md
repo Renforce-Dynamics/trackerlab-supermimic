@@ -13,6 +13,8 @@ supermimic/
       g1/{robot.py,env_cfg.py}
       a3/{robot.py,env_cfg.py,agents/supermimic.json}
       t1/{robot.py,env_cfg.py,agents/supermimic.json}
+      bumi/{robot.py,env_cfg.py,agents/supermimic.json}
+      pi_plus/{robot.py,env_cfg.py,agents/supermimic.json}
     quadruped/robots/go2/{robot.py,env_cfg.py}
   locomotion/robots/go2/{env_cfg.py,chase_cfg.py,velocity_cfg.py}
 ```
@@ -36,11 +38,11 @@ python scripts/rls/supermimic/tasks.py supervise --task tracking/t1 \
   --run_dir logs/t1_4096_10k --milestones 2000 10000
 ```
 
-Launch the two supervisors as separate processes for concurrent training.
-Each preset has 4,096 environments and 10,000 iterations. The first 500
-iterations fit the world model; subsequent iterations update the policy too.
-Available GPU memory depends on other jobs and model compilation. Override
-`--num_envs` after a preflight on the target GPU.
+Run the supervisors sequentially when sharing one GPU. Each preset has 4,096
+environments and 10,000 iterations. The first 500 iterations fit the world
+model; subsequent iterations update the policy too. Available GPU memory
+depends on other jobs and model compilation. Override `--num_envs` after a
+preflight on the target GPU.
 
 ## Data And Actuation
 
@@ -50,6 +52,8 @@ Available GPU memory depends on other jobs and model compilation. Override
 | Go2 | Kine2Go | Retargeted trot, 60 Hz | 12 joints |
 | A3 | AgibotTech/sonic_for_a3 | 20 SOMA example CSVs, 120 Hz | A3 serial rigid-foot model, 29 controlled joints; two zero head joints fixed |
 | T1 | BoosterRobotics/booster_assets | t1_dance.csv, 1,635 frames, 50 Hz | T1 23 joints |
+| Bumi | Noetix-Robotics/noetix_bumi_lab | Vendor `2.npz`, 342 frames, 50 Hz | Bumi V3, 21 joints |
+| Pi+ | HighTorque-Robotics/Mini-Pi-Plus_BeyondMimic | Four named CSVs, 1,124 frames, 30 Hz | Pi Plus, 22 joints including both wrists |
 
 Revisions are fixed in `resources.lock.json`. A3 root translation is converted
 from centimetres to metres, joint/Euler angles from degrees to radians, and
@@ -69,7 +73,7 @@ damping ratio 2, with `kp = armature * (20*pi)^2` and
 `kd = 4 * armature * 20*pi`. These are not claimed as vendor tuning.
 Both use action scale `0.25 * effort_limit / kp`.
 
-All eight existing tracking reward terms are used. The A3/T1 presets keep the
+All eight existing tracking reward terms are used. The humanoid presets keep the
 humanoid runner's unbounded critic and actor, with no transfer from Go2.
 Performance on new robots needs measured evaluation and is not implied by
 successful model import. Full-clip failures, reward contributions and joint/root
@@ -81,6 +85,57 @@ the source and converted hashes. Isaac Sim's MJCF importer generates USD on
 first use. Imported PhysX link poses must pass the MuJoCo/Torch FK smoke check.
 Resource licenses are retained under each robot's `licenses` directory.
 
+## Bumi And Pi Plus
+
+These tasks use the same MotionLib, replay buffer, world model, actor, reward
+and evaluation modules as A3/T1. Their presets also use 4,096 environments,
+10,000 iterations and 500 world-model-only warmup iterations:
+
+```bash
+python scripts/rls/supermimic/tasks.py prepare --task tracking/bumi
+python scripts/rls/supermimic/tasks.py prepare --task tracking/pi_plus
+python scripts/rls/supermimic/tasks.py smoke --task tracking/bumi
+python scripts/rls/supermimic/tasks.py smoke --task tracking/pi_plus
+python scripts/rls/supermimic/tasks.py supervise --task tracking/bumi \
+  --run_dir logs/bumi_4096_10k --milestones 2000 10000 --render_clips 2
+python scripts/rls/supermimic/tasks.py supervise --task tracking/pi_plus \
+  --run_dir logs/pi_plus_4096_10k --milestones 2000 10000 \
+  --render_clips pi_plus_dance1_subject2 pi_plus_kungfu pi_plus_right_big_kick_cut
+```
+
+Bumi uses the vendor's joint ordering declared in `BUMI_21DOF_NAMES`, converts
+root WXYZ to XYZW, and projects source joint angles to the current model's
+hard limits. In the pinned clip, 28 joint samples require changes larger than
+1e-6 rad; the largest correction is 0.3301535 rad at the right elbow.
+The original NPZ remains unchanged. Each conversion manifest records the
+source hash and corrections per joint. Corrections above 0.5 rad abort.
+
+The vendor NPZ's cached body poses differ from its current model by up to
+0.05484 m, although joint names and root conventions agree. Those cached body
+poses and velocities are discarded. MotionLib reconstructs all body targets
+and velocities from the converted root/joint trajectory and the current MJCF.
+This is a processed vendor reference, with one 6.82-second clip; it is not a
+claim of exact tracking against the old cached geometry or broad motion
+coverage. An investigated community Bumi LAFAN1 dataset also had a shoulder
+geometry mismatch and is excluded from this preset.
+
+Bumi gains and limits follow the pinned vendor `bumi.py`. This implementation
+uses the shared implicit-PD actuator without the vendor's random actuator
+delay or enabled self-collision. Pi+ gains, limits and armatures follow its
+vendor configuration. The filename `pi_20dof.xml` contains 22 moving joints;
+the two wrists remain controlled, and named CSV fields define the order.
+Its four references are dance, goal, kungfu and a short right kick.
+
+The Noetix source checkout includes its BSD 3-Clause `LICENSE.txt`. The Pi+
+source README displays an MIT badge, while the pinned tree has no top-level
+license file; its robot asset and motion redistribution terms need upstream
+confirmation. The resource downloader records source notices when present.
+
+These are SuperMimic experiments using vendor assets and robot-space motions;
+they do not reproduce the vendors' PPO/BeyondMimic training algorithms.
+Model conversion merges repeated MJCF scene sections before removing ground
+and lights, retaining one floating robot articulation.
+
 ## Existing TrackerLab
 
 `scripts/install_trackerlab.py --trackerlab /path/to/trackerLab --apply`
@@ -88,8 +143,8 @@ copies the nested tasks, presets, shared extensions and command scripts.
 Existing host exports are preserved by the installer's lazy imports.
 Run the same task commands from the host checkout after installation.
 Resources are fetched separately, or set `SUPERMIMIC_ASSETLIB_ROOT` to a
-prepared shared asset directory. New A3/T1 assets use `agibot/a3` and
-`booster/t1` below that root.
+prepared shared asset directory. Asset paths below that root are `agibot/a3`,
+`booster/t1`, `noetix/bumi` and `hightorque/pi_plus`.
 
 To add another robot, define its named joint/body contract and articulation,
 add an environment configuration and agent preset under the appropriate

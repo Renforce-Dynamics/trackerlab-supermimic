@@ -1,4 +1,4 @@
-"""Pinned A3/T1 assets and reference motions for the shared TrackerLab pipeline."""
+"""Pinned humanoid assets and reference motions for the shared TrackerLab pipeline."""
 
 from __future__ import annotations
 
@@ -45,12 +45,21 @@ def checkout(source, cfg, offline):
         git(source, "remote", "add", "origin", cfg["repository"])
         git(source, "sparse-checkout", "init", "--cone")
         git(source, "sparse-checkout", "set", *cfg["sparse_paths"])
-        git(source, "fetch", "--depth", "1", "origin", cfg["revision"])
+        git(source, "fetch", "--filter=blob:none", "--depth", "1", "origin", cfg["revision"])
         git(source, "checkout", "--quiet", "--detach", cfg["revision"])
     if git(source, "rev-parse", "HEAD") != cfg["revision"]:
         raise ValueError("Resource checkout revision differs from resources.lock.json")
     if git(source, "status", "--porcelain", "--untracked-files=no"):
         raise ValueError("Resource checkout contains tracked modifications")
+    if cfg.get("lfs_include") and not offline:
+        pointers = []
+        for path in source.glob(cfg["lfs_include"]):
+            if path.is_file():
+                with path.open("rb") as stream:
+                    if stream.read(128).startswith(b"version https://git-lfs"):
+                        pointers.append(path)
+        if pointers:
+            git(source, "lfs", "pull", "--include=" + cfg["lfs_include"], "--exclude=")
 
 
 def convert_a3(path, joints):
@@ -77,6 +86,37 @@ def convert_a3(path, joints):
                             np.deg2rad(values[:, 7:7 + len(joints)])))
 
 
+def convert_pi_plus(path, joints):
+    with Path(path).open(newline="", encoding="utf-8-sig") as stream:
+        reader = csv.DictReader(stream)
+        fields = ["root pos x", "root pos y", "root pos z",
+                  "root rot x", "root rot y", "root rot z", "root rot w",
+                  *(name.removesuffix("_joint") for name in joints)]
+        if (reader.fieldnames is None or len(reader.fieldnames) != len(set(reader.fieldnames))
+                or set(reader.fieldnames) != set(fields)):
+            raise ValueError("Pi Plus CSV columns differ from its 22-joint contract")
+        return np.array([[float(row[key]) for key in fields] for row in reader], dtype=np.float64)
+
+
+def convert_bumi(path, joints, source_fps, source_joints):
+    # The pinned vendor NPZ stores Isaac Lab joint order and WXYZ body rotations.
+    order = list(source_joints)
+    if len(order) != len(joints) or set(order) != set(joints):
+        raise ValueError("Bumi source joint names differ from the robot contract")
+    with np.load(path, allow_pickle=False) as payload:
+        if payload["fps"].shape != (1,) or payload["fps"][0] != source_fps:
+            raise ValueError("Bumi source frame rate differs from the locked dataset")
+        position = np.asarray(payload["body_pos_w"], dtype=np.float64)
+        quaternion = np.asarray(payload["body_quat_w"], dtype=np.float64)
+        angles = np.asarray(payload["joint_pos"], dtype=np.float64)
+    n, bodies = len(angles), len(joints) + 1
+    if (position.shape != (n, bodies, 3) or quaternion.shape != (n, bodies, 4)
+            or angles.shape != (n, len(joints))):
+        raise ValueError("Bumi root/joint array shapes differ from the robot contract")
+    return np.column_stack((position[:, 0], quaternion[:, 0, [1, 2, 3, 0]],
+                            angles[:, [order.index(name) for name in joints]]))
+
+
 def validate_motion(values, joints):
     if values.ndim != 2 or values.shape[1] != 7 + len(joints) or len(values) < 3:
         raise ValueError("Motion shape differs from the robot contract")
@@ -88,6 +128,26 @@ def validate_motion(values, joints):
         raise ValueError("Root height is outside the expected metre range")
 
 
+def project_joint_limits(values, model_path, joints):
+    model = ET.parse(model_path).getroot()
+    ranges = {joint.get("name"): np.fromstring(joint.get("range"), sep=" ")
+              for joint in model.iter("joint") if joint.get("range")}
+    limits = np.array([ranges[name] for name in joints])
+    projected = values.copy()
+    projected[:, 7:] = np.clip(values[:, 7:], limits[:, 0], limits[:, 1])
+    correction = np.abs(projected[:, 7:] - values[:, 7:])
+    if correction.max() > .5:
+        raise ValueError("Reference exceeds the configured joint range by more than 0.5 radians")
+    return projected, {
+        "method": "project robot-space joint angles to current MJCF hard limits",
+        "modified_joint_samples": int(np.count_nonzero(correction > 1e-6)),
+        "max_correction_rad": float(correction.max()),
+        "per_joint_max_correction_rad": {
+            name: float(delta) for name, delta in zip(joints, correction.max(axis=0)) if delta > 1e-6
+        },
+    }
+
+
 def prepare_model(source, target, cfg, robot):
     tree = ET.parse(source / cfg["model"])
     root = tree.getroot()
@@ -97,6 +157,12 @@ def prepare_model(source, target, cfg, robot):
     compiler.set("angle", "radian")
     for section in ("actuator", "sensor", "keyframe", "equality", "contact", "visual", "statistic"):
         for node in root.findall(section):
+            root.remove(node)
+    # MJCF permits repeated sections; vendor scenes may append another worldbody.
+    for section in ("worldbody", "asset"):
+        nodes = root.findall(section)
+        for node in nodes[1:]:
+            nodes[0].extend(list(node))
             root.remove(node)
     world = root.find("worldbody")
     for node in list(world):
@@ -168,35 +234,61 @@ def prepare(args):
         if (config["version"] != 1 or config["quaternion_order"] != "xyzw"
                 or config["source_fps"] != cfg["source_fps"]
                 or config["files"] != list(result["clips"])
-                or result["revision"] != cfg["revision"]):
+                or result["revision"] != cfg.get("motion_dataset", cfg)["revision"]
+                or result.get("asset_revision", cfg["revision"]) != cfg["revision"]):
             raise ValueError("Motion configuration or provenance differs from the locked source")
         return result
     source = (args.source_dir or REPO / "data/raw" / args.task).resolve()
     checkout(source, cfg, args.offline)
     spec = get_robot(args.task)
     prepare_model(source, asset, cfg, args.task)
-    paths = sorted((source / cfg["motions"]).glob("*.csv"))
+    paths = sorted((source / cfg["motions"]).glob("*.npz" if args.task == "bumi" else "*.csv"))
     if not paths:
-        raise ValueError("Source dataset contains no CSV motions")
+        raise ValueError("Source dataset contains no supported motions")
     output.mkdir(parents=True, exist_ok=True)
     records = {}
     for path in paths:
-        values = (convert_a3(path, spec.joint_names) if args.task == "a3"
-                  else np.loadtxt(path, delimiter=",", ndmin=2))
+        if args.task == "a3":
+            values = convert_a3(path, spec.joint_names)
+        elif args.task == "pi_plus":
+            values = convert_pi_plus(path, spec.joint_names)
+        elif args.task == "bumi":
+            values = convert_bumi(path, spec.joint_names, cfg["source_fps"], cfg["source_joint_names"])
+        else:
+            values = np.loadtxt(path, delimiter=",", ndmin=2)
         validate_motion(values, spec.joint_names)
-        np.savetxt(output / path.name, values, delimiter=",", fmt="%.9g")
-        records[path.name] = {"frames": len(values), "duration_s": (len(values) - 1) / cfg["source_fps"],
-                              "source_sha256": digest(path), "sha256": digest(output / path.name)}
+        adaptation = {}
+        if cfg.get("project_joint_limits"):
+            values, adaptation = project_joint_limits(
+                values, asset / "mjcf" / f"{args.task}.xml", spec.joint_names)
+        filename = path.stem + ".csv"
+        np.savetxt(output / filename, values, delimiter=",", fmt="%.9g")
+        records[filename] = {"frames": len(values), "duration_s": (len(values) - 1) / cfg["source_fps"],
+                             "source_sha256": digest(path), "sha256": digest(output / filename)}
+        if adaptation:
+            records[filename]["adaptation"] = adaptation
+    dataset = cfg.get("motion_dataset", cfg)
+    provenance = cfg["repository"]
+    conversion = {
+        "a3": "centimetres/degrees -> metres/radians; scipy xyz Euler -> xyzw; heads fixed",
+        "t1": "preserve vendor metres/radians/xyzw and named joint order",
+        "bumi": "vendor Isaac Lab joint order -> named robot contract; root WXYZ -> XYZW; "
+                "project out-of-range joints to current MJCF limits; body targets recomputed from current model",
+        "pi_plus": "named CSV columns; all 22 joints including both wrists; metres/radians/xyzw preserved",
+    }[args.task]
     manifest = {
-        "source": cfg["repository"], "dataset": cfg["repository"].removesuffix(".git"),
-        "revision": cfg["revision"], "robot": args.task, "source_fps": cfg["source_fps"],
+        "source": provenance, "dataset": dataset["repository"].removesuffix(".git"),
+        "revision": dataset["revision"], "asset_revision": cfg["revision"],
+        "robot": args.task, "source_fps": cfg["source_fps"],
         "control_fps": 50, "motion_count": len(paths),
         "total_frames": sum(r["frames"] for r in records.values()),
         "retargeting": "Robot-space motions supplied by upstream; no local human retarget optimization",
-        "conversion": ("centimetres/degrees -> metres/radians; scipy xyz Euler -> xyzw; heads fixed"
-                       if args.task == "a3" else "preserve vendor metres/radians/xyzw and named joint order"),
+        "body_targets": "Source cached body poses/velocities are discarded; MotionLib recomputes FK using the pinned MJCF",
+        "conversion": conversion,
+        "motion_license": dataset.get("license", "See upstream repository and preserved notices"),
         "joint_names": spec.joint_names, "clips": records,
-        "sha256": {name: info["sha256"] for name, info in records.items()},
+        "sha256": {p.name: digest(p) for p in output.iterdir()
+                   if p.is_file() and (p.name in records or p.name.startswith("SOURCE_"))},
     }
     save(output / "manifest.json", manifest)
     save(motion_config, {
@@ -209,7 +301,7 @@ def prepare(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--task", choices=("a3", "t1"), required=True)
+    parser.add_argument("--task", choices=("a3", "t1", "bumi", "pi_plus"), required=True)
     parser.add_argument("--source_dir", type=Path)
     parser.add_argument("--asset_root", type=Path, default=Path(
         os.environ.get("SUPERMIMIC_ASSETLIB_ROOT", REPO / "data/assetslib")))

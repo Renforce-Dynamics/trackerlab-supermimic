@@ -43,13 +43,14 @@ class RobotSpec:
         if self.name == "go2":
             from .go2_robot import make_go2_cfg
             return make_go2_cfg()
-        if self.name in ("a3", "t1"):
+        if self.name in ("a3", "t1", "bumi", "pi_plus"):
             module = import_module(f".tracking.humanoid.robots.{self.name}.robot", __package__)
             return module.make_cfg()
         raise ValueError(f"Unknown robot {self.name}")
 
 
-TASKS = ("g1", "go2", "a3", "t1", "go2_chase_dodge", "go2_velocity_dodge")
+TRACKING_TASKS = ("g1", "go2", "a3", "t1", "bumi", "pi_plus")
+TASKS = (*TRACKING_TASKS, "go2_chase_dodge", "go2_velocity_dodge")
 
 
 def get_robot(name="g1"):
@@ -64,7 +65,10 @@ def get_robot(name="g1"):
         return RobotSpec(name, tuple(GO2_JOINT_NAMES), tuple(TRACKED_BODIES),
                          "base", "base", MJCF_PATH, tuple(DEFAULT_Q), (0.25,) * 12)
     module = import_module(f".tracking.humanoid.robots.{name}.robot", __package__)
-    root, com = ("pelvis_link", "torso_Link") if name == "a3" else ("trunk", "trunk")
+    root, com = {
+        "a3": ("pelvis_link", "torso_Link"), "t1": ("trunk", "trunk"),
+        "bumi": ("base_link", "waist_yaw_link"), "pi_plus": ("base_link", "base_link"),
+    }[name]
     return RobotSpec(name, module.JOINT_NAMES, module.TRACKED_BODIES, root, com,
                      module.MJCF_PATH, module.DEFAULT_Q, module.ACTION_SCALE)
 

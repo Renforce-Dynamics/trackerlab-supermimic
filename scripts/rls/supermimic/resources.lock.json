@@ -69,6 +69,37 @@
     "data_name": "t1_dance",
     "fixed_joints": []
   },
+  "bumi": {
+    "repository": "https://github.com/Noetix-Robotics/noetix_bumi_lab.git",
+    "revision": "2454535c967cd1d6f04dfe0f0289f3c6c608e596",
+    "sparse_paths": ["LICENSE.txt", "source/NoetixBumi/NoetixBumi/assets/robots/bumi", "source/NoetixBumi/NoetixBumi/assets/datasets/mimic_data/bumi", "scripts/motion"],
+    "model": "source/NoetixBumi/NoetixBumi/assets/robots/bumi/bumi.xml",
+    "motions": "source/NoetixBumi/NoetixBumi/assets/datasets/mimic_data/bumi",
+    "source_fps": 50,
+    "vendor": "noetix",
+    "data_name": "bumi_vendor",
+    "fixed_joints": [],
+    "project_joint_limits": true,
+    "source_joint_names": [
+      "l_leg_pitch_joint", "r_leg_pitch_joint", "waist_yaw_joint",
+      "l_leg_roll_joint", "r_leg_roll_joint", "l_arm_pitch_joint", "r_arm_pitch_joint",
+      "l_leg_yaw_joint", "r_leg_yaw_joint", "l_arm_roll_joint", "r_arm_roll_joint",
+      "l_knee_pitch_joint", "r_knee_pitch_joint", "l_arm_yaw_joint", "r_arm_yaw_joint",
+      "l_ankle_pitch_joint", "r_ankle_pitch_joint", "l_elbow_pitch_joint",
+      "r_elbow_pitch_joint", "l_ankle_roll_joint", "r_ankle_roll_joint"
+    ]
+  },
+  "pi_plus": {
+    "repository": "https://github.com/HighTorque-Robotics/Mini-Pi-Plus_BeyondMimic.git",
+    "revision": "df3fcf16bf2cf645b8e3c24ee1e395d453f78f80",
+    "sparse_paths": ["source/whole_body_tracking/whole_body_tracking/assets/hightorque/pi_plus", "source/whole_body_tracking/whole_body_tracking/robots", "source/motion/hightorque/pi_plus/csv", "scripts"],
+    "model": "source/whole_body_tracking/whole_body_tracking/assets/hightorque/pi_plus/mjcf/pi_20dof.xml",
+    "motions": "source/motion/hightorque/pi_plus/csv",
+    "source_fps": 30,
+    "vendor": "hightorque",
+    "data_name": "pi_plus_vendor",
+    "fixed_joints": []
+  },
   "adaptation": {
     "repository": "https://github.com/zita-ch/supermimic_vibed",
     "revision": "a1508d42c9d1699a52e8233ab16d08c488441ab9",

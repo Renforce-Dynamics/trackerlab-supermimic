@@ -93,6 +93,8 @@ def main():
     reference_label = {
         "g1": "G1 LAFAN1 motion", "a3": "A3 public SOMA reference",
         "t1": "T1 Booster dance reference",
+        "bumi": "Bumi V3 LAFAN1 GMR reference",
+        "pi_plus": "Pi Plus vendor GMR reference",
         "go2": ("Go2 Kine2Go retarget" if provenance.get("dataset") == "MIMUW-Robotics/kine2go"
                 else "Go2 reference motion"),
     }[spec.name]
@@ -118,6 +120,10 @@ def main():
     camera.distance, camera.azimuth, camera.elevation = 2.7, 135, -15
     if spec.name == "go2":
         camera.distance, camera.azimuth, camera.elevation = 1.5, 135, -20
+    elif spec.name == "pi_plus":
+        camera.distance = 1.7
+    elif spec.name == "bumi":
+        camera.distance = 2.2
     args.output.parent.mkdir(parents=True, exist_ok=True)
     ffmpeg = subprocess.Popen([
         imageio_ffmpeg.get_ffmpeg_exe(), "-y", "-loglevel", "error",

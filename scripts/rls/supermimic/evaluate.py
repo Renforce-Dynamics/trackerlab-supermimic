@@ -25,7 +25,7 @@ configure_paths()
 from isaaclab.app import AppLauncher
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--task", choices=("g1", "go2", "a3", "t1"), default=None,
+parser.add_argument("--task", choices=("g1", "go2", "a3", "t1", "bumi", "pi_plus"), default=None,
                     help="Optional assertion; robot is inferred from checkpoint arguments")
 parser.add_argument("--run_dir", type=str, required=True)
 parser.add_argument("--watch", action="store_true")

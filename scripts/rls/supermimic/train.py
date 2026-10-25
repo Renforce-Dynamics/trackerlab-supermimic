@@ -80,7 +80,7 @@ args = parser.parse_args()
 args.obs_mode = args.obs_mode or ("relative_ori99" if args.task == "g1" else "relative_orientation")
 args.com_offset_range = args.com_offset_range or (
     (0.025, 0.05, 0.05) if args.task in ("g1", "a3") else
-    (0.01, 0.02, 0.02) if args.task == "t1" else (0.01, 0.01, 0.01))
+    (0.01, 0.02, 0.02) if args.task in ("t1", "bumi") else (0.01, 0.01, 0.01))
 if args.action_limit is not None and (not math.isfinite(args.action_limit) or not 0 < args.action_limit <= 20):
     parser.error("--action_limit must be finite, positive and at most the simulator limit of 20")
 if args.task != "g1" and not args.motion_config:

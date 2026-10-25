@@ -2,7 +2,7 @@
 
 [中文说明](README_zh.md)
 
-A focused implementation of TrackerLab's **G1, Go2, A3 and T1 motion-tracking workflow**,
+A focused implementation of TrackerLab's **G1, Go2, A3, T1, Bumi and Pi+ motion-tracking workflow**,
 with one source tree for standalone use and installation into an existing
 TrackerLab checkout:
 
@@ -21,12 +21,14 @@ right; Go2 bar passage shows the task policy. Click a preview for its MP4.
 | [![G1 dance beside its motion reference](docs/media/g1_dance_032000.gif)](docs/media/g1_dance_032000.mp4?raw=true) | [![G1 repeated jumps beside its motion reference](docs/media/g1_jump_032000.gif)](docs/media/g1_jump_032000.mp4?raw=true) |
 | **Go2 trot tracking / 10,000 iterations** | **Go2 mixed-height bar passage / 10,000 task iterations** |
 | [![Go2 tracking a retargeted trot](docs/media/go2_trot_010000.gif)](docs/media/go2_trot_010000.mp4?raw=true) | [![Go2 choosing passage maneuvers for moving bars](docs/media/go2_adaptive_010000.gif)](docs/media/go2_adaptive_010000.mp4?raw=true) |
-| **A3 alternating punches / 4,000 iterations** | **T1 dance / 4,000 iterations** |
-| [![A3 alternating punches beside its motion reference](docs/media/a3_punch_004000.gif)](docs/media/a3_punch_004000.mp4?raw=true) | [![T1 dance beside its motion reference](docs/media/t1_dance_004000.gif)](docs/media/t1_dance_004000.mp4?raw=true) |
+| **A3 alternating punches / 10,000 iterations** | **T1 dance / 10,000 iterations** |
+| [![A3 alternating punches beside its motion reference](docs/media/a3_punch_010000.gif)](docs/media/a3_punch_010000.mp4?raw=true) | [![T1 dance beside its motion reference](docs/media/t1_dance_010000.gif)](docs/media/t1_dance_010000.mp4?raw=true) |
 
 [All eight demos, G1 get-up, A3 walking, scores and data sources](docs/demos.md).
 These are selected simulation excerpts. Full-library returns are G1 **0.8695**,
-Go2 trot **0.9273**, A3 **0.9764** and T1 **0.8401**. Go2 bar passage succeeds in
+Go2 trot **0.9273**, A3 **0.9845** and T1 **0.8703** at 10,000 iterations.
+A3 completes **20/20** source motions and T1 completes its one dance clip.
+Go2 bar passage succeeds in
 **157/173 attempts** across 16 trials; the 16 unfinished end-of-horizon attempts
 count as failures. Motion libraries, tasks and iteration histories differ.
 
@@ -81,7 +83,8 @@ Evaluation reports actual passage behavior and success for each height group.
 
 **Multiple robot tasks:** `tasks.py list` discovers tracking and locomotion
 tasks by category and robot. A3 uses the public SONIC A3 motions; T1 uses
-Booster's public dance clip. Each has a robot definition, environment config,
+Booster's public dance clip. Bumi and Pi+ use pinned vendor robot-space motions.
+Each has a robot definition, environment config,
 agent preset and reproducible data converter.
 [Task layout, data provenance and commands](docs/multirobot_tasks.md).
 

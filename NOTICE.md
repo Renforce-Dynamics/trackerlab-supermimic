@@ -65,3 +65,23 @@ to TrackerLab CSVs. The optional procedural IK generator remains available.
 
 The downloader stores the dataset README, repository license and source robot
 URDF beside the CSVs. Resampling is performed in memory for simulation.
+
+## Additional Humanoid Resources
+
+- Bumi: https://github.com/Noetix-Robotics/noetix_bumi_lab,
+  revision `2454535c967cd1d6f04dfe0f0289f3c6c608e596`.
+  Its `bumi.py` identifies Beijing Noetix Robotics TECHNOLOGY CO.,LTD.,
+  copyright 2025-2026, under a BSD 3-Clause header. The external checkout
+  supplies the Bumi V3 MJCF/meshes, actuation parameters and `2.npz` reference.
+  The converter records elbow limit projection and recomputes body targets;
+  it does not reuse the older cached body geometry.
+- Pi+: https://github.com/HighTorque-Robotics/Mini-Pi-Plus_BeyondMimic,
+  revision `df3fcf16bf2cf645b8e3c24ee1e395d453f78f80`.
+  The external checkout supplies Pi Plus assets, actuation settings and four
+  robot-space CSV motions. Its README displays an MIT badge, while no top-level
+  license file is present at the pinned revision. All 22 moving joints,
+  including wrists, are retained. Review upstream terms before redistribution.
+
+These assets and motions are downloaded separately and remain subject to
+their upstream terms. This repository's MIT code license does not relicense
+external datasets or robot assets. The shared learner remains SuperMimic.

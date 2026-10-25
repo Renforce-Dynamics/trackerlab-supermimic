@@ -1,7 +1,7 @@
 # Policy Demos
 
 Eight recorded simulation excerpts from the G1, Go2, A3 and T1 experiments,
-published on October 25, 2026. GIF previews loop at **1x speed**; their MP4
+refreshed on October 25, 2026. GIF previews loop at **1x speed**; their MP4
 versions preserve longer excerpts at 25 fps. All policies ran in
 **IsaacLab / PhysX**. MuJoCo renders the recorded poses.
 
@@ -73,31 +73,34 @@ Velocity error remains substantial.
 
 ## A3 And T1
 
-Both snapshots are **4,000 iterations**, trained from random initialization
+Both snapshots are **10,000 iterations**, trained from random initialization
 with **4,096 environments each**. They share the motion pipeline and learner,
 with robot-specific models, joint layouts and task configurations.
 
 | A3 alternating punches | T1 dance |
 | --- | --- |
-| [![A3 alternating punches](media/a3_punch_004000.gif)](media/a3_punch_004000.mp4?raw=true) | [![T1 dance](media/t1_dance_004000.gif)](media/t1_dance_004000.mp4?raw=true) |
-| [12-second MP4](media/a3_punch_004000.mp4?raw=true) | [12-second MP4](media/t1_dance_004000.mp4?raw=true) |
+| [![A3 alternating punches](media/a3_punch_010000.gif)](media/a3_punch_010000.mp4?raw=true) | [![T1 dance](media/t1_dance_010000.gif)](media/t1_dance_010000.mp4?raw=true) |
+| [12-second MP4](media/a3_punch_010000.mp4?raw=true) | [12-second MP4](media/t1_dance_010000.mp4?raw=true) |
 
 **A3 walking**
 
-[![A3 walking](media/a3_walk_004000.gif)](media/a3_walk_004000.mp4?raw=true)
+[![A3 walking](media/a3_walk_010000.gif)](media/a3_walk_010000.mp4?raw=true)
 
-[12-second MP4](media/a3_walk_004000.mp4?raw=true).
+[12-second MP4](media/a3_walk_010000.mp4?raw=true).
+
+These excerpts use fresh 10,000-iteration checkpoints with 4,096 environments.
 
 | Training-library evaluation | A3 | T1 |
 | --- | ---: | ---: |
 | Full-clip macro return at iteration 2,000 | 0.9003 | 0.8100 |
 | Full-clip macro return at iteration 4,000 | 0.9764199 | 0.8401361 |
-| Failed clips at iteration 4,000 | 0/20 | 0/1 |
+| Full-clip macro return at iteration 10,000 | 0.9844662 | 0.8702665 |
+| Failed clips at iteration 10,000 | 0/20 | 0/1 |
 
-A3's previously failed side-lunge clip completes at iteration 4,000.
-The walking clip's root-position RMSE is **0.1819 m**. T1 completes its
-**32.68-second** dance evaluation, while joint-position RMSE is **0.3353 rad**;
-the video shows the first 12 seconds.
+A3 completes all 20 clips. At iteration 10,000, its walking clip has root-position
+RMSE **0.0652 m** and joint-position RMSE **0.0377 rad**. T1 completes its
+**32.68-second** dance evaluation; joint-position RMSE is **0.3171 rad** and
+root-position RMSE is **0.1284 m**. The T1 video shows the first 12 seconds.
 
 ## Sources And Interpretation
 

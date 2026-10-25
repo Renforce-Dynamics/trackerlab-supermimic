@@ -8,7 +8,7 @@
   "gif_encoding": "480x270, 10 fps, 128-color palette, ordered dithering, infinite loop",
   "mp4_encoding": "960x540 to 1280x720, 25 fps, H.264, yuv420p, faststart",
   "evaluation_scope": "Simulation, training motion libraries and predefined obstacle trials",
-  "visual_review": "Five decoded GIF frames inspected for each original preview; seven GIF frames and eight source frames inspected for Bumi.",
+  "visual_review": "Sampled frames reviewed for existing G1/Go2/A3/T1/Bumi previews; Pi+ adds five-frame sheets for dance, kungfu and short right kick.",
   "runs": {
     "g1_032000": {
       "task": "tracking/g1",
@@ -1918,6 +1918,139 @@
           }
         }
       }
+    },
+    "pi_plus_010000": {
+      "task": "tracking/pi_plus",
+      "iteration": 10000,
+      "num_envs": 4096,
+      "data": "HighTorque-Robotics/Mini-Pi-Plus_BeyondMimic; four vendor motions",
+      "data_revision": "df3fcf16bf2cf645b8e3c24ee1e395d453f78f80",
+      "checkpoint_sha256": "85adf4f68b825f79f0421803fd0f4b147f7251bdb30450297891ae106c06e622",
+      "source_evaluation_sha256": "a737cf0b9ad41b929257b6aedcfe6300cad68fe7661f3a3d57c728b3c8e44001",
+      "norm_return": 0.8407056643148365,
+      "norm_return_framew": 0.8140474525934119,
+      "n_failed": 0,
+      "failed": [],
+      "reward_components": {
+        "action_smoothness": -0.02418428100645542,
+        "body_angular_velocity": 0.1609097719192505,
+        "body_linear_velocity": 0.1803978681564331,
+        "body_orientation": 0.14261342585086823,
+        "body_position": 0.1916598677635193,
+        "joint_limit_penalty": -0.00010668132017599419,
+        "root_orientation": 0.09254675358533859,
+        "root_position": 0.09686888009309769
+      },
+      "per_motion": {
+        "pi_plus_dance1_subject2": {
+          "failed": false,
+          "frames": 930,
+          "normalized_return": 0.8943961358839466,
+          "reward_components": {
+            "action_smoothness": -0.03737656772136688,
+            "body_angular_velocity": 0.1727084070444107,
+            "body_linear_velocity": 0.18216417729854584,
+            "body_orientation": 0.1811467856168747,
+            "body_position": 0.19927248358726501,
+            "joint_limit_penalty": -0.0001418920001015067,
+            "root_orientation": 0.0978291928768158,
+            "root_position": 0.09879376739263535
+          },
+          "reward_sum": 83.17884063720703,
+          "survival_normalized_return": 0.8943961358839466,
+          "survival_steps": 930,
+          "tracking": {
+            "joint_position_rmse_rad": 0.11789743829103674,
+            "mean_forward_speed_m_s": 0.0001409677934134379,
+            "measured_seconds": 18.6,
+            "reference_forward_speed_m_s": 8.547517791157588e-05,
+            "root_position_rmse_m": 0.03316491221124557,
+            "root_velocity_rmse_m_s": 0.3205905730743317,
+            "speed_axis": "world X; not heading-aligned"
+          }
+        },
+        "pi_plus_goal": {
+          "failed": false,
+          "frames": 245,
+          "normalized_return": 0.9192212941695233,
+          "reward_components": {
+            "action_smoothness": -0.021330691874027252,
+            "body_angular_velocity": 0.1805461198091507,
+            "body_linear_velocity": 0.19123688340187073,
+            "body_orientation": 0.17620469629764557,
+            "body_position": 0.1977212280035019,
+            "joint_limit_penalty": 0.0,
+            "root_orientation": 0.09666840732097626,
+            "root_position": 0.0981743186712265
+          },
+          "reward_sum": 22.52092170715332,
+          "survival_normalized_return": 0.9192212941695233,
+          "survival_steps": 245,
+          "tracking": {
+            "joint_position_rmse_rad": 0.12440064655832407,
+            "mean_forward_speed_m_s": 0.20917083323001862,
+            "measured_seconds": 4.9,
+            "reference_forward_speed_m_s": 0.21670512855052948,
+            "root_position_rmse_m": 0.040983111971340906,
+            "root_velocity_rmse_m_s": 0.1679151416219064,
+            "speed_axis": "world X; not heading-aligned"
+          }
+        },
+        "pi_plus_kungfu": {
+          "failed": false,
+          "frames": 603,
+          "normalized_return": 0.632397792430264,
+          "reward_components": {
+            "action_smoothness": -0.026953093707561493,
+            "body_angular_velocity": 0.11086147278547287,
+            "body_linear_velocity": 0.1548823118209839,
+            "body_orientation": 0.05180487409234047,
+            "body_position": 0.17131169140338898,
+            "joint_limit_penalty": -0.00028483328060247004,
+            "root_orientation": 0.07937003672122955,
+            "root_position": 0.09140519052743912
+          },
+          "reward_sum": 38.13358688354492,
+          "survival_normalized_return": 0.632397792430264,
+          "survival_steps": 603,
+          "tracking": {
+            "joint_position_rmse_rad": 0.6259569947610728,
+            "mean_forward_speed_m_s": 0.017193898558616638,
+            "measured_seconds": 12.06,
+            "reference_forward_speed_m_s": 0.009104148484766483,
+            "root_position_rmse_m": 0.09161165503108189,
+            "root_velocity_rmse_m_s": 0.310546910987708,
+            "speed_axis": "world X; not heading-aligned"
+          }
+        },
+        "pi_plus_right_big_kick_cut": {
+          "failed": false,
+          "frames": 88,
+          "normalized_return": 0.9168074347756126,
+          "reward_components": {
+            "action_smoothness": -0.011076769791543484,
+            "body_angular_velocity": 0.17952309548854828,
+            "body_linear_velocity": 0.19330814480781555,
+            "body_orientation": 0.16129735112190247,
+            "body_position": 0.19833411276340485,
+            "joint_limit_penalty": 0.0,
+            "root_orientation": 0.09631936997175217,
+            "root_position": 0.09910225123167038
+          },
+          "reward_sum": 8.06790542602539,
+          "survival_normalized_return": 0.9168074347756126,
+          "survival_steps": 88,
+          "tracking": {
+            "joint_position_rmse_rad": 0.17168591133267247,
+            "mean_forward_speed_m_s": 0.008202055469155312,
+            "measured_seconds": 1.76,
+            "reference_forward_speed_m_s": -0.0066589778289198875,
+            "root_position_rmse_m": 0.02850040158437986,
+            "root_velocity_rmse_m_s": 0.1603672684331855,
+            "speed_axis": "world X; not heading-aligned"
+          }
+        }
+      }
     }
   },
   "previous_comparison": {
@@ -1938,6 +2071,12 @@
       "norm_return": 0.90919656837441,
       "n_failed": 0,
       "source_evaluation_sha256": "2ec751c999debde97e4ce3e27a1b7976bb038ec4ed27adf8f8e10a5ca5b17bad"
+    },
+    "tracking/pi_plus": {
+      "iteration": 2000,
+      "norm_return": 0.6541101677810921,
+      "n_failed": 0,
+      "source_evaluation_sha256": "62ed011d213d957112946a0df8ee48bd47db7defb1f99d7b4740aa5d18f77f3f"
     }
   },
   "clips": [
@@ -2323,6 +2462,129 @@
           60
         ],
         "findings": "Both robots visible and upright through changing arm gestures; residual arm and root tracking differences remain."
+      }
+    },
+    {
+      "id": "pi_plus_dance_010000",
+      "title": "Pi+ dance",
+      "run": "pi_plus_010000",
+      "motion_or_trial": "pi_plus_dance1_subject2",
+      "source_video_sha256": "955739e2ecf836ae2158de289b16877e808d4bf4b786d7151a868406e7fd41b3",
+      "source_render_metadata_sha256": "405fa265724f7900b418ee86f9a369ea78b5a9e1eb92b1822b73edc691574279",
+      "source_manifest_sha256": "ae6cb3a9ac4a03d4f219a67d6053f8b0c6ce24f8fccdec67bf87257ee5effc17",
+      "video_source_start_seconds": 0,
+      "gif_source_start_seconds": 0,
+      "playback_speed": 1.0,
+      "mp4": {
+        "sha256": "025ecabaf60f2a01b778e70551317629d013aa587c94233f6675f60359a17c98",
+        "bytes": 1692669,
+        "frames": 300,
+        "fps": 25.0,
+        "duration_seconds": 12.0,
+        "width": 960,
+        "height": 540,
+        "full_decode": "passed"
+      },
+      "gif": {
+        "sha256": "0f106ddbba54a23d89541cd616d6c725cd8f687c8922795a366bc74e26047070",
+        "bytes": 1648127,
+        "frames": 60,
+        "fps": 10,
+        "duration_seconds": 6.0,
+        "loop": 0,
+        "width": 480,
+        "height": 270,
+        "full_decode": "passed",
+        "pixel_motion_check": "passed"
+      },
+      "source_reference": {
+        "clip": "pi_plus_dance1_subject2",
+        "start_seconds": 0.0,
+        "duration_seconds": 12.0,
+        "failed": false,
+        "observed_active_steps": 930
+      }
+    },
+    {
+      "id": "pi_plus_kungfu_010000",
+      "title": "Pi+ kungfu",
+      "run": "pi_plus_010000",
+      "motion_or_trial": "pi_plus_kungfu",
+      "source_video_sha256": "955739e2ecf836ae2158de289b16877e808d4bf4b786d7151a868406e7fd41b3",
+      "source_render_metadata_sha256": "405fa265724f7900b418ee86f9a369ea78b5a9e1eb92b1822b73edc691574279",
+      "source_manifest_sha256": "ae6cb3a9ac4a03d4f219a67d6053f8b0c6ce24f8fccdec67bf87257ee5effc17",
+      "video_source_start_seconds": 12,
+      "gif_source_start_seconds": 12,
+      "playback_speed": 1.0,
+      "mp4": {
+        "sha256": "408a8379d3b8414dd8859c5e85e7d9b4b7371abebd0515576c60a5cd6d39b6c3",
+        "bytes": 1859000,
+        "frames": 300,
+        "fps": 25.0,
+        "duration_seconds": 12.0,
+        "width": 960,
+        "height": 540,
+        "full_decode": "passed"
+      },
+      "gif": {
+        "sha256": "58d59d4a12281385b436d435d81b72c731d91f9671122e1968006b8099479d1a",
+        "bytes": 2230265,
+        "frames": 80,
+        "fps": 10,
+        "duration_seconds": 8.0,
+        "loop": 0,
+        "width": 480,
+        "height": 270,
+        "full_decode": "passed",
+        "pixel_motion_check": "passed"
+      },
+      "source_reference": {
+        "clip": "pi_plus_kungfu",
+        "start_seconds": 0.0,
+        "duration_seconds": 12.0,
+        "failed": false,
+        "observed_active_steps": 603
+      }
+    },
+    {
+      "id": "pi_plus_kick_010000",
+      "title": "Pi+ short right kick",
+      "run": "pi_plus_010000",
+      "motion_or_trial": "pi_plus_right_big_kick_cut",
+      "source_video_sha256": "955739e2ecf836ae2158de289b16877e808d4bf4b786d7151a868406e7fd41b3",
+      "source_render_metadata_sha256": "405fa265724f7900b418ee86f9a369ea78b5a9e1eb92b1822b73edc691574279",
+      "source_manifest_sha256": "ae6cb3a9ac4a03d4f219a67d6053f8b0c6ce24f8fccdec67bf87257ee5effc17",
+      "video_source_start_seconds": 24,
+      "gif_source_start_seconds": 24,
+      "playback_speed": 1.0,
+      "mp4": {
+        "sha256": "ed2f33fbde84ebc42a874706a9e61349eb7c64d6645fe7019bb9d157884f759d",
+        "bytes": 238638,
+        "frames": 45,
+        "fps": 25.0,
+        "duration_seconds": 1.8,
+        "width": 960,
+        "height": 540,
+        "full_decode": "passed"
+      },
+      "gif": {
+        "sha256": "14cbfe2c3849d2418085f187226f1a0286fa1e53fa1edcec523b7e11ec79044d",
+        "bytes": 492247,
+        "frames": 18,
+        "fps": 10,
+        "duration_seconds": 1.8,
+        "loop": 0,
+        "width": 480,
+        "height": 270,
+        "full_decode": "passed",
+        "pixel_motion_check": "passed"
+      },
+      "source_reference": {
+        "clip": "pi_plus_right_big_kick_cut",
+        "start_seconds": 0.0,
+        "duration_seconds": 1.78,
+        "failed": false,
+        "observed_active_steps": 88
       }
     }
   ]

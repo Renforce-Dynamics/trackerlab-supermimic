@@ -55,7 +55,12 @@ tracking rewards and run sequentially on the shared GPU. Bumi completed 10,000
 iterations with normalized return **0.9372711**, **0/1** failed clips and
 **0.08757 rad** joint-position RMSE on its one 6.82-second source motion.
 Pi+'s 2,000-iteration evaluation scored **0.6541102**, **0/4** failed clips;
-its 10,000-iteration result is pending. The short source libraries
+its completed 10,000-iteration evaluation scores **0.8407057** macro return,
+**0.8140475** frame-weighted return and **0/4** failed clips. Kungfu joint-position
+RMSE remains **0.62596 rad**, so completion should not be read as perfect
+tracking. Its full checkpoint, three optimizer states, policy export, eight
+reward terms, 25 artifact hashes and complete video decode have been checked.
+The short source libraries
 limit generalization claims; the 12-iteration preflights are pipeline checks
 only.
 

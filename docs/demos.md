@@ -1,6 +1,6 @@
 # Policy Demos
 
-Recorded simulation excerpts from the G1, Go2, A3, T1 and Bumi experiments,
+Recorded simulation excerpts from the G1, Go2, A3, T1, Bumi and Pi+ experiments,
 refreshed on October 25, 2026. GIF previews loop at **1x speed**; their MP4
 versions preserve longer excerpts at 25 fps. All policies ran in
 **IsaacLab / PhysX**. MuJoCo renders the recorded poses.
@@ -121,6 +121,33 @@ targets recomputed by the pinned MJCF. This is an evaluation on the one training
 clip; held-out motions and hardware performance are unmeasured. The simulation
 policy rollout is replayed as poses in MuJoCo for this video.
 
+## Pi+
+
+Pi+'s fresh 10,000-iteration policy uses 4,096 environments and four HighTorque
+vendor robot-space motions. Full-library macro return is **0.8407057**,
+frame-weighted return **0.8140475**, with **0/4** early terminations. Its
+2,000-iteration macro return was **0.6541102**.
+
+| Dance | Kungfu |
+| --- | --- |
+| [![Pi+ dance](media/pi_plus_dance_010000.gif)](media/pi_plus_dance_010000.mp4?raw=true) | [![Pi+ kungfu](media/pi_plus_kungfu_010000.gif)](media/pi_plus_kungfu_010000.mp4?raw=true) |
+| [12-second MP4](media/pi_plus_dance_010000.mp4?raw=true) | [12-second MP4](media/pi_plus_kungfu_010000.mp4?raw=true) |
+
+**Short right kick**
+
+[![Pi+ short right kick](media/pi_plus_kick_010000.gif)](media/pi_plus_kick_010000.mp4?raw=true)
+
+[1.8-second MP4](media/pi_plus_kick_010000.mp4?raw=true).
+
+The excerpts use `pi_plus_dance1_subject2`, `pi_plus_kungfu`, and
+`pi_plus_right_big_kick_cut`. Dance joint-position RMSE is **0.11790 rad**;
+kungfu has visibly larger tracking deviations and **0.62596 rad** joint-position
+RMSE. Zero early terminations does not imply perfect imitation. All four source
+clips, including `pi_plus_goal`, are evaluated for their entire duration.
+These are training-library results, with held-out and hardware performance
+unmeasured. The source robot and motions are pinned to revision
+`df3fcf16bf2cf645b8e3c24ee1e395d453f78f80`.
+
 ## Sources And Interpretation
 
 - G1: [G1-retargeted LAFAN1](https://huggingface.co/datasets/lvhaidong/LAFAN1_Retargeting_Dataset),
@@ -134,6 +161,8 @@ policy rollout is replayed as poses in MuJoCo for this video.
   one public robot-space dance.
 - Bumi: [Noetix-Robotics/noetix_bumi_lab](https://github.com/Noetix-Robotics/noetix_bumi_lab),
   one Bumi V3 robot-space motion.
+- Pi+: [HighTorque-Robotics/Mini-Pi-Plus_BeyondMimic](https://github.com/HighTorque-Robotics/Mini-Pi-Plus_BeyondMimic),
+  four vendor robot-space motions.
 
 Pinned resource revisions and original attribution are in
 [resources.lock.json](../scripts/rls/supermimic/resources.lock.json) and

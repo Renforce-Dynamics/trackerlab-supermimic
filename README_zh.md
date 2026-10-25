@@ -4,6 +4,27 @@
 也支持安装到已有 TrackerLab。任务、动作库、参考缓存、动作管理、仿真环境、
 算法和指标各有独立模块。
 
+## 动作演示
+
+以下画面来自 **IsaacLab / PhysX 策略仿真**，按 1 倍速播放。
+动作跟踪画面左侧为策略、右侧为参考动作；Go2 过杆展示任务策略。
+点击动图可查看对应 MP4。
+
+| G1 舞蹈 · 32,000 轮 | G1 连续跳跃 · 32,000 轮 |
+| --- | --- |
+| [![G1 舞蹈与参考动作](docs/media/g1_dance_032000.gif)](docs/media/g1_dance_032000.mp4?raw=true) | [![G1 连续跳跃与参考动作](docs/media/g1_jump_032000.gif)](docs/media/g1_jump_032000.mp4?raw=true) |
+| **Go2 小跑跟踪 · 10,000 轮** | **Go2 自主过杆 · 10,000 轮任务训练** |
+| [![Go2 小跑跟踪](docs/media/go2_trot_010000.gif)](docs/media/go2_trot_010000.mp4?raw=true) | [![Go2 按杆高选择通过动作](docs/media/go2_adaptive_010000.gif)](docs/media/go2_adaptive_010000.mp4?raw=true) |
+| **A3 交替出拳 · 4,000 轮** | **T1 舞蹈 · 4,000 轮** |
+| [![A3 交替出拳与参考动作](docs/media/a3_punch_004000.gif)](docs/media/a3_punch_004000.mp4?raw=true) | [![T1 舞蹈与参考动作](docs/media/t1_dance_004000.gif)](docs/media/t1_dance_004000.mp4?raw=true) |
+
+[八段演示、G1 起身、A3 行走、分数与数据来源](docs/demos.md)。
+完整训练动作库的平均归一化回报：G1 **0.8695**、Go2 小跑 **0.9273**、
+A3 **0.9764**、T1 **0.8401**。Go2 过杆在 16 次试验中完成 **157/173** 次尝试，
+时限结束时的 16 次未完成尝试计入失败。各任务的数据量、目标与训练历史各有差异。
+
+## 实现范围
+
 这是 SuperMimic 的非官方复现，算法实现参考 `supermimic_vibed`，
 使用 IsaacLab 2.3.2、Isaac Sim 5.1 和 PhysX。代码保留原作者声明与 MIT 许可证。
 本仓库聚焦 40 个 G1 LAFAN1 动作，完整论文的多目标任务、BONES-SEED

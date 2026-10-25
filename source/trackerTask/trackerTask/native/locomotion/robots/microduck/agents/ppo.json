@@ -1,0 +1,9 @@
+{
+  "num_envs": 4096,
+  "iterations": 10000,
+  "seed": 42,
+  "save_interval": 250,
+  "logger": "tensorboard",
+  "fresh_initialization": true,
+  "description": "Official flat-velocity recipe; native BAM actuator and PPO defaults retained"
+}

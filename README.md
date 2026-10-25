@@ -86,6 +86,11 @@ Evaluation reports actual passage behavior and success for each height group.
 
 ## Install
 
+**MicroDuck native locomotion:** a separate Python 3.12 task uses the official
+mjlab/PPO recipe with BAM actuators, 4,096 environments and 10,000 updates.
+It learns velocity-command walking without a demonstration dataset.
+[Native task setup and the algorithm distinction](docs/microduck.md).
+
 **Multiple robot tasks:** `tasks.py list` discovers tracking and locomotion
 tasks by category and robot. A3 uses the public SONIC A3 motions; T1 uses
 Booster's public dance clip. Bumi and Pi+ use pinned vendor robot-space motions.

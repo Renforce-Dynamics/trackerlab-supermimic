@@ -1,0 +1,22 @@
+{
+  "id": "locomotion/microduck/flat",
+  "robot": "microduck",
+  "runtime_task": "Mjlab-Velocity-Flat-MicroDuck",
+  "backend": "mjlab / MuJoCo Warp",
+  "algorithm": "PPO / RSL-RL",
+  "upstream": "https://github.com/pollen-robotics/microduck_rl",
+  "revision": "b02fdea4902c2b93b7d34a83a6f05da4ececb7d3",
+  "bam_revision": "62bd8ce12154340be97e06f7f41a0ca8f116d967",
+  "env_entry": "mjlab_microduck.tasks.microduck_velocity_env_cfg:make_microduck_velocity_env_cfg",
+  "data_source": "Simulated velocity and pose commands; no demonstration dataset",
+  "code_license": "Apache-2.0",
+  "model_license": "CC-BY-NC-SA-4.0",
+  "versions": {
+    "mjlab": "1.3.0",
+    "mujoco": "3.10.0",
+    "mujoco-warp": "3.8.1",
+    "warp-lang": "1.12.0",
+    "torch": "2.9.1",
+    "rsl-rl-lib": "5.0.1"
+  }
+}

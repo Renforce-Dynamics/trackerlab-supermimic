@@ -45,16 +45,20 @@ class MotionLib:
             raw = torch.tensor(raw_np, dtype=torch.float32)
             p, q_xyzw, j = raw[:, :3], raw[:, 3:7], raw[:, 7:]
             quat = torch.cat((q_xyzw[:, 3:4], q_xyzw[:, :3]), -1)
-            # resample to 50 Hz
+            # Canonical 50 Hz sources already lie on the control grid. Avoid
+            # floating-point duration flooring that can discard their last row.
             T_src = raw.shape[0]
-            dur = (T_src - 1) / src_fps
-            n = int(np.floor(dur / CONTROL_DT)) + 1
-            t = torch.arange(n, dtype=torch.float32) * CONTROL_DT * src_fps
-            i0 = torch.clamp(t.floor().long(), max=T_src - 2)
-            a = (t - i0.float()).clamp(0, 1)
-            p = p[i0] * (1 - a[:, None]) + p[i0 + 1] * a[:, None]
-            j = j[i0] * (1 - a[:, None]) + j[i0 + 1] * a[:, None]
-            quat = quat_slerp(quat[i0], quat[i0 + 1], a)
+            if src_fps == 1.0 / CONTROL_DT:
+                n = T_src
+            else:
+                dur = (T_src - 1) / src_fps
+                n = int(np.floor(dur / CONTROL_DT)) + 1
+                t = torch.arange(n, dtype=torch.float32) * CONTROL_DT * src_fps
+                i0 = torch.clamp(t.floor().long(), max=T_src - 2)
+                a = (t - i0.float()).clamp(0, 1)
+                p = p[i0] * (1 - a[:, None]) + p[i0 + 1] * a[:, None]
+                j = j[i0] * (1 - a[:, None]) + j[i0 + 1] * a[:, None]
+                quat = quat_slerp(quat[i0], quat[i0 + 1], a)
             ps.append(p), qs.append(quat), js.append(j)
             lens.append(n)
         self.clip_len = torch.tensor(lens, device=device)
@@ -162,14 +166,22 @@ class MotionLib:
         return torch.minimum(fut, end.unsqueeze(-1))
 
     def goal(self, f: torch.Tensor, K: int) -> torch.Tensor:
-        """Goal features from the reference only: K future frames relative to the current reference frame."""
+        """K reference goals; synthetic post-end frames hold pose with zero velocity."""
         fut = self.future_frames(f, K)  # (B,K)
         H = yaw_mat(self.root_R[f])  # (B,3,3)
         Ht = H.transpose(-1, -2).unsqueeze(1)
         dp = (Ht @ (self.root_p[fut] - self.root_p[f].unsqueeze(1)).unsqueeze(-1)).squeeze(-1)
         rot = mat_to_6d(Ht @ self.root_R[fut])
+        requested = f.unsqueeze(-1) + torch.arange(1, K + 1, device=f.device)
+        end = self.clip_end[self.clip_id[f]].unsqueeze(-1)
+        recorded = (requested <= end).unsqueeze(-1)
+        # Preserve the recorded final frame, including its reference velocity.
+        # Only the held-pose extension beyond that frame has zero velocity.
+        v = torch.where(recorded, self.root_v_local[fut], 0.0)
+        w = torch.where(recorded, self.root_w_local[fut], 0.0)
+        qd = torch.where(recorded, self.qd[fut], 0.0)
         feats = torch.cat(
-            (dp, rot, self.root_v_local[fut], self.root_w_local[fut], self.q[fut], self.qd[fut] * 0.1), -1
+            (dp, rot, v, w, self.q[fut], qd * 0.1), -1
         )  # (B,K,15+2*J)
         return feats.reshape(f.shape[0], -1)
 

@@ -41,8 +41,14 @@ class RunningNorm(nn.Module):
         tot = self.count + n
         delta = m - self.mean
         self.mean += delta * n / tot
-        self.var = (self.var * self.count + v * n + delta**2 * self.count * n / tot) / tot
-        self.count = tot
+        new_var = (self.var * self.count + v * n + delta**2 * self.count * n / tot) / tot
+        # CUDA Graphs retain input storage addresses. Keep FP32/FP64 buffers
+        # in place while preserving the original low-precision promotion.
+        if new_var.dtype == self.var.dtype:
+            self.var.copy_(new_var)
+        else:
+            self.var = new_var
+        self.count.copy_(tot)
 
     def forward(self, x):
         return (x - self.mean) / torch.sqrt(self.var + self.eps**2)

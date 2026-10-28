@@ -10,6 +10,18 @@ retargeted motion data -> MotionLib -> MotionBuffer -> MotionManager ->
 PhysX environment -> algorithm replay -> world model and policy ->
 full-clip metrics -> portable policy and video.
 
+## Reference and normalization fixes — 2026-10-28
+
+Future goals beyond a motion's last recorded frame now hold the final pose
+with zero linear, angular and joint velocities. The recorded final frame
+retains its original velocities. Already-50Hz CSVs retain every source frame,
+and running-normalization updates preserve FP32/FP64 buffer storage without
+changing the statistics formula. These shared fixes support every robot's
+existing joint count.
+
+[Boundary semantics, compatibility and regression tests](docs/reference_tail_fix.md).
+The historical demos and scores below retain their original code revision.
+
 ## Demos
 
 Recorded **IsaacLab / PhysX policy rollouts**, displayed at 1x speed.

@@ -1,0 +1,380 @@
+{
+  "schema": "warp-runtime-source-provenance-v2",
+  "source_repository": "Renforce-Dynamics/trackerlab-teleoperation",
+  "source_revision": "c27a8ce",
+  "source": "Portable accepted scratch BF16/FP32 WM-graph runtime with source-level endpoint and active-normalizer repairs.",
+  "target_shared_source_revision": "f83c532",
+  "scope": "Optional G1 runtime only; excludes private deployment state, datasets, checkpoints and remote launches.",
+  "source_files": {
+    "actual_batch_validation.py": {
+      "source_sha256": "15ec1ab6fd126762c2905b8a400fe87961ec894e3c85f942d57cbf060eeb6f65",
+      "integrated_sha256": "15ec1ab6fd126762c2905b8a400fe87961ec894e3c85f942d57cbf060eeb6f65",
+      "integrated_sha256_lf": "15ec1ab6fd126762c2905b8a400fe87961ec894e3c85f942d57cbf060eeb6f65",
+      "integration_changes": []
+    },
+    "canonical_source_contract.py": {
+      "source_sha256": null,
+      "integrated_sha256": "dbf03012f2759d50e7e6802cb67c46acf5329eaa9e7de7e8ab729c7cdd30c894",
+      "integrated_sha256_lf": "dbf03012f2759d50e7e6802cb67c46acf5329eaa9e7de7e8ab729c7cdd30c894",
+      "integration_changes": [
+        "New source integrity receipt for repaired shared sources and independent legacy normalizer fixture."
+      ]
+    },
+    "compact_gpu_motion.py": {
+      "source_sha256": "79bd3419bf4a8d235f991a3f442745a3be9f0cb30f57ea5d57856e4270613826",
+      "integrated_sha256": "ce8f61c1849b1cfadf89254873a0434f8f9060904d61a98b5a8a929cfae2cce5",
+      "integrated_sha256_lf": "ce8f61c1849b1cfadf89254873a0434f8f9060904d61a98b5a8a929cfae2cce5",
+      "integration_changes": [
+        "Replace unrelated mmap import with runtime-local device frame lookup.",
+        "Inherit canonical MotionLib.goal and document repaired synthetic-tail semantics.",
+        "Require explicit root-cache schema and selected-configuration hash; reject unrelated legacy mmap manifests."
+      ]
+    },
+    "compiled_collection_runtime.py": {
+      "source_sha256": "3c6735ab1bd34d5c2c31d2928b64831d01cdf396bbf04a68626b11f97b48703e",
+      "integrated_sha256": "3c6735ab1bd34d5c2c31d2928b64831d01cdf396bbf04a68626b11f97b48703e",
+      "integrated_sha256_lf": "3c6735ab1bd34d5c2c31d2928b64831d01cdf396bbf04a68626b11f97b48703e",
+      "integration_changes": []
+    },
+    "configuration.py": {
+      "source_sha256": "c1621593e73d69fbfb085a5410342b0bcd86d3fa951ade11ea868f63b5f25592",
+      "integrated_sha256": "c1621593e73d69fbfb085a5410342b0bcd86d3fa951ade11ea868f63b5f25592",
+      "integrated_sha256_lf": "c1621593e73d69fbfb085a5410342b0bcd86d3fa951ade11ea868f63b5f25592",
+      "integration_changes": []
+    },
+    "continuation_audit.py": {
+      "source_sha256": "d92e38838d64a47d1446b6b4f5e494e5e295dc3338f438abc3211a6718052a30",
+      "integrated_sha256": "d92e38838d64a47d1446b6b4f5e494e5e295dc3338f438abc3211a6718052a30",
+      "integrated_sha256_lf": "d92e38838d64a47d1446b6b4f5e494e5e295dc3338f438abc3211a6718052a30",
+      "integration_changes": []
+    },
+    "critic_runtime.py": {
+      "source_sha256": "86e3471e2316206f05c069da0336c8dfdbc6194fcec384016682fad09694d08d",
+      "integrated_sha256": "86e3471e2316206f05c069da0336c8dfdbc6194fcec384016682fad09694d08d",
+      "integrated_sha256_lf": "86e3471e2316206f05c069da0336c8dfdbc6194fcec384016682fad09694d08d",
+      "integration_changes": []
+    },
+    "detailed_phase_probe.py": {
+      "source_sha256": "8d16d210847e63c611ded4695c94749d59f2e0af5f8bf80e09f97857806856e5",
+      "integrated_sha256": "8d16d210847e63c611ded4695c94749d59f2e0af5f8bf80e09f97857806856e5",
+      "integrated_sha256_lf": "8d16d210847e63c611ded4695c94749d59f2e0af5f8bf80e09f97857806856e5",
+      "integration_changes": []
+    },
+    "legacy_normalizer_reference.py": {
+      "source_sha256": null,
+      "integrated_sha256": "40ca6131b136723cca1d08d888c3cab2a7af22f10da4a3c1687235ad5c2e2720",
+      "integrated_sha256_lf": "40ca6131b136723cca1d08d888c3cab2a7af22f10da4a3c1687235ad5c2e2720",
+      "integration_changes": [
+        "New isolated pre-repair statistics reference used only by numerical admission."
+      ]
+    },
+    "native_bf16_precision.py": {
+      "source_sha256": "a62e6752ef29e89e3a6b153a594cf5e3c098b33f9de7beefa5e9009aba074d64",
+      "integrated_sha256": "67ca0d0f57886bc42344dd9541482a2d9cac4eec28c884895272b8eff29bb024",
+      "integrated_sha256_lf": "67ca0d0f57886bc42344dd9541482a2d9cac4eec28c884895272b8eff29bb024",
+      "integration_changes": [
+        "Verify LF-normalized canonical network/goal/reference hashes.",
+        "Use independent legacy arithmetic reference for fresh CUDA actual-width parity without monkeypatching.",
+        "Preserve BF16-only MLP and FP32 geometry/parameters/normalizer checks.",
+        "Support direct preflight invocation with repository bootstrap and precision environment set before PyTorch import."
+      ]
+    },
+    "norm_actual_width_fixture.py": {
+      "source_sha256": "109af2d77469e222f9be32fb8a01ba0c3a99ae8a984791d2c29a137d49cda692",
+      "integrated_sha256": "109af2d77469e222f9be32fb8a01ba0c3a99ae8a984791d2c29a137d49cda692",
+      "integrated_sha256_lf": "109af2d77469e222f9be32fb8a01ba0c3a99ae8a984791d2c29a137d49cda692",
+      "integration_changes": []
+    },
+    "reference_gpu_fk.py": {
+      "source_sha256": "748d96414180d267ecf76c35927c648fe20858dfb2d78e521699847424d4d3f0",
+      "integrated_sha256": "748d96414180d267ecf76c35927c648fe20858dfb2d78e521699847424d4d3f0",
+      "integrated_sha256_lf": "748d96414180d267ecf76c35927c648fe20858dfb2d78e521699847424d4d3f0",
+      "integration_changes": []
+    },
+    "resident_reference_bodies.py": {
+      "source_sha256": "dd3f108e2d2bf5338116ff9f6afd8ad780d4289323c1a56171c94a3a77e198b0",
+      "integrated_sha256": "dd3f108e2d2bf5338116ff9f6afd8ad780d4289323c1a56171c94a3a77e198b0",
+      "integrated_sha256_lf": "dd3f108e2d2bf5338116ff9f6afd8ad780d4289323c1a56171c94a3a77e198b0",
+      "integration_changes": []
+    },
+    "restore_optimizer_steps.py": {
+      "source_sha256": "3da5c3d44367dd69423760feff940e7493931e336fdb1a3236b9fd03dfaec4b6",
+      "integrated_sha256": "3da5c3d44367dd69423760feff940e7493931e336fdb1a3236b9fd03dfaec4b6",
+      "integrated_sha256_lf": "3da5c3d44367dd69423760feff940e7493931e336fdb1a3236b9fd03dfaec4b6",
+      "integration_changes": []
+    },
+    "runner_warp.py": {
+      "source_sha256": "22893527654ed1669c293a40c3b07221862055831d966b822c27d480c1213aa3",
+      "integrated_sha256": "dec53abca3e02612363e966dce3170b6f6b020ac03acbec462552f797a06848c",
+      "integrated_sha256_lf": "dec53abca3e02612363e966dce3170b6f6b020ac03acbec462552f797a06848c",
+      "integration_changes": [
+        "Use canonical goal and normalizer source contracts without runtime method replacements.",
+        "Reject resume before importing learner dependencies, configure precision, and select/qualify the requested CUDA device."
+      ]
+    },
+    "runtime_settings.py": {
+      "source_sha256": "d32fc430d24fadd9af0746656a7b387ef49f44a5713d946ab2dad2e498298803",
+      "integrated_sha256": "d32fc430d24fadd9af0746656a7b387ef49f44a5713d946ab2dad2e498298803",
+      "integrated_sha256_lf": "d32fc430d24fadd9af0746656a7b387ef49f44a5713d946ab2dad2e498298803",
+      "integration_changes": []
+    },
+    "scratch_runtime_checks.py": {
+      "source_sha256": "c1913d9bc31768da5a794819603b3c7de6ec864c3d7a3491e635b1a70c76dab9",
+      "integrated_sha256": "9d3ff06a019852f5751bcfb8764f3337f4e00897e41ed008b43814b620ddc147",
+      "integrated_sha256_lf": "9d3ff06a019852f5751bcfb8764f3337f4e00897e41ed008b43814b620ddc147",
+      "integration_changes": [
+        "Recompute unmasked reference features directly for endpoint acceptance.",
+        "Keep canonical MotionLib.goal unchanged; make joint slices dimension-derived."
+      ]
+    },
+    "scratch_speed_probe.py": {
+      "source_sha256": "7baba7022dcec8dd79204e64ea4df57be814fc80d83c5d0cbee9283ab758fe1a",
+      "integrated_sha256": "dd28dd276e4dddf447cf7f7bb363fb2fa08095b5ce037fe8ff8cbb098d05946e",
+      "integrated_sha256_lf": "dd28dd276e4dddf447cf7f7bb363fb2fa08095b5ce037fe8ff8cbb098d05946e",
+      "integration_changes": [
+        "Remove deployment-supervisor GPU-exclusivity claim; allocation belongs to caller.",
+        "Describe configurable workload via the recorded actual optimizer counters."
+      ]
+    },
+    "static_reference_runtime.py": {
+      "source_sha256": "65905ccc138b5f688e35fa5c13ae0033820738e650aa01444183f3e64187036d",
+      "integrated_sha256": "65905ccc138b5f688e35fa5c13ae0033820738e650aa01444183f3e64187036d",
+      "integrated_sha256_lf": "65905ccc138b5f688e35fa5c13ae0033820738e650aa01444183f3e64187036d",
+      "integration_changes": []
+    },
+    "train_warp.py": {
+      "source_sha256": "bf9dfb59ef6579e676d929311935a85cd1ca824832c23d3e1b01f362d0eead84",
+      "integrated_sha256": "6d3d9de6c3857abd4306acf98ce535fe7ce0d044bf19575f8171e188548201e5",
+      "integrated_sha256_lf": "6d3d9de6c3857abd4306acf98ce535fe7ce0d044bf19575f8171e188548201e5",
+      "integration_changes": [
+        "Expose device-resident G1-only source integration; reject non-CUDA arguments.",
+        "Remove unreachable non-G1 CLI checks."
+      ]
+    },
+    "validate_resident_reference.py": {
+      "source_sha256": "a99a1e9ab66e0b07fbb0699e616b5e76b0fd231e269dda9fb53805f80bef98b3",
+      "integrated_sha256": "a99a1e9ab66e0b07fbb0699e616b5e76b0fd231e269dda9fb53805f80bef98b3",
+      "integrated_sha256_lf": "a99a1e9ab66e0b07fbb0699e616b5e76b0fd231e269dda9fb53805f80bef98b3",
+      "integration_changes": []
+    },
+    "warp_env.py": {
+      "source_sha256": "dd7a874b3782d92c60cdfa467cba055f3ada270cca5d794d9e70b4a2ffba37cd",
+      "integrated_sha256": "dd7a874b3782d92c60cdfa467cba055f3ada270cca5d794d9e70b4a2ffba37cd",
+      "integrated_sha256_lf": "dd7a874b3782d92c60cdfa467cba055f3ada270cca5d794d9e70b4a2ffba37cd",
+      "integration_changes": []
+    },
+    "warp_task_cfg.py": {
+      "source_sha256": "8e0a0854341677b6b34b383cf3e9d6d1e31da34d25051cbac549c74e4b6a040e",
+      "integrated_sha256": "8e0a0854341677b6b34b383cf3e9d6d1e31da34d25051cbac549c74e4b6a040e",
+      "integrated_sha256_lf": "8e0a0854341677b6b34b383cf3e9d6d1e31da34d25051cbac549c74e4b6a040e",
+      "integration_changes": []
+    },
+    "wm_window_validation.py": {
+      "source_sha256": "3eaed18d5de51016040dea885bee19ee58395254d8d4d0eb84dd00138a9c9645",
+      "integrated_sha256": "3eaed18d5de51016040dea885bee19ee58395254d8d4d0eb84dd00138a9c9645",
+      "integrated_sha256_lf": "3eaed18d5de51016040dea885bee19ee58395254d8d4d0eb84dd00138a9c9645",
+      "integration_changes": []
+    }
+  },
+  "canonical_shared_source_sha256_lf": {
+    "source/trackerLab/trackerLab/algorithms/supermimic/networks.py": "c5b335145fc906f3189cf76003592571ba8b8d7fd29b5c19b30f683a53fad203",
+    "source/trackerLab/trackerLab/motion_buffer/motion_lib/supermimic.py": "80b5aa7a7f35c1802eb7caf43a1305f70f28f2a6c0f1248865dda84b6ede953f"
+  },
+  "omitted_legacy_runtime_installers": [
+    "goal_tail_runtime.py",
+    "running_norm_inplace.py",
+    "running_norm_source.py",
+    "norm_source_loader.py"
+  ],
+  "gates_retained": [
+    "source hash admission",
+    "actual-width CUDA normalizer value/storage/RNG parity",
+    "reference-body numeric parity",
+    "compiled collection parity",
+    "actual WM batch loss/gradient parity",
+    "first actual actor finite/SO3 geometry checks"
+  ],
+  "no_gpu_execution_in_this_source_integration": true,
+  "portable_gpu_exclusivity_verified": false,
+  "upstream_provenance": {
+    "schema": "warp-runtime-source-provenance-v1",
+    "source": "Accepted scratch full-pool BF16 normalizer-storage revision, 2026-10-28, attempt 5",
+    "scope": "Portable source integration; excludes deployment state, datasets, checkpoints and private infrastructure.",
+    "source_files": {
+      "train_warp.py": {
+        "source_sha256": "d5ddef29be61e66dc9a519bd35dc062c5647379bd42d83494d0f25698f129079",
+        "integration_changes": [
+          "Use repository-relative paths and generic log directory.",
+          "Require G1/BF16 scratch training and explicit motion configuration.",
+          "Load accepted graph/precision defaults before framework imports.",
+          "Add read-only --dry-run and canonicalize the root-cache argument.",
+          "Restrict the qualified fixture to obs99/10 goal frames and reject mmap for this device-only runtime."
+        ],
+        "integrated_sha256": "bf9dfb59ef6579e676d929311935a85cd1ca824832c23d3e1b01f362d0eead84"
+      },
+      "runner_warp.py": {
+        "source_sha256": "22893527654ed1669c293a40c3b07221862055831d966b822c27d480c1213aa3",
+        "integration_changes": [],
+        "integrated_sha256": "22893527654ed1669c293a40c3b07221862055831d966b822c27d480c1213aa3"
+      },
+      "configuration.py": {
+        "source_sha256": "c1621593e73d69fbfb085a5410342b0bcd86d3fa951ade11ea868f63b5f25592",
+        "integration_changes": [],
+        "integrated_sha256": "c1621593e73d69fbfb085a5410342b0bcd86d3fa951ade11ea868f63b5f25592"
+      },
+      "warp_env.py": {
+        "source_sha256": "3ed55d1cb7040ae6b414e82b5da2e2b5b7c8de13812dc67c2c309bae56efc77e",
+        "integration_changes": [
+          "Normalize line endings to LF for repository checkouts."
+        ],
+        "integrated_sha256": "dd7a874b3782d92c60cdfa467cba055f3ada270cca5d794d9e70b4a2ffba37cd"
+      },
+      "warp_task_cfg.py": {
+        "source_sha256": "8e0a0854341677b6b34b383cf3e9d6d1e31da34d25051cbac549c74e4b6a040e",
+        "integration_changes": [],
+        "integrated_sha256": "8e0a0854341677b6b34b383cf3e9d6d1e31da34d25051cbac549c74e4b6a040e"
+      },
+      "compact_gpu_motion.py": {
+        "source_sha256": "79bd3419bf4a8d235f991a3f442745a3be9f0cb30f57ea5d57856e4270613826",
+        "integration_changes": [],
+        "integrated_sha256": "79bd3419bf4a8d235f991a3f442745a3be9f0cb30f57ea5d57856e4270613826"
+      },
+      "reference_gpu_fk.py": {
+        "source_sha256": "748d96414180d267ecf76c35927c648fe20858dfb2d78e521699847424d4d3f0",
+        "integration_changes": [],
+        "integrated_sha256": "748d96414180d267ecf76c35927c648fe20858dfb2d78e521699847424d4d3f0"
+      },
+      "static_reference_runtime.py": {
+        "source_sha256": "65905ccc138b5f688e35fa5c13ae0033820738e650aa01444183f3e64187036d",
+        "integration_changes": [],
+        "integrated_sha256": "65905ccc138b5f688e35fa5c13ae0033820738e650aa01444183f3e64187036d"
+      },
+      "resident_reference_bodies.py": {
+        "source_sha256": "dd3f108e2d2bf5338116ff9f6afd8ad780d4289323c1a56171c94a3a77e198b0",
+        "integration_changes": [],
+        "integrated_sha256": "dd3f108e2d2bf5338116ff9f6afd8ad780d4289323c1a56171c94a3a77e198b0"
+      },
+      "validate_resident_reference.py": {
+        "source_sha256": "a99a1e9ab66e0b07fbb0699e616b5e76b0fd231e269dda9fb53805f80bef98b3",
+        "integration_changes": [],
+        "integrated_sha256": "a99a1e9ab66e0b07fbb0699e616b5e76b0fd231e269dda9fb53805f80bef98b3"
+      },
+      "compiled_collection_runtime.py": {
+        "source_sha256": "3c6735ab1bd34d5c2c31d2928b64831d01cdf396bbf04a68626b11f97b48703e",
+        "integration_changes": [],
+        "integrated_sha256": "3c6735ab1bd34d5c2c31d2928b64831d01cdf396bbf04a68626b11f97b48703e"
+      },
+      "continuation_audit.py": {
+        "source_sha256": "d92e38838d64a47d1446b6b4f5e494e5e295dc3338f438abc3211a6718052a30",
+        "integration_changes": [],
+        "integrated_sha256": "d92e38838d64a47d1446b6b4f5e494e5e295dc3338f438abc3211a6718052a30"
+      },
+      "restore_optimizer_steps.py": {
+        "source_sha256": "3da5c3d44367dd69423760feff940e7493931e336fdb1a3236b9fd03dfaec4b6",
+        "integration_changes": [],
+        "integrated_sha256": "3da5c3d44367dd69423760feff940e7493931e336fdb1a3236b9fd03dfaec4b6"
+      },
+      "goal_tail_runtime.py": {
+        "source_sha256": "7af7b6dfb7c4dfeab2c4cf68df43fa02a17b8e18c6a16249df5005bb2dcc2d12",
+        "integration_changes": [
+          "Normalize line endings to LF for repository checkouts."
+        ],
+        "integrated_sha256": "1f4b77f01a686467a5e91051239078acf18af5ce299f50875e0381b92b3c4a88"
+      },
+      "scratch_runtime_checks.py": {
+        "source_sha256": "c1913d9bc31768da5a794819603b3c7de6ec864c3d7a3491e635b1a70c76dab9",
+        "integration_changes": [],
+        "integrated_sha256": "c1913d9bc31768da5a794819603b3c7de6ec864c3d7a3491e635b1a70c76dab9"
+      },
+      "native_bf16_precision.py": {
+        "source_sha256": "aa09dee9d6e961c04ee181f8289e3ff508d8d0a5eef8a1d3f2f2f477f418da54",
+        "integration_changes": [
+          "Replace private archived-receipt dependency with a fresh invocation of the existing actual-width CUDA normalizer fixture.",
+          "Report fresh fixture and explicitly preserve unverified whole-run RNG equivalence."
+        ],
+        "integrated_sha256": "a62e6752ef29e89e3a6b153a594cf5e3c098b33f9de7beefa5e9009aba074d64"
+      },
+      "running_norm_inplace.py": {
+        "source_sha256": "a8a1c19a163cadc1a0de293c681cbee3de90c38bd3e619468dbb0458e06ab9fb",
+        "integration_changes": [
+          "Default the candidate path to the included running_norm_source.py."
+        ],
+        "integrated_sha256": "92964ec81c50cc89fc6b7e5379e021e293d02fa0af228e849e59ed6100b1e4aa"
+      },
+      "running_norm_source.py": {
+        "source_sha256": "144fd640d1f337f64e880256694806278504d182414ca45a6394fe096fae78b1",
+        "integration_changes": [],
+        "integrated_sha256": "144fd640d1f337f64e880256694806278504d182414ca45a6394fe096fae78b1"
+      },
+      "norm_source_loader.py": {
+        "source_sha256": "3b46342e17d00b6061c87be3f89fc200b24f8dafe39ee301c6bb030d3425416d",
+        "integration_changes": [],
+        "integrated_sha256": "3b46342e17d00b6061c87be3f89fc200b24f8dafe39ee301c6bb030d3425416d"
+      },
+      "norm_actual_width_fixture.py": {
+        "source_sha256": "109af2d77469e222f9be32fb8a01ba0c3a99ae8a984791d2c29a137d49cda692",
+        "integration_changes": [],
+        "integrated_sha256": "109af2d77469e222f9be32fb8a01ba0c3a99ae8a984791d2c29a137d49cda692"
+      },
+      "critic_runtime.py": {
+        "source_sha256": "86e3471e2316206f05c069da0336c8dfdbc6194fcec384016682fad09694d08d",
+        "integration_changes": [],
+        "integrated_sha256": "86e3471e2316206f05c069da0336c8dfdbc6194fcec384016682fad09694d08d"
+      },
+      "actual_batch_validation.py": {
+        "source_sha256": "15ec1ab6fd126762c2905b8a400fe87961ec894e3c85f942d57cbf060eeb6f65",
+        "integration_changes": [],
+        "integrated_sha256": "15ec1ab6fd126762c2905b8a400fe87961ec894e3c85f942d57cbf060eeb6f65"
+      },
+      "wm_window_validation.py": {
+        "source_sha256": "3eaed18d5de51016040dea885bee19ee58395254d8d4d0eb84dd00138a9c9645",
+        "integration_changes": [],
+        "integrated_sha256": "3eaed18d5de51016040dea885bee19ee58395254d8d4d0eb84dd00138a9c9645"
+      },
+      "scratch_speed_probe.py": {
+        "source_sha256": "7baba7022dcec8dd79204e64ea4df57be814fc80d83c5d0cbee9283ab758fe1a",
+        "integration_changes": [],
+        "integrated_sha256": "7baba7022dcec8dd79204e64ea4df57be814fc80d83c5d0cbee9283ab758fe1a"
+      },
+      "detailed_phase_probe.py": {
+        "source_sha256": "8d16d210847e63c611ded4695c94749d59f2e0af5f8bf80e09f97857806856e5",
+        "integration_changes": [],
+        "integrated_sha256": "8d16d210847e63c611ded4695c94749d59f2e0af5f8bf80e09f97857806856e5"
+      }
+    },
+    "added_files": {
+      "runtime_settings.py": {
+        "sha256": "d32fc430d24fadd9af0746656a7b387ef49f44a5713d946ab2dad2e498298803",
+        "purpose": "Portable numerical-environment and thread defaults"
+      }
+    },
+    "qualification_scope": "Imported numerical source retains its guards; portable fresh CUDA qualification and a full GPU training run have not been executed during this repository sync.",
+    "observed_runtime_versions": {
+      "values": {
+        "torch": "2.7.0+cu128",
+        "mujoco": "3.16.0",
+        "mujoco-warp": "3.16.0",
+        "warp-lang": "1.18.0"
+      },
+      "source": "Saved MuJoCo-Warp evaluation protocol, 2026-10-27",
+      "source_sha256": "131acbe2580e916bd5a7e137b2ed477d073bb276ccc6abb29ad975aa6a4ed0b0"
+    }
+  },
+  "entrypoint_preset_requirements": {
+    "scripts/rls/supermimic/train_warp.py": {
+      "source_sha256": "571b674e29a064c4e5b0d27054e95d8facf334723e8a8fe41c0131baab478fb8",
+      "integrated_sha256": "571b674e29a064c4e5b0d27054e95d8facf334723e8a8fe41c0131baab478fb8",
+      "integrated_sha256_lf": "571b674e29a064c4e5b0d27054e95d8facf334723e8a8fe41c0131baab478fb8"
+    },
+    "scripts/rls/supermimic/configs/g1_warp_bf16_8096.json": {
+      "source_sha256": "238394a145386b051faf51d3da7bb2f134871a0f3e31b1ba24d5de08d7bf3a50",
+      "integrated_sha256": "6d1602010e6e792e368a49819723651f3ae01c86b0ce24d1468a4ef908304574",
+      "integrated_sha256_lf": "6d1602010e6e792e368a49819723651f3ae01c86b0ce24d1468a4ef908304574"
+    },
+    "requirements-warp.txt": {
+      "source_sha256": "e248637584dec290517c51871ab112e430ee29d7b7062add99b4b3df5336f917",
+      "integrated_sha256": "e248637584dec290517c51871ab112e430ee29d7b7062add99b4b3df5336f917",
+      "integrated_sha256_lf": "e248637584dec290517c51871ab112e430ee29d7b7062add99b4b3df5336f917"
+    }
+  }
+}

@@ -22,6 +22,21 @@ existing joint count.
 [Boundary semantics, compatibility and regression tests](docs/reference_tail_fix.md).
 The historical demos and scores below retain their original code revision.
 
+## Optional G1 Warp training
+
+The separate `train_warp.py` entrypoint provides MuJoCo-Warp simulation,
+GPU-resident motion references, compiled collection, native BF16 MLPs and
+world-model CUDA Graphs. It uses the shared endpoint and running-normalizer
+repairs described above. Existing PhysX and multi-robot entrypoints remain
+available.
+
+[Environment, cache format, 8,096-environment preset and verification
+scope](docs/warp_training.md). This path currently supports G1 training from
+random initialization with a prepared root83 motion cache. The source
+teleoperation experiment measured **2.47115 complete iterations/s** on an RTX
+PRO 6000; this repository integration has CPU regression coverage and requires
+fresh CUDA qualification on the target machine.
+
 ## Demos
 
 Recorded **IsaacLab / PhysX policy rollouts**, displayed at 1x speed.
@@ -53,8 +68,9 @@ count as failures. Motion libraries, tasks and iteration histories differ.
 
 This is an **unofficial reproduction**, adapted from
 [supermimic_vibed](https://github.com/zita-ch/supermimic_vibed), with its MIT
-attribution retained. It targets all 40 G1-retargeted LAFAN1 clips.
-It uses IsaacLab 2.3.2 / Isaac Sim 5.1 / PhysX. The public vibed implementation
+attribution retained. The original G1 workflow targets all 40 G1-retargeted
+LAFAN1 clips with IsaacLab 2.3.2 / Isaac Sim 5.1 / PhysX. The optional Warp
+entrypoint uses the explicitly supplied motion selection. The public vibed implementation
 uses Newton/MuJoCo-Warp. This repository implements the motion-tracking
 experiment; it does not claim the paper's complete BONES-SEED benchmark,
 multiple goal interfaces, or hardware-transfer results.

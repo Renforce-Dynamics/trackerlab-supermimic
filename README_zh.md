@@ -14,6 +14,18 @@
 共享实现按机器人关节数处理。具体行为与测试见
 [修复说明](docs/reference_tail_fix.md)。下方历史视频及分数沿用各自原版本记录。
 
+## G1 Warp 加速训练
+
+新增独立的 `train_warp.py` 入口：MuJoCo-Warp 仿真、GPU 常驻参考数据、
+采集函数编译、BF16 网络计算与世界模型 CUDA Graphs。
+末帧处理和归一化复用仓库共享修复。原 PhysX 与多机器人入口继续保留。
+
+支持 G1 随机初始化训练，需要已生成的 root83 动作缓存。
+8,096 环境预设、独立环境依赖、缓存格式和验证范围见
+[Warp 训练说明](docs/warp_training.md)。
+来源遥操实验在 RTX PRO 6000 上测得 **2.47115 完整轮次/秒**；
+本次仓库迁入完成 CPU 回归验证，目标 GPU 的速度与数值检查需要另行运行。
+
 ## 动作演示
 
 以下画面来自 **IsaacLab / PhysX 策略仿真**，按 1 倍速播放。
@@ -40,8 +52,9 @@ Pi+ 完成四段参考动作，功夫动作仍有明显跟踪偏差。Bumi 评�
 ## 实现范围
 
 这是 SuperMimic 的非官方复现，算法实现参考 `supermimic_vibed`，
-使用 IsaacLab 2.3.2、Isaac Sim 5.1 和 PhysX。代码保留原作者声明与 MIT 许可证。
-本仓库聚焦 40 个 G1 LAFAN1 动作，完整论文的多目标任务、BONES-SEED
+原 G1 流程使用 IsaacLab 2.3.2、Isaac Sim 5.1 和 PhysX，覆盖 40 个
+G1 LAFAN1 动作；独立 Warp 入口按用户给定的动作清单训练。
+代码保留原作者声明与 MIT 许可证。完整论文的多目标任务、BONES-SEED
 实验及实机迁移留待后续验证。
 
 Go2 扩展复用动作库、参考缓存、管理器、环境和 SuperMimic 算法。

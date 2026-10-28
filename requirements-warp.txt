@@ -1,0 +1,9 @@
+# Separate Linux/Python 3.11 environment for the direct MuJoCo-Warp runtime.
+# Install torch from the CUDA 12.8 wheel index before using this file.
+# Versions below come from saved runtime metadata, not the latest releases.
+torch==2.7.0
+numpy==1.26.0
+scipy==1.15.3
+mujoco==3.16.0
+mujoco-warp==3.16.0
+warp-lang==1.18.0

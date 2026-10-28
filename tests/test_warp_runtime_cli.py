@@ -115,7 +115,8 @@ class WarpRuntimeCliTests(unittest.TestCase):
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("argument --motion_storage: invalid choice", result.stderr)
-        self.assertIn("choose from device", result.stderr)
+        # Python 3.11 quotes choices; later argparse versions omit the quotes.
+        self.assertRegex(result.stderr, r"""choose from ['"]?device['"]?""")
 
     def test_invalid_workload_rejected_without_training_imports(self):
         for flags, message in (

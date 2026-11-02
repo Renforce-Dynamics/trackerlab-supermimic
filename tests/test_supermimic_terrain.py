@@ -93,6 +93,7 @@ class SuperMimicTerrainTests(unittest.TestCase):
                  torch.zeros(1, 12), torch.zeros(1, 12))
         scan = field.features(state)
         self.assertEqual(scan.shape, (1, 187))
+        self.assertEqual(field.model_features(state).shape, (1, 54))
         scan.square().sum().backward()
         self.assertTrue(torch.isfinite(root.grad).all())
         self.assertGreater(root.grad.abs().sum().item(), 0)
@@ -112,6 +113,8 @@ class SuperMimicTerrainTests(unittest.TestCase):
         observation = mdp.obs(S, torch.zeros(batch, 12), xi, context)
         self.assertEqual(observation.shape[-1], 238)
         self.assertEqual(mdp.goal(S, context).shape, (batch, 6))
+        self.assertEqual(mdp.critic_features(S, xi, context).shape[-1],
+                         13 + 2 * 12 + 12 + 4 + 6 + 54)
         wm = TerrainWorldModel(field, 12, hidden=(64, 64))
         wm.update_terrain_norm(S)
         next_state = wm.step(S, torch.zeros(batch, 12), normalize_xi(xi))

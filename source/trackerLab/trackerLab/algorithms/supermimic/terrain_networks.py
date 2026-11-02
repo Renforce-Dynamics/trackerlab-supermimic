@@ -31,22 +31,22 @@ class TerrainWorldModel(WorldModel):
     def __init__(self, field, num_joints, hidden=(2048, 2048, 2048)):
         super().__init__(hidden=hidden, num_joints=num_joints)
         self.field = field
-        self.terrain_norm = RunningNorm(len(field.offsets))
+        self.terrain_norm = RunningNorm(len(field.model_offsets))
         output_dim = 12 + 2 * num_joints
-        self.terrain_adapter = mlp(self.in_dim + len(field.offsets), [256, 128],
+        self.terrain_adapter = mlp(self.in_dim + len(field.model_offsets), [256, 128],
                                    output_dim, act=nn.SiLU)
         nn.init.zeros_(self.terrain_adapter[-1].weight)
         nn.init.zeros_(self.terrain_adapter[-1].bias)
 
     @torch.no_grad()
     def update_terrain_norm(self, S):
-        self.terrain_norm.update(self.field.features(S))
+        self.terrain_norm.update(self.field.model_features(S))
 
     def step(self, S, a, xi_n):
         p, R, v, w, q, qd = S
         x = self.inputs(S, a, xi_n)
         x_normalized = self.in_norm(x)
-        terrain = self.terrain_norm(self.field.features(S))
+        terrain = self.terrain_norm(self.field.model_features(S))
         y = run_mlp(self.net, x_normalized)
         y = y + run_mlp(self.terrain_adapter, torch.cat((x_normalized, terrain), -1))
         d = y * self.out_norm.std() + self.out_norm.mean

@@ -15,10 +15,11 @@ they do not require demonstration clips. Existing motion-tracking and Go2
 downstream tasks remain registered separately.
 
 The actor encodes each 187-sample scan into a learned 32-dimensional feature
-before the SuperMimic observation-history decoder. The dynamics model receives
-terrain samples at every predicted state, and the critic sees terrain-relative
-clearance. New episodes start on the two easiest lanes and advance through
-six difficulty levels using completed-episode success.
+before the SuperMimic observation-history decoder. The dynamics model and
+critic use a 54-point front-and-side subset of that same heightfield at each
+predicted state; the critic also sees terrain-relative clearance. New episodes
+start on the two easiest lanes and advance through six difficulty levels using
+completed-episode success.
 
 ## List And Inspect
 

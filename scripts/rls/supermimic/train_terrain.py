@@ -114,7 +114,7 @@ def main():
     actor = TerrainPolicy(mdp.obs_dim, mdp.goal_dim, hist=args.hist,
                           num_joints=spec.num_joints).to(args.device)
     world = TerrainWorldModel(field, spec.num_joints).to(args.device)
-    critic_dim = spec.state_dim + spec.context_dim + mdp.goal_dim + len(field.offsets)
+    critic_dim = spec.state_dim + spec.context_dim + mdp.goal_dim + len(field.model_offsets)
     critic = Critic(critic_dim).to(args.device)
     opt_wm = torch.optim.Adam(world.parameters(), lr=args.lr)
     opt_pi = torch.optim.Adam(actor.parameters(), lr=args.lr, betas=(.9, .95))
@@ -151,6 +151,7 @@ def main():
                    "num_joints": spec.num_joints, "obs_dim": mdp.obs_dim,
                    "goal_dim": mdp.goal_dim, "critic_dim": critic_dim,
                    "perception": {"heightfield_scan_samples": 187,
+                                  "world_model_critic_terrain_samples": len(field.model_offsets),
                                   "source": "analytic terrain-heightfield scan",
                                   "physical_ray_validation": "MuJoCo-Warp validation only",
                                   "rgbd": False}}, stream, indent=2, default=str)

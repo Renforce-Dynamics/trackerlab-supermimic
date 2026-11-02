@@ -24,6 +24,7 @@ class HeightField:
         x, y = torch.meshgrid(torch.linspace(-.3, 1.6, 17, device=device),
                               torch.linspace(-.55, .55, 11, device=device), indexing="ij")
         self.offsets = torch.stack((x.flatten(), y.flatten()), -1) * self.scale
+        self.model_offsets = torch.stack((x[::2, ::2].flatten(), y[::2, ::2].flatten()), -1) * self.scale
 
     def sample(self, xy):
         t = self.terrain
@@ -43,14 +44,19 @@ class HeightField:
         return ((xy[..., 0] >= t.x_min) & (xy[..., 0] <= t.x_max) &
                 (xy[..., 1] >= t.y_min) & (xy[..., 1] <= t.y_max))
 
-    def scan_xy(self, S):
+    def scan_xy(self, S, offsets=None):
         H = yaw_mat(S[1])
-        return S[0][..., None, :2] + (H[..., None, :2, :2] @ self.offsets[..., None]).squeeze(-1)
+        offsets = self.offsets if offsets is None else offsets
+        return S[0][..., None, :2] + (H[..., None, :2, :2] @ offsets[..., None]).squeeze(-1)
 
-    def features(self, S):
-        xy = self.scan_xy(S)
+    def features(self, S, offsets=None):
+        offsets = self.offsets if offsets is None else offsets
+        xy = self.scan_xy(S, offsets)
         scan = (S[0][..., 2:3] - self.sample(xy) - self.height) / self.scale
         return torch.where(self.inside(xy), scan, torch.ones_like(scan)).clamp(-1, 1) * 2
+
+    def model_features(self, S):
+        return self.features(S, self.model_offsets)
 
     def invariant(self, S):
         value = invariant_features(S)
@@ -129,7 +135,7 @@ class TerrainMDP:
 
     def critic_features(self, S, xi, c):
         return torch.cat((self.field.invariant(S), self.normalize_context(xi),
-                          self.goal(S, c), self.field.features(S)), -1)
+                          self.goal(S, c), self.field.model_features(S)), -1)
 
     def normalize_context(self, xi):
         return torch.cat(((xi[..., :1] - .75) / .45,

@@ -36,7 +36,7 @@ Each task has a four-update, 16-environment smoke run. Full training uses
 python scripts/rls/perception/train.py --task locomotion/g1/stairs \
   --smoke --run-dir logs/perception-smoke-g1-stairs
 python scripts/rls/perception/campaign.py --run-dir logs/perception-all \
-  --num-envs 4096 --stages 1000 10000
+  --num-envs 4096 --stages 1000 10000 --video
 ```
 
 The campaign owns the GPU lock, records each process and output, evaluates,

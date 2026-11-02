@@ -11,6 +11,12 @@ from trackerLab.tracker_env.perception.terrain import generate
 from trackerTask.native.locomotion.perception.registry import get_task, robot_parameters
 
 
+def terminal_masks(reached_goal, fallen, timeout):
+    """A fall at the goal remains a failure; only pure time limits bootstrap."""
+    success = reached_goal & ~fallen
+    return success, fallen | success | timeout, timeout & ~fallen & ~success
+
+
 class PerceptionEnv:
     step_dt = .02
 
@@ -220,18 +226,18 @@ class PerceptionEnv:
                   - .1 * ((clear / self.height - 1).square())
                   - .03 * pose - .04 * rate
                   - .001 * self.qvel[:, self.vids].square().mean(-1)) * self.step_dt
-        success = self.qpos[:, 0] >= self.terrain.goal_x
+        reached_goal = self.qpos[:, 0] >= self.terrain.goal_x
         invalid = ~(torch.isfinite(self.qpos).all(-1) & torch.isfinite(self.qvel).all(-1))
         fallen = ((clear < .42 * self.height) | (R[:, 2, 2] < .35)
                   | (lane_error.abs() > 1.75) | (self.ray_geom[:, 0] < 0) | invalid)
         timeout = self.episode_length_buf >= self.max_episode_length
-        done = fallen | success | timeout
+        success, done, time_outs = terminal_masks(reached_goal, fallen, timeout)
         reward = reward + .5 * success - .1 * fallen
         reward = torch.nan_to_num(reward, nan=-.1, posinf=-.1, neginf=-.1)
         self.episode_return += reward
         ids = done.nonzero(as_tuple=False).flatten()
         # Task success is terminal; RSL-RL bootstraps only pure time-limit truncations.
-        extras = {"observations": {}, "time_outs": timeout & ~fallen & ~success}
+        extras = {"observations": {}, "time_outs": time_outs}
         if self.eval_mode:
             extras["terminal"] = {
                 "success": success.clone(), "fall": fallen.clone(),

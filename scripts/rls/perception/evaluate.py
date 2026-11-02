@@ -19,9 +19,14 @@ def main():
                         default=("normal", "zero", "shuffle"))
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--video", action="store_true")
+    parser.add_argument("--video-env", type=int, default=5)
     args = parser.parse_args()
     if min(args.num_envs, args.steps) < 1:
         parser.error("num-envs and steps must be positive")
+    if args.video and args.video_env not in range(args.num_envs):
+        parser.error("video-env must index an evaluation environment")
+    if args.video and "normal" not in args.modes:
+        parser.error("Video recording requires the normal perception mode")
     if args.output.exists():
         parser.error("Evaluation output already exists; preserve its receipt")
     import os
@@ -56,12 +61,23 @@ def main():
         import mujoco
         import imageio_ffmpeg
         render_data = mujoco.MjData(env.cpu_model)
+        env.cpu_model.vis.global_.offwidth = 960
+        env.cpu_model.vis.global_.offheight = 540
+        env.cpu_model.vis.headlight.active = 1
+        env.cpu_model.vis.headlight.ambient[:] = .45
+        env.cpu_model.vis.headlight.diffuse[:] = .8
+        env.cpu_model.vis.headlight.specular[:] = .15
         renderer = mujoco.Renderer(env.cpu_model, height=540, width=960)
+        scene_option = mujoco.MjvOption()
+        scene_option.geomgroup[3] = 1
+        scene_option.geomgroup[5] = 1
         camera = mujoco.MjvCamera()
         camera.distance, camera.azimuth, camera.elevation = 3.5 * env.scale, 130, -20
         args.output.mkdir(parents=True)
-        writer = imageio_ffmpeg.write_frames(str(args.output / "env-zero.mp4"), (960, 540),
-                                             fps=25, macro_block_size=2)
+        writer = imageio_ffmpeg.write_frames(
+            str(args.output / f"env-{args.video_env:03d}.mp4"), (960, 540),
+            fps=25, macro_block_size=2,
+        )
         writer.send(None)
     try:
         with torch.inference_mode():
@@ -90,13 +106,13 @@ def main():
                     successes |= active & terminal["success"]
                     falls |= active & terminal["fall"]
                     if writer and mode == "normal" and step % 2 == 0:
-                        render_data.qpos[:] = terminal["qpos"][0].cpu().numpy()
+                        render_data.qpos[:] = terminal["qpos"][args.video_env].cpu().numpy()
                         mujoco.mj_forward(env.cpu_model, render_data)
                         camera.lookat[:] = render_data.qpos[:3]
-                        renderer.update_scene(render_data, camera=camera)
+                        renderer.update_scene(render_data, camera=camera, scene_option=scene_option)
                         writer.send(np.asarray(renderer.render()))
                     active &= ~done.bool()
-                    if writer and mode == "normal" and not bool(active[0]):
+                    if writer and mode == "normal" and not bool(active[args.video_env]):
                         writer.close()
                         renderer.close()
                         writer = renderer = None
@@ -135,6 +151,7 @@ def main():
         "protocol": "One first episode per environment and mode; levels stratified equally; identical initial conditions; unfinished horizons remain censored.",
         "perception_limit": "Idealized terrain rays, no RGB/depth encoder. Shuffle is spatial reversal; ablations are diagnostics, not proof of causal sensor use.",
         "results": results, "finished_at": now(), "video_visual_review": "pending" if args.video else "not_recorded",
+        "video_env": args.video_env if args.video else None,
     })
     print(results, flush=True)
 

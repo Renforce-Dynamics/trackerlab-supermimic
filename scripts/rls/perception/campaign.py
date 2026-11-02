@@ -23,6 +23,7 @@ def main():
     parser.add_argument("--num-envs", type=int, default=4096)
     parser.add_argument("--stages", type=int, nargs="+", default=[1000, 10000])
     parser.add_argument("--eval-steps", type=int, default=1000)
+    parser.add_argument("--video", action="store_true")
     parser.add_argument("--plan", action="store_true")
     args = parser.parse_args()
     if args.stages != sorted(set(args.stages)) or min(args.stages) < 1:
@@ -107,6 +108,8 @@ def main():
             command = [python, "-u", str(Path(__file__).with_name("evaluate.py"))]
             command += ["--checkpoint", str(checkpoint), "--output", str(directory / "evaluation"),
                         "--steps", str(args.eval_steps)]
+            if args.video:
+                command += ["--video"]
             job["eval_exit_code"] = run(command, directory, "evaluation_stdout.log")
             if stopped["value"] or (root / "STOP").exists():
                 job.update(phase="stopped", finished_at=now())

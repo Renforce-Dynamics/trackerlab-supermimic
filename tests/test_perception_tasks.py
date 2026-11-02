@@ -17,6 +17,18 @@ from trackerLab.tracker_env.perception.terrain import generate
 
 
 class PerceptionTests(unittest.TestCase):
+    def test_goal_fall_and_timeout_are_classified_exclusively(self):
+        import torch
+        from trackerLab.tracker_env.perception.env import terminal_masks
+        goal = torch.tensor([False, False, False, False, True, True, True, True])
+        fall = torch.tensor([False, False, True, True, False, False, True, True])
+        timeout = torch.tensor([False, True, False, True, False, True, False, True])
+        success, done, bootstrapped = terminal_masks(goal, fall, timeout)
+        self.assertEqual(success.tolist(), [False] * 4 + [True, True, False, False])
+        self.assertEqual(done.tolist(), [False] + [True] * 7)
+        self.assertEqual(bootstrapped.tolist(), [False, True] + [False] * 6)
+        self.assertFalse(bool((success & fall).any()))
+
     def test_source_audit_records_changed_and_missing_files(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -56,6 +68,17 @@ class PerceptionTests(unittest.TestCase):
         self.assertEqual(len(plan), 2 * len(TASKS))
         self.assertEqual(plan[0], {"task": next(iter(TASKS)), "updates": 1000})
         self.assertEqual(plan[-1]["updates"], 10000)
+
+    def test_video_arguments_are_checked_before_loading_simulator(self):
+        command = [sys.executable, str(REPO / "scripts/rls/perception/evaluate.py"),
+                   "--checkpoint", "missing.pt", "--output", "unused-video-directory", "--video"]
+        for options, message in ((["--video-env", "-1"], "video-env must index"),
+                                 (["--modes", "zero"], "requires the normal")):
+            with self.subTest(options=options):
+                result = subprocess.run(command + options, text=True, capture_output=True)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn(message, result.stderr)
+                self.assertNotIn("Traceback", result.stderr)
 
     def test_seeded_fields_start_flat_and_have_six_levels(self):
         for profile in ("stairs", "mountain", "parkour"):

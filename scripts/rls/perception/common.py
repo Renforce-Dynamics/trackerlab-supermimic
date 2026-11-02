@@ -30,3 +30,17 @@ def load(path):
 def digest(path):
     with Path(path).open("rb") as stream:
         return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+def source_audit(recorded, root=REPO):
+    """Compare a run's recorded sources without modifying its original receipt."""
+    changed, missing = {}, []
+    for relative, expected in recorded.items():
+        path = root / relative
+        if not path.is_file():
+            missing.append(relative)
+            continue
+        current = digest(path)
+        if current != expected:
+            changed[relative] = {"training_sha256": expected, "current_sha256": current}
+    return {"recorded_files": len(recorded), "changed": changed, "missing": missing}

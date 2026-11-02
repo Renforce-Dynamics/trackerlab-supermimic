@@ -13,6 +13,7 @@ def validate(task, device, seed):
     import torch
     from trackerLab.tracker_env.perception.env import PerceptionEnv
 
+    torch.set_num_threads(8)
     torch.manual_seed(seed)
     env = PerceptionEnv(task, num_envs=6, device=device, seed=seed, eval_mode=True)
     env.levels.copy_(torch.arange(6, device=device))

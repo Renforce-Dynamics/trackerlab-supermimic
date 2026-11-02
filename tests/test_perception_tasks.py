@@ -4,18 +4,33 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import unittest
 
 import numpy as np
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "scripts/rls/perception"))
-from common import REPO
+from common import REPO, digest, source_audit
 from trackerTask.native.locomotion.perception.registry import TASKS, ppo_config, robot_parameters
 from trackerLab.tracker_env.perception.terrain import generate
 
 
 class PerceptionTests(unittest.TestCase):
+    def test_source_audit_records_changed_and_missing_files(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / "env.py"
+            path.write_text("original", encoding="utf-8")
+            original = digest(path)
+            self.assertEqual(source_audit({"env.py": original}, root)["changed"], {})
+            path.write_text("changed", encoding="utf-8")
+            audit = source_audit({"env.py": original, "missing.py": "abc"}, root)
+            self.assertEqual(audit["recorded_files"], 2)
+            self.assertEqual(audit["changed"]["env.py"]["training_sha256"], original)
+            self.assertEqual(audit["changed"]["env.py"]["current_sha256"], digest(path))
+            self.assertEqual(audit["missing"], ["missing.py"])
+
     def test_all_existing_robots_have_all_three_profiles(self):
         from trackerTask.supermimic.robots import TRACKING_TASKS
         self.assertEqual(len(TASKS), 3 * len(TRACKING_TASKS))
@@ -32,6 +47,15 @@ class PerceptionTests(unittest.TestCase):
             self.assertTrue((np.asarray(motors)[:, :4] > 0).all())
             for profile in ("stairs", "mountain", "parkour"):
                 self.assertIn(f"locomotion/{robot}/{profile}", TASKS)
+
+    def test_campaign_default_plan_loads_without_gpu(self):
+        result = subprocess.run([sys.executable, str(REPO / "scripts/rls/perception/campaign.py"),
+                                 "--run-dir", "unused-plan-directory", "--plan"],
+                                text=True, capture_output=True, check=True)
+        plan = json.loads(result.stdout)
+        self.assertEqual(len(plan), 2 * len(TASKS))
+        self.assertEqual(plan[0], {"task": next(iter(TASKS)), "updates": 1000})
+        self.assertEqual(plan[-1]["updates"], 10000)
 
     def test_seeded_fields_start_flat_and_have_six_levels(self):
         for profile in ("stairs", "mountain", "parkour"):

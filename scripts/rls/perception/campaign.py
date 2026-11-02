@@ -21,7 +21,7 @@ def main():
     parser.add_argument("--tasks", nargs="+", choices=tuple(TASKS), default=list(TASKS))
     parser.add_argument("--run-dir", type=Path, required=True)
     parser.add_argument("--num-envs", type=int, default=4096)
-    parser.add_argument("--stages", type=int, nargs="+", default=(1000, 10000))
+    parser.add_argument("--stages", type=int, nargs="+", default=[1000, 10000])
     parser.add_argument("--eval-steps", type=int, default=1000)
     parser.add_argument("--plan", action="store_true")
     args = parser.parse_args()

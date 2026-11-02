@@ -1,5 +1,6 @@
 # Separate from the Isaac Sim runtime. Install CUDA PyTorch first.
 torch==2.7.0
+torchvision==0.22.0
 numpy==1.26.0
 mujoco==3.16.0
 mujoco-warp==3.16.0

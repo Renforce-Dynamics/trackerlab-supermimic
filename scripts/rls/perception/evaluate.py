@@ -4,7 +4,7 @@ import argparse
 from copy import deepcopy
 from pathlib import Path
 
-from common import digest, load, now, save
+from common import digest, load, now, save, source_audit
 from trackerTask.native.locomotion.perception.registry import ppo_config
 
 
@@ -27,15 +27,25 @@ def main():
     import os
     os.environ.setdefault("MUJOCO_GL", "egl")
     import torch
+    import numpy as np
     from rsl_rl.runners import OnPolicyRunner
     from trackerLab.tracker_env.perception.env import PerceptionEnv
+    from trackerLab.tracker_env.perception.terrain import generate
 
+    torch.set_num_threads(8)
     checkpoint = args.checkpoint.resolve()
     config = load(checkpoint.parent / "run_config.json")
     task = config["arguments"]["task"]
     solver = config["arguments"]["solver_iterations"]
     env = PerceptionEnv(task, args.num_envs, args.device, args.seed,
                         eval_mode=True, solver_iterations=solver)
+    training_seed = config["arguments"]["seed"]
+    same_generator_training_terrain = generate(env.task.profile, env.height, training_seed)
+    seed_changes_geometry = not np.array_equal(
+        same_generator_training_terrain.heights, env.terrain.heights,
+    )
+    terrain_path = checkpoint.parent / "terrain.npy"
+    source_path = checkpoint.parent / "source_sha256.json"
     runner = OnPolicyRunner(env, deepcopy(ppo_config()), device=args.device)
     runner.load(str(checkpoint), load_optimizer=False)
     policy = runner.get_inference_policy(device=args.device)
@@ -45,7 +55,6 @@ def main():
     if args.video:
         import mujoco
         import imageio_ffmpeg
-        import numpy as np
         render_data = mujoco.MjData(env.cpu_model)
         renderer = mujoco.Renderer(env.cpu_model, height=540, width=960)
         camera = mujoco.MjvCamera()
@@ -115,9 +124,14 @@ def main():
     save(args.output / "evaluation.json", {
         "task": task, "checkpoint": str(checkpoint), "checkpoint_sha256": digest(checkpoint),
         "completed_updates": runner.current_learning_iteration + 1,
-        "training_seed": config["arguments"]["seed"], "evaluation_seed": args.seed,
-        "terrain_seed_held_out": config["arguments"]["seed"] != args.seed,
-        "seed_changes_geometry": env.task.profile == "mountain",
+        "training_seed": training_seed, "evaluation_seed": args.seed,
+        "terrain_seed_held_out": training_seed != args.seed,
+        "seed_changes_geometry": seed_changes_geometry,
+        "geometry_differs_from_training": (
+            not np.array_equal(np.load(terrain_path, allow_pickle=False), env.terrain.heights)
+            if terrain_path.is_file() else None
+        ),
+        "source_audit": source_audit(load(source_path)) if source_path.is_file() else None,
         "protocol": "One first episode per environment and mode; levels stratified equally; identical initial conditions; unfinished horizons remain censored.",
         "perception_limit": "Idealized terrain rays, no RGB/depth encoder. Shuffle is spatial reversal; ablations are diagnostics, not proof of causal sensor use.",
         "results": results, "finished_at": now(), "video_visual_review": "pending" if args.video else "not_recorded",

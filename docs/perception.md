@@ -19,7 +19,8 @@ Install the pinned perception requirements in the dedicated Linux GPU
 environment. Install the matching CUDA PyTorch wheel before the requirements:
 
 ```bash
-python -m pip install torch==2.7.0 --index-url https://download.pytorch.org/whl/cu128
+python -m pip install torch==2.7.0 torchvision==0.22.0 \
+  --index-url https://download.pytorch.org/whl/cu128
 python -m pip install -r requirements-perception.txt
 python scripts/rls/perception/prepare.py --robot all
 python scripts/rls/perception/validate.py \
@@ -41,6 +42,11 @@ python scripts/rls/perception/campaign.py --run-dir logs/perception-all \
 The campaign owns the GPU lock, records each process and output, evaluates,
 exports and measures every completed task. Create a `STOP` file in the campaign
 directory to request a checkpointed stop after the current PPO update.
+
+Evaluation records the checkpoint hash, source differences from training, and
+whether the evaluated geometry differs from the saved training heightfield.
+All three terrain profiles vary with the seed. Older calibration runs used a
+fixed stair/parkour layout; their evaluations retain that source difference.
 
 ## Throughput
 

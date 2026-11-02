@@ -104,7 +104,8 @@ A3 采用 29 个运动关节，头部两关节固定；T1 为 23 关节模型。
 ## 地形任务
 
 楼梯、山地和跑酷任务覆盖 G1、Go2、A3、T1、Bumi 与 Pi+，每个组合
-配置 187 条 MuJoCo-Warp 地形高度射线。任务沿用 SuperMimic 世界模型、
+配置 187 点地形高度扫描，并用 MuJoCo-Warp 射线进行物理采样校验。
+任务沿用 SuperMimic 世界模型、
 想象策略和 GAE critic 更新流程。
 [任务与训练队列说明](docs/supermimic_terrain.md)。
 

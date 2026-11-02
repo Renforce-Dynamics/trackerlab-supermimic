@@ -27,7 +27,7 @@ def qualify(task):
     joint_ids = [model.joint(name).id for name in spec.joint_names]
     limits = torch.tensor(model.jnt_range[joint_ids], device=device, dtype=torch.float32)
     mdp = TerrainMDP(field, torch.tensor(spec.default_q, device=device), limits[:, 0], limits[:, 1])
-    env = TerrainSim(task, mdp, 24, device, 42)
+    env = TerrainSim(task, mdp, 24, device, 42, physical_ray_validation=True)
     levels = torch.arange(24, device=device) % 6
     env.reset(levels=levels)
     env.qpos[:, env._root_qpos] = (torch.rand(24, device=device) * 12 - 1) * field.scale

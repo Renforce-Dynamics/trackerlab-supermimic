@@ -14,7 +14,8 @@ from trackerTask.supermimic.robots import get_robot
 
 class TerrainSim:
     def __init__(self, task, mdp, num_envs=4096, device="cuda:0", seed=42,
-                 solver_iterations=50, max_episode_steps=1000):
+                 solver_iterations=50, max_episode_steps=1000,
+                 physical_ray_validation=False):
         import mujoco
         import mujoco_warp as mw
         import warp as wp
@@ -26,6 +27,7 @@ class TerrainSim:
         self.num_envs, self.device = num_envs, str(torch.device(device))
         self.mw, self.wp, self.max_episode_steps = mw, wp, max_episode_steps
         self.curriculum = True
+        self.physical_ray_validation = physical_ray_validation
         self.spec = get_robot(self.robot)
         self.height = ROBOT_HEIGHTS[self.robot]
         self.scale = self.height / .76
@@ -86,16 +88,20 @@ class TerrainSim:
                 for _ in range(4):
                     mw.step(self.model, self.data)
             self.physics_graph = capture.graph
-            self._setup_rays()
-            self._cast_rays()
-            with wp.ScopedCapture(stream=self._stream) as capture:
+            if self.physical_ray_validation:
+                self._setup_rays()
                 self._cast_rays()
-            self.ray_graph = capture.graph
+                with wp.ScopedCapture(stream=self._stream) as capture:
+                    self._cast_rays()
+                self.ray_graph = capture.graph
         self.reset(torch.arange(num_envs, device=device))
         self.contract.update(
             num_envs=num_envs, physics="four 5ms MuJoCo-Warp steps per 20ms action",
             terrain_curriculum_levels=6, max_episode_steps=max_episode_steps,
-            perception=mdp.field.offsets.shape[0], algorithm="SuperMimic world-model imagination + GAE critic",
+            perception={"heightfield_scan_samples": mdp.field.offsets.shape[0],
+                        "runtime": "analytic_heightfield_sampler",
+                        "physical_rays_validation_only": True},
+            algorithm="SuperMimic world-model imagination + GAE critic",
         )
 
     @contextmanager
@@ -176,7 +182,8 @@ class TerrainSim:
             self._randomize(ids)
             self._reset_state(ids)
             self.mw.forward(self.model, self.data)
-        self._update_rays()
+        if self.physical_ray_validation:
+            self._update_rays()
         return self.observe()
 
     def state(self):
@@ -205,6 +212,8 @@ class TerrainSim:
     def observe(self):
         S = self.state()
         obs = self.mdp.obs(S, self.a_prev, self.xi, self.c)
+        if not self.physical_ray_validation:
+            return obs
         measured = self.ray_origin[:, 1:, 2] - self.ray_dist[:, 1:]
         scan = (S[0][:, 2:3] - measured - self.height) / self.scale
         scan = torch.where(self.ray_geom[:, 1:] >= 0, scan, torch.ones_like(scan)).clamp(-1, 1) * 2
@@ -258,5 +267,6 @@ class TerrainSim:
                 self._randomize(ids)
                 self._reset_state(ids)
                 self.mw.forward(self.model, self.data)
-        self._update_rays()
+        if self.physical_ray_validation:
+            self._update_rays()
         return transition

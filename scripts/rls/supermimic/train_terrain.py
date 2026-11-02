@@ -32,7 +32,7 @@ def parse_args(argv=None):
     parser.add_argument("--task_profile", choices=("stairs", "mountain", "parkour"))
     parser.add_argument("--config")
     parser.add_argument("--run-dir", type=Path, required=True)
-    parser.add_argument("--num-envs", type=int, default=4096)
+    parser.add_argument("--num-envs", type=int, default=8096)
     parser.add_argument("--iterations", type=int, default=10000)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", default="cuda:0")
@@ -150,7 +150,9 @@ def main():
                    "simulator_contract": contract, "robot": spec.name,
                    "num_joints": spec.num_joints, "obs_dim": mdp.obs_dim,
                    "goal_dim": mdp.goal_dim, "critic_dim": critic_dim,
-                   "perception": {"rays": 187, "source": "MuJoCo-Warp vertical terrain rays",
+                   "perception": {"heightfield_scan_samples": 187,
+                                  "source": "analytic terrain-heightfield scan",
+                                  "physical_ray_validation": "MuJoCo-Warp validation only",
                                   "rgbd": False}}, stream, indent=2, default=str)
     torch.save(field_data.heights, run / "terrain.pt")
 

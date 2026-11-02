@@ -3,11 +3,12 @@
 The registry adds 18 downstream objectives: stairs, mountain and parkour for
 G1, Go2, A3, T1, Bumi and Pi+. Each task uses the repository's SuperMimic
 world-model fitting, differentiable imagined policy optimization and GAE
-critic. The terrain path uses MuJoCo-Warp for physics and 187 vertical height
-rays for measured actor observations. The imagined actor, dynamics adapter and
+critic. The terrain path uses MuJoCo-Warp for physics and 187 terrain-height
+samples for actor observations. The imagined actor, dynamics adapter and
 critic receive heightfield samples at the predicted root state.
 
-The height rays describe idealized geometry. This runtime does not include an
+The height scans describe idealized geometry. MuJoCo-Warp physical rays are
+used for validation against these scans. This runtime does not include an
 RGB/depth image encoder, sensor noise from a camera, or occlusion and material
 rendering. The terrain tasks are velocity-commanded downstream objectives;
 they do not require demonstration clips. Existing motion-tracking and Go2
@@ -43,7 +44,7 @@ Run the full 18-task queue on one GPU:
 ```bash
 python scripts/rls/supermimic/supervise_terrain.py \
   --run-dir /path/to/isolated-workspace/runs/terrain-10000 \
-  --num-envs 4096 --iterations 10000
+  --num-envs 8096 --iterations 10000
 ```
 
 The queue writes `campaign.json`, one run directory per task, training logs and
@@ -57,7 +58,7 @@ iteration counter and output directory. Each completed run receives a
 difficulty lanes. Per-lane success, falls, timeouts, return and progress
 are written to `evaluation.json`.
 
-The learner defaults use 4,096 environments, 10 world-model minibatches of
+The learner defaults use 8,096 environments, 10 world-model minibatches of
 2,048 windows, 32 imagined steps, one actor update and 20 critic minibatches
 per outer iteration after the 500-iteration world-model warmup. Training logs
 record complete-iteration speed and optimizer losses. The `actor_critic_active`
@@ -80,7 +81,9 @@ training log before claiming parity.
 Run focused CPU contracts with `python -m pytest tests/test_supermimic_terrain.py`.
 Before a full queue, validate every robot MJCF, CPU/GPU height-ray agreement,
 partial resets, finite physics state and a short training update on the target
-CUDA server. Check the resulting `run_config.json` and `run_summary.json` for
+CUDA server. Independent checks compare the scan samples with MuJoCo-Warp
+physical rays; training uses direct queries of the same heightfield, avoiding
+repeated per-world ray traversal. Check the resulting `run_config.json` and `run_summary.json` for
 the exact simulator and optimizer settings.
 
 ```bash

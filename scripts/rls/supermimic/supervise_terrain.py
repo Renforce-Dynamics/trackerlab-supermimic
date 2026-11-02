@@ -30,7 +30,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run-dir", type=Path, required=True)
     parser.add_argument("--tasks", nargs="+", choices=tuple(TASKS), default=list(TASKS))
-    parser.add_argument("--num-envs", type=int, default=4096)
+    parser.add_argument("--num-envs", type=int, default=8096)
     parser.add_argument("--iterations", type=int, default=10000)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--evaluation-steps", type=int, default=1500)

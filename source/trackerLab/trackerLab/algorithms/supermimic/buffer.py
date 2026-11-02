@@ -24,7 +24,7 @@ FIELDS = {
 
 
 class ReplayBuffer:
-    def __init__(self, T: int, N: int, device: str, num_joints=29):
+    def __init__(self, T: int, N: int, device: str, num_joints=29, scenario_dim=0):
         self.T, self.N, self.device = T, N, device
         self.data = {}
         self.fields = {**FIELDS,
@@ -34,6 +34,8 @@ class ReplayBuffer:
                        "policy_action": (num_joints, torch.float32),
                        "a_prev": (num_joints, torch.float32),
                        "xi": (num_joints + 4, torch.float32)}
+        if scenario_dim:
+            self.fields["c"] = (scenario_dim, torch.float32)
         for k, (shape, dt) in self.fields.items():
             shp = (T, N) + ((shape,) if isinstance(shape, int) else shape)
             self.data[k] = torch.zeros(shp, dtype=dt, device=device)
@@ -61,7 +63,8 @@ class ReplayBuffer:
         e = env.unsqueeze(-1).expand_as(rows)
         out = {
             key: self.data[key][rows, e]
-            for key in ("s", "s1", "a", "policy_action", "xi", "done", "terminated", "truncated")
+            for key in ("s", "s1", "a", "policy_action", "xi", "done", "terminated", "truncated",
+                        *(("c",) if "c" in self.fields else ()))
         }
         # transition j is valid if no episode ended at transitions 0..j-1
         d = out["done"].float()
@@ -80,6 +83,8 @@ class ReplayBuffer:
         back = torch.minimum(back, age.unsqueeze(-1))  # stay inside the buffer
         hrows = self._row(age.unsqueeze(-1) - back)
         henv = env.unsqueeze(-1).expand_as(hrows)
-        start = {k: self.data[k][row, env] for k in ("s", "a_prev", "xi", "f", "motion_id")}
-        hist_d = {k: self.data[k][hrows, henv] for k in ("s", "a_prev", "xi", "f")}
+        keys = ("s", "a_prev", "xi", "f") + (("c",) if "c" in self.fields else ())
+        start_keys = keys + ("ep_step", "motion_id")
+        start = {k: self.data[k][row, env] for k in start_keys}
+        hist_d = {k: self.data[k][hrows, henv] for k in keys}
         return start, hist_d

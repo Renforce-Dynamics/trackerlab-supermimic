@@ -101,12 +101,12 @@ A3 采用 29 个运动关节，头部两关节固定；T1 为 23 关节模型。
 仿真验证已覆盖两套模型的运动学、状态重置、回放数据和策略更新；
 动作学习效果以训练后的完整轨迹评测为依据。
 
-## 独立运行
+## 地形任务
 
-MicroDuck 使用单独的 Python 3.12 环境与官方 mjlab/PPO 行走任务，
-配置为 4,096 环境、10,000 轮，保留 BAM 电机模型。训练输入为仿真中的
-速度与姿态指令，无动作捕捉数据；它与现有 IsaacLab/SuperMimic 模仿任务分开。
-任务目录与运行命令见 [MicroDuck 说明](docs/microduck.md)。
+楼梯、山地和跑酷任务覆盖 G1、Go2、A3、T1、Bumi 与 Pi+，每个组合
+配置 187 条 MuJoCo-Warp 地形高度射线。任务沿用 SuperMimic 世界模型、
+想象策略和 GAE critic 更新流程。
+[任务与训练队列说明](docs/supermimic_terrain.md)。
 
 环境要求为 Linux、Python 3.11 和可运行 Isaac Sim 5.1 的 NVIDIA GPU。
 具体安装步骤见 [安装文档](docs/installation.md)。

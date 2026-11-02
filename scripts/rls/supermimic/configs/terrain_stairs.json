@@ -1,0 +1,17 @@
+{
+  "task": "terrain",
+  "task_profile": "stairs",
+  "num_envs": 4096,
+  "iterations": 10000,
+  "seed": 42,
+  "utd": 0.4,
+  "horizon": 32,
+  "hist": 10,
+  "wm_window": 8,
+  "wm_batches": 10,
+  "wm_batch": 2048,
+  "pi_batch": 4096,
+  "critic_epochs": 5,
+  "critic_minibatches": 4,
+  "wm_only_iters": 500
+}

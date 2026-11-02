@@ -112,16 +112,12 @@ policy to choose its maneuver; the 8,096-environment preset runs 30,000 updates.
 Evaluation reports actual passage behavior and success for each height group.
 [Task, reward and evaluation details](docs/go2_adaptive_dodge.md).
 
-**Terrain-perception locomotion:** stairs, mountain and parkour tasks cover
-G1, Go2, A3, T1, Bumi and Pi+ with MuJoCo-Warp height-ray observations.
-[Task setup, validation and throughput limits](docs/perception.md).
+**SuperMimic terrain locomotion:** stairs, mountain and parkour tasks cover
+G1, Go2, A3, T1, Bumi and Pi+ with 187 MuJoCo-Warp height-ray observations.
+The world model, imagined policy and GAE critic use the same SuperMimic update
+path as the existing imitation tasks. [Task setup and training queue](docs/supermimic_terrain.md).
 
 ## Install
-
-**MicroDuck native locomotion:** a separate Python 3.12 task uses the official
-mjlab/PPO recipe with BAM actuators, 4,096 environments and 10,000 updates.
-It learns velocity-command walking without a demonstration dataset.
-[Native task setup and the algorithm distinction](docs/microduck.md).
 
 **Multiple robot tasks:** `tasks.py list` discovers tracking and locomotion
 tasks by category and robot. A3 uses the public SONIC A3 motions; T1 uses

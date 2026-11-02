@@ -1,8 +1,66 @@
-"""Seeded heightfields with six physically separate curriculum lanes."""
+"""Seeded terrain profiles and robot contracts for SuperMimic locomotion."""
 
 from dataclasses import dataclass
+from importlib import import_module
 
 import numpy as np
+
+from trackerTask.supermimic.robots import TRACKING_TASKS, get_robot
+
+
+PROFILES = ("stairs", "mountain", "parkour")
+ROBOTS = TRACKING_TASKS
+ROBOT_HEIGHTS = {
+    "g1": .76, "go2": .30, "a3": 1.09, "t1": .69, "bumi": .65, "pi_plus": .351,
+}
+
+
+@dataclass(frozen=True)
+class TerrainTask:
+    id: str
+    robot: str
+    profile: str
+
+    @property
+    def height(self):
+        return ROBOT_HEIGHTS[self.robot]
+
+    def describe(self):
+        return {"id": self.id, "robot": self.robot, "profile": self.profile,
+                "height_m": self.height, "algorithm": "supermimic"}
+
+
+TASKS = {
+    f"locomotion/{robot}/{profile}": TerrainTask(
+        f"locomotion/{robot}/{profile}", robot, profile,
+    )
+    for robot in ROBOTS for profile in PROFILES
+}
+
+
+def get_task(name):
+    try:
+        return TASKS[name]
+    except KeyError as error:
+        raise ValueError(f"Unknown SuperMimic terrain task {name!r}; choices: {tuple(TASKS)}") from error
+
+
+def robot_parameters(name):
+    """Return the existing named-joint and motor contract for one robot."""
+    spec = get_robot(name)
+    height = ROBOT_HEIGHTS[name]
+    if name == "g1":
+        from trackerTask.supermimic.robot import motor_of, _kp, _kd
+        motors = tuple((motor_of(joint)[0], motor_of(joint)[1],
+                        _kp(motor_of(joint)[2]), _kd(motor_of(joint)[2]),
+                        motor_of(joint)[2]) for joint in spec.joint_names)
+    elif name == "go2":
+        motors = ((23.5, 30., 25., .5, .01),) * spec.num_joints
+    else:
+        module = import_module(
+            f"trackerTask.supermimic.tracking.humanoid.robots.{name}.robot")
+        motors = tuple(module.motor(joint) for joint in spec.joint_names)
+    return spec, height, motors
 
 
 @dataclass
@@ -12,7 +70,7 @@ class Terrain:
     x_max: float
     y_min: float
     y_max: float
-    centers: tuple
+    centers: tuple[float, ...]
     goal_x: float
     seed: int
     profile: str
@@ -33,11 +91,10 @@ class Terrain:
 
 
 def generate(profile, height, seed=0):
-    if profile not in ("stairs", "mountain", "parkour"):
-        raise ValueError("Unknown terrain profile")
+    if profile not in PROFILES:
+        raise ValueError(f"Unknown terrain profile {profile!r}")
     if not np.isfinite(height) or height <= 0:
         raise ValueError("Robot height must be finite and positive")
-    # Distances scale with morphology; the MuJoCo heightfield owns collision geometry.
     scale = height / .76
     x = np.linspace(-2, 14, 257) * scale
     y = np.linspace(-12, 12, 385) * scale
@@ -64,7 +121,6 @@ def generate(profile, height, seed=0):
             )
             surface *= np.clip(active_x / .7, 0, 1)
         else:
-            # Alternating raised blocks, short lowered gaps and a rough exit.
             spacing = rng.uniform(.68, .84)
             tread_width = rng.uniform(.48, .62) - .1 * strength
             phase = rng.uniform(0, spacing)

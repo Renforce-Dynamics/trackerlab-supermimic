@@ -1,4 +1,4 @@
-"""MuJoCo adaptation of the repository's existing six robot motor contracts."""
+"""Build robot MJCF models with shared SuperMimic terrain and motor settings."""
 
 import hashlib
 from pathlib import Path
@@ -6,7 +6,7 @@ import xml.etree.ElementTree as ET
 
 import numpy as np
 
-from trackerTask.native.locomotion.perception.registry import robot_parameters
+from trackerTask.supermimic.terrain import robot_parameters
 
 
 def build_model(robot, terrain, solver_iterations=50):
@@ -35,7 +35,6 @@ def build_model(robot, terrain, solver_iterations=50):
     asset = document.find("asset")
     if asset is None:
         asset = ET.SubElement(document, "asset")
-    # Virtual files also support Windows workspaces with non-ASCII path components.
     virtual_files = {}
     for index, node in enumerate(asset):
         filename = node.get("file")
@@ -44,40 +43,51 @@ def build_model(robot, terrain, solver_iterations=50):
                 node.set("name", Path(filename).stem)
             folder = directories.get("meshdir" if node.tag == "mesh" else "texturedir", path.parent)
             original = (folder / filename).resolve()
-            safe_name = f"perception_asset_{index}" + original.suffix
+            safe_name = f"terrain_robot_asset_{index}" + original.suffix
             virtual_files[safe_name] = original.read_bytes()
             node.set("file", safe_name)
     ET.SubElement(asset, "hfield", {
-        "name": "perception_terrain", "nrow": str(terrain.heights.shape[0]),
+        "name": "supermimic_terrain", "nrow": str(terrain.heights.shape[0]),
         "ncol": str(terrain.heights.shape[1]), "size": " ".join(map(str, terrain.size)),
     })
     ET.SubElement(world, "geom", {
-        "name": "perception_ground", "type": "hfield", "hfield": "perception_terrain",
+        "name": "supermimic_ground", "type": "hfield", "hfield": "supermimic_terrain",
         "pos": " ".join(map(str, terrain.position)), "group": "5",
         "rgba": ".32 .43 .33 1", "contype": "1", "conaffinity": "2",
         "friction": "1 .005 .0001", "condim": "3", "priority": "1",
         "solref": ".04 1", "solimp": ".9 .95 .001 .5 2",
     })
     actuators = ET.SubElement(document, "actuator")
-    for name, (effort, velocity, kp, kd, armature) in zip(spec.joint_names, motors):
+    for name, (effort, _velocity, kp, kd, _armature) in zip(spec.joint_names, motors):
         ET.SubElement(actuators, "general", {
-            "name": "perception_" + name, "joint": name, "dyntype": "none",
+            "name": "supermimic_" + name, "joint": name, "dyntype": "none",
             "gaintype": "fixed", "biastype": "affine", "gainprm": str(kp),
             "biasprm": f"0 {-kp} {-kd}", "gear": "1",
             "forcelimited": "true", "forcerange": f"{-effort} {effort}",
             "ctrllimited": "false",
         })
-    model = mujoco.MjModel.from_xml_string(ET.tostring(document, encoding="unicode"), virtual_files)
-    if (model.nq, model.nv, model.nu) != (spec.num_joints + 7, spec.num_joints + 6, spec.num_joints):
-        raise ValueError(f"{robot}: expected exactly one free root and the named controlled joints")
-    jids = np.array([model.joint(n).id for n in spec.joint_names])
-    qids, vids = model.jnt_qposadr[jids].copy(), model.jnt_dofadr[jids].copy()
+    model = mujoco.MjModel.from_xml_string(
+        ET.tostring(document, encoding="unicode"), virtual_files)
+    if (model.nq, model.nv, model.nu) != (
+            spec.num_joints + 7, spec.num_joints + 6, spec.num_joints):
+        raise ValueError(f"{robot}: expected one free root and named policy actuators")
+    joint_ids = np.array([model.joint(name).id for name in spec.joint_names])
+    qpos_ids = model.jnt_qposadr[joint_ids].copy()
+    qvel_ids = model.jnt_dofadr[joint_ids].copy()
     root_id = model.body(spec.root_body).id
-    if (model.jnt_type[0] != mujoco.mjtJoint.mjJNT_FREE or model.jnt_bodyid[0] != root_id
-            or not np.all(model.jnt_type[jids] == mujoco.mjtJoint.mjJNT_HINGE)):
-        raise ValueError("Robot root or joint layout differs from its contract")
-    for i, motor in zip(vids, motors):
-        model.dof_armature[i], model.dof_damping[i], model.dof_frictionloss[i] = motor[4], 0, 0
+    com_id = model.body(spec.com_body).id
+    free = np.flatnonzero(model.jnt_type == mujoco.mjtJoint.mjJNT_FREE)
+    if (len(free) != 1 or model.jnt_bodyid[free[0]] != root_id
+            or not np.all(model.jnt_type[joint_ids] == mujoco.mjtJoint.mjJNT_HINGE)):
+        raise ValueError("Robot root or controlled-joint layout differs from its contract")
+    actuator_ids = []
+    for joint_id in joint_ids:
+        candidates = np.flatnonzero(model.actuator_trnid[:, 0] == joint_id)
+        if len(candidates) != 1:
+            raise ValueError("Each policy joint must have exactly one actuator")
+        actuator_ids.append(int(candidates[0]))
+    for dof_id, motor in zip(qvel_ids, motors):
+        model.dof_armature[dof_id], model.dof_damping[dof_id], model.dof_frictionloss[dof_id] = motor[4], 0, 0
     physical = (model.geom_contype != 0) | (model.geom_conaffinity != 0)
     robot_geoms = physical & (model.geom_bodyid != 0)
     model.geom_contype[robot_geoms], model.geom_conaffinity[robot_geoms] = 2, 1
@@ -90,9 +100,9 @@ def build_model(robot, terrain, solver_iterations=50):
     model.opt.iterations = solver_iterations
     model.opt.ls_iterations = 50
     model.hfield_data[:] = terrain.normalized.ravel()
-    # Hinge qpos0 defines the geometric reference, not a reset/home pose.
     mujoco.mj_setConst(model, mujoco.MjData(model))
     contract = {
+        "backend": "mujoco-warp", "algorithm": "supermimic-world-model-imagination-critic",
         "robot": robot, "source_mjcf": str(path),
         "source_mjcf_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
         "joint_names": list(spec.joint_names), "default_q": list(spec.default_q),
@@ -100,12 +110,11 @@ def build_model(robot, terrain, solver_iterations=50):
         "height": height, "physics_dt": .005, "control_substeps": 4,
         "solver_iterations": solver_iterations, "solver_ls_iterations": 50,
         "self_collisions": False,
-        "velocity_limit_note": "MuJoCo force limits are enforced; joint velocities are not artificially clipped.",
         "terrain": {
-            "profile": terrain.profile, "seed": terrain.seed, "shape": list(terrain.heights.shape),
+            "profile": terrain.profile, "seed": terrain.seed,
             "height_sha256": hashlib.sha256(terrain.heights.tobytes()).hexdigest(),
-            "size": terrain.size, "position": terrain.position, "centers": terrain.centers,
-            "goal_x": terrain.goal_x,
+            "shape": list(terrain.heights.shape), "size": terrain.size,
+            "position": terrain.position, "centers": terrain.centers, "goal_x": terrain.goal_x,
         },
     }
-    return model, spec, height, qids, vids, root_id, contract
+    return model, spec, height, qpos_ids, qvel_ids, root_id, com_id, actuator_ids, contract

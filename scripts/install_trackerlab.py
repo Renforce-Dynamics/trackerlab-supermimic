@@ -36,18 +36,12 @@ EXTENSIONS = (
     "source/trackerLab/trackerLab/motion_buffer/supermimic.py",
     "source/trackerLab/trackerLab/motion_buffer/motion_lib/supermimic.py",
     "source/trackerLab/trackerLab/tracker_env/supermimic",
-    "source/trackerLab/trackerLab/tracker_env/perception",
     "source/trackerLab/trackerLab/tracker_env/mdp/supermimic.py",
+    "source/trackerLab/trackerLab/tracker_env/mdp/supermimic_terrain.py",
     "source/trackerLab/trackerLab/tracker_env/mdp/supermimic_chase_dodge.py",
     "source/trackerLab/trackerLab/tracker_env/mdp/supermimic_velocity_dodge.py",
     "source/trackerTask/trackerTask/supermimic",
-    "source/trackerTask/trackerTask/native",
-    "source/trackerTask/trackerTask/native/locomotion",
-    "source/trackerTask/trackerTask/native/locomotion/perception",
     "scripts/rls/supermimic",
-    "scripts/rls/perception",
-    "scripts/rls/microduck",
-    "requirements-perception.txt",
 )
 
 LAZY = MARKER + '''

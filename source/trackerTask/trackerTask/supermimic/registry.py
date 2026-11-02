@@ -62,6 +62,12 @@ _ENTRIES = (
                "data/configs/go2_kine2go.json", profile)
       for profile, filename in (("standard", "velocity_dodge"), ("rapid", "rapid_dodge"),
                                 ("jump", "jump_dodge"), ("adaptive", "adaptive_dodge"))),
+    *(TaskEntry(f"locomotion/{robot}/{profile}", robot, "terrain",
+               (_QUADRUPED + ".go2.env_cfg:SuperMimicGo2TaskCfg" if robot == "go2" else
+                _HUMANOID + f".{robot}.env_cfg:SuperMimic{robot.title().replace('_', '')}TaskCfg"),
+               f"scripts/rls/supermimic/configs/terrain_{profile}.json", "procedural heightfield", profile)
+      for robot in ("g1", "go2", "a3", "t1", "bumi", "pi_plus")
+      for profile in ("stairs", "mountain", "parkour")),
 )
 TASK_REGISTRY = {entry.id: entry for entry in _ENTRIES}
 ALIASES = {"g1": "tracking/g1", "go2": "tracking/go2", "a3": "tracking/a3",

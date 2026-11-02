@@ -29,3 +29,6 @@ namespaces = false
 [tool.setuptools.package-data]
 "trackerLab.algorithms.supermimic" = ["LICENSE.upstream"]
 "trackerTask.supermimic" = ["**/*.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

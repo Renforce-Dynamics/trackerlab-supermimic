@@ -112,6 +112,10 @@ policy to choose its maneuver; the 8,096-environment preset runs 30,000 updates.
 Evaluation reports actual passage behavior and success for each height group.
 [Task, reward and evaluation details](docs/go2_adaptive_dodge.md).
 
+**Terrain-perception locomotion:** stairs, mountain and parkour tasks cover
+G1, Go2, A3, T1, Bumi and Pi+ with MuJoCo-Warp height-ray observations.
+[Task setup, validation and throughput limits](docs/perception.md).
+
 ## Install
 
 **MicroDuck native locomotion:** a separate Python 3.12 task uses the official

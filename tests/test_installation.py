@@ -10,10 +10,13 @@ import unittest
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "scripts"))
-from install_trackerlab import install, LAZY
+from install_trackerlab import EXTENSIONS, install, LAZY
 
 
 class InstallationTests(unittest.TestCase):
+    def test_extension_sources_are_unique(self):
+        self.assertEqual(len(EXTENSIONS), len(set(EXTENSIONS)))
+
     def host(self, directory):
         root = Path(directory)
         for package in ("trackerLab", "trackerTask"):
@@ -42,6 +45,12 @@ class InstallationTests(unittest.TestCase):
                 "# user customization\n",
             )
             self.assertEqual(install(root, apply=True)["files"], [])
+            result = subprocess.run(
+                [sys.executable, str(root / "scripts/rls/supermimic/tasks.py"),
+                 "show", "--task", "locomotion/g1/stairs"],
+                check=True, capture_output=True, text=True,
+            )
+            self.assertEqual(json.loads(result.stdout)["robot"], "g1")
             target.write_text("# changed after installation\n")
             with self.assertRaises(ValueError):
                 install(root, apply=True)

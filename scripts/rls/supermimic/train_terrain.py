@@ -407,7 +407,7 @@ def main():
         last_log = measured_start
         aggregates = []
         outcome_window = []
-        probe_first_index = max(args.wm_only_iters + 40, start_it)
+        probe_first_index = max(args.wm_only_iters + 40, start_it + 40)
         probe_started_at = None
         probe_start_completed = probe_first_index + 1
         probe_summary = None

@@ -96,8 +96,8 @@ def generate(profile, height, seed=0):
     if not np.isfinite(height) or height <= 0:
         raise ValueError("Robot height must be finite and positive")
     scale = height / .76
-    x = np.linspace(-2, 14, 257) * scale
-    y = np.linspace(-12, 12, 385) * scale
+    x = np.linspace(-2, 14, 129) * scale
+    y = np.linspace(-12, 12, 193) * scale
     xx, yy = np.meshgrid(x / scale, y / scale)
     centers = np.arange(-10, 11, 4)
     out = np.zeros_like(xx)

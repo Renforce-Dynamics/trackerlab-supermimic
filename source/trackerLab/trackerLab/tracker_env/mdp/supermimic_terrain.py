@@ -25,6 +25,7 @@ class HeightField:
                               torch.linspace(-.55, .55, 11, device=device), indexing="ij")
         self.offsets = torch.stack((x.flatten(), y.flatten()), -1) * self.scale
         self.model_offsets = torch.stack((x[::2, ::2].flatten(), y[::2, ::2].flatten()), -1) * self.scale
+        self.model_indices = torch.arange(self.offsets.shape[0], device=device).reshape(17, 11)[::2, ::2].flatten()
 
     def sample(self, xy):
         t = self.terrain

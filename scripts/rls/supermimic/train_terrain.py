@@ -65,6 +65,57 @@ def parse_args(argv=None):
     return parser.parse_args(argv)
 
 
+def migrate_terrain_checkpoint(checkpoint, model_indices,
+                               world_parameter_names, critic_parameter_names):
+    """Project checkpoints made with the earlier full terrain context."""
+    old_dim = checkpoint["world"]["terrain_norm.mean"].numel()
+    new_dim = model_indices.numel()
+    if old_dim == new_dim:
+        return False
+    if old_dim != 187:
+        raise ValueError(f"Unsupported terrain checkpoint width {old_dim}")
+    index = model_indices.cpu()
+
+    world_state = checkpoint["world"]
+    world_state["terrain_norm.mean"] = world_state["terrain_norm.mean"].index_select(0, index)
+    world_state["terrain_norm.var"] = world_state["terrain_norm.var"].index_select(0, index)
+    adapter = world_state["terrain_adapter.0.weight"]
+    base = adapter.shape[1] - old_dim
+    world_state["terrain_adapter.0.weight"] = torch.cat(
+        (adapter[:, :base], adapter[:, base:].index_select(1, index)), dim=1)
+
+    critic_state = checkpoint["critic"]
+    norm_mean = critic_state["norm.mean"]
+    base = norm_mean.numel() - old_dim
+    critic_state["norm.mean"] = torch.cat(
+        (norm_mean[:base], norm_mean[base:].index_select(0, index)))
+    critic_state["norm.var"] = torch.cat(
+        (critic_state["norm.var"][:base],
+         critic_state["norm.var"][base:].index_select(0, index)))
+    value_weight = critic_state["net.0.weight"]
+    critic_state["net.0.weight"] = torch.cat(
+        (value_weight[:, :base], value_weight[:, base:].index_select(1, index)), dim=1)
+
+    for optimizer_name, parameter_names, target_name, prefix_width in (
+        ("opt_wm", world_parameter_names, "terrain_adapter.0.weight",
+         adapter.shape[1] - old_dim),
+        ("opt_v", critic_parameter_names, "net.0.weight", norm_mean.numel() - old_dim),
+    ):
+        optimizer_state = checkpoint[optimizer_name]
+        ids = optimizer_state["param_groups"][0]["params"]
+        target_index = parameter_names.index(target_name) if target_name in parameter_names else None
+        if target_index is None or target_index >= len(ids):
+            continue
+        state = optimizer_state["state"].get(ids[target_index], {})
+        for key in ("exp_avg", "exp_avg_sq", "max_exp_avg_sq"):
+            value = state.get(key)
+            if value is not None and value.ndim == 2 and value.shape[1] == prefix_width + old_dim:
+                state[key] = torch.cat(
+                    (value[:, :prefix_width], value[:, prefix_width:].index_select(1, index)), dim=1)
+    checkpoint["_terrain_context_migrated"] = True
+    return True
+
+
 def main():
     args = parse_args()
     task = get_task(args.task)
@@ -127,13 +178,21 @@ def main():
         if ck["task"] != args.task:
             raise ValueError("Resume checkpoint task differs")
         actor.load_state_dict(ck["actor"])
+        migrated = migrate_terrain_checkpoint(
+            ck, field.model_indices,
+            tuple(name for name, _ in world.named_parameters()),
+            tuple(name for name, _ in critic.named_parameters()),
+        )
         world.load_state_dict(ck["world"])
         critic.load_state_dict(ck["critic"])
-        opt_wm.load_state_dict(ck["opt_wm"])
         opt_pi.load_state_dict(ck["opt_pi"])
+        opt_wm.load_state_dict(ck["opt_wm"])
         opt_v.load_state_dict(ck["opt_v"])
         for optimizer in (opt_wm, opt_pi, opt_v):
             restore_eager_adam_step_counters(optimizer)
+        if migrated:
+            print("Migrated full-scan terrain context to sparse model/critic context; "
+                  "projected optimizer moments were preserved.", flush=True)
         start_it = ck["iteration"]
     elif args.warm_start:
         ck = torch.load(args.warm_start.resolve(), map_location=args.device, weights_only=False)

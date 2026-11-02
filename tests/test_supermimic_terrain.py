@@ -1,6 +1,7 @@
 """CPU contracts for the SuperMimic terrain downstream path."""
 
 import json
+from dataclasses import replace
 from pathlib import Path
 import subprocess
 import sys
@@ -122,6 +123,14 @@ class SuperMimicTerrainTests(unittest.TestCase):
         error.backward()
         self.assertTrue(all(parameter.grad is None or torch.isfinite(parameter.grad).all()
                             for parameter in wm.parameters()))
+
+    def test_heightfield_uses_mujoco_main_diagonal_triangles(self):
+        data = replace(generate("mountain", .76), heights=np.array([[0., 0.], [0., 1.]],
+                                                                 dtype=np.float32),
+                       x_min=0., x_max=1., y_min=0., y_max=1.)
+        field = HeightField(data, .76, "cpu")
+        points = torch.tensor([[.75, .25], [.25, .75], [.5, .5]])
+        torch.testing.assert_close(field.sample(points), torch.tensor([.25, .25, .5]))
 
     def test_replay_buffer_keeps_task_scenario_for_windows_and_histories(self):
         buffer = ReplayBuffer(8, 2, "cpu", num_joints=12, scenario_dim=2)

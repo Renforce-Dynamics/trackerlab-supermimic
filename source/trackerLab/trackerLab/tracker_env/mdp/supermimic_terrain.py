@@ -33,9 +33,10 @@ class HeightField:
         fx, fy = x - ix, y - iy
         h00, h10 = self.values[iy, ix], self.values[iy, ix + 1]
         h01, h11 = self.values[iy + 1, ix], self.values[iy + 1, ix + 1]
-        lower = h00 + fx * (h10 - h00) + fy * (h01 - h00)
-        upper = h11 + (1 - fx) * (h01 - h11) + (1 - fy) * (h10 - h11)
-        return torch.where(fx + fy <= 1, lower, upper)
+        # MuJoCo splits each cell along the (0, 0) to (1, 1) diagonal.
+        lower = h00 + fx * (h10 - h00) + fy * (h11 - h10)
+        upper = h00 + fx * (h11 - h01) + fy * (h01 - h00)
+        return torch.where(fx >= fy, lower, upper)
 
     def inside(self, xy):
         t = self.terrain

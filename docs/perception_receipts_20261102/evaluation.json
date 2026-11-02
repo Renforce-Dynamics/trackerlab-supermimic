@@ -1,0 +1,264 @@
+{
+  "task": "locomotion/g1/stairs",
+  "checkpoint": "/root/autodl-tmp/work/trackerlab-supermimic-perception/logs/calibration-g1-4096-fixed/last.pt",
+  "checkpoint_sha256": "14349854c97cfd476bf419c1486cb545894403c0f5c86920bf7529b36e190e87",
+  "completed_updates": 1100,
+  "training_seed": 42,
+  "evaluation_seed": 123,
+  "terrain_seed_held_out": true,
+  "seed_changes_geometry": true,
+  "geometry_differs_from_training": true,
+  "source_audit": {
+    "recorded_files": 10,
+    "changed": {
+      "scripts/rls/perception/common.py": {
+        "training_sha256": "939199644d23bed911ad7acebc060239562c56e2d1ca699f15b5408fc62c9874",
+        "current_sha256": "1b03a35e26c07e7c1528121d9fa7b06f76b864316fd30c7ab10e47b89c152561"
+      },
+      "scripts/rls/perception/train.py": {
+        "training_sha256": "31c33fa84f4ac55d959929a29358d9858e4710ce539fe8a5d6e1c79322dff023",
+        "current_sha256": "b1e8656e6c67982e0d6bea033aca43a5a56d5909cbde745b1868829e4047ce2e"
+      },
+      "scripts/rls/perception/validate.py": {
+        "training_sha256": "ca6e06d672b18ac64ba5a42d5e12506990a2e4eda6bcdc9acfe479c70a4ccda8",
+        "current_sha256": "47407a422e2af286e3100900bc74894d1e04aa873197883d969ecd5ca6ecbdfe"
+      },
+      "source/trackerLab/trackerLab/tracker_env/perception/env.py": {
+        "training_sha256": "02907fe1e90c5b136bfdf433158e18b08c5c85f8503d90f1739610c44e08c2ec",
+        "current_sha256": "6b836357a58c9031db607485b944305f330acbe6688308ae78f9de1db0975dc8"
+      },
+      "source/trackerLab/trackerLab/tracker_env/perception/terrain.py": {
+        "training_sha256": "18cbf7b39c938fe9fd77c8eb7c5553b8fd4ce2080a3ad488577981322951b1b7",
+        "current_sha256": "a4305cfcd11165cf47dcbd932f49a2cc656a7ebe23566f99df549d93474c6144"
+      },
+      "source/trackerTask/trackerTask/native/locomotion/perception/registry.py": {
+        "training_sha256": "a73819cd66dee9dbc3a3751b8f0da81087179812792f09645b5fc6670862063f",
+        "current_sha256": "2d9f1b459e5735e7a4d799a15aac78c822fd6bfd7f92689e5ff5088bbbdc8a6e"
+      }
+    },
+    "missing": []
+  },
+  "protocol": "One first episode per environment and mode; levels stratified equally; identical initial conditions; unfinished horizons remain censored.",
+  "perception_limit": "Idealized terrain rays, no RGB/depth encoder. Shuffle is spatial reversal; ablations are diagnostics, not proof of causal sensor use.",
+  "results": [
+    {
+      "mode": "normal",
+      "level": 0,
+      "episodes": 4,
+      "successes": 4,
+      "falls": 0,
+      "censored_or_timeout": 0,
+      "mean_progress_m": 9.004941940307617,
+      "mean_first_episode_seconds": 15.795,
+      "mean_return": 25.96387481689453,
+      "velocity_rmse_m_s": 0.12272179126739502
+    },
+    {
+      "mode": "normal",
+      "level": 1,
+      "episodes": 4,
+      "successes": 4,
+      "falls": 0,
+      "censored_or_timeout": 0,
+      "mean_progress_m": 9.004427909851074,
+      "mean_first_episode_seconds": 16.065,
+      "mean_return": 26.346435546875,
+      "velocity_rmse_m_s": 0.12810799479484558
+    },
+    {
+      "mode": "normal",
+      "level": 2,
+      "episodes": 4,
+      "successes": 4,
+      "falls": 0,
+      "censored_or_timeout": 0,
+      "mean_progress_m": 9.007295608520508,
+      "mean_first_episode_seconds": 18.395,
+      "mean_return": 26.23880386352539,
+      "velocity_rmse_m_s": 0.2373315989971161
+    },
+    {
+      "mode": "normal",
+      "level": 3,
+      "episodes": 4,
+      "successes": 4,
+      "falls": 0,
+      "censored_or_timeout": 0,
+      "mean_progress_m": 9.003547668457031,
+      "mean_first_episode_seconds": 15.22,
+      "mean_return": 23.96096420288086,
+      "velocity_rmse_m_s": 0.18033021688461304
+    },
+    {
+      "mode": "normal",
+      "level": 4,
+      "episodes": 4,
+      "successes": 2,
+      "falls": 2,
+      "censored_or_timeout": 0,
+      "mean_progress_m": 7.804702281951904,
+      "mean_first_episode_seconds": 12.98,
+      "mean_return": 18.315040588378906,
+      "velocity_rmse_m_s": 0.2902586758136749
+    },
+    {
+      "mode": "normal",
+      "level": 5,
+      "episodes": 4,
+      "successes": 4,
+      "falls": 0,
+      "censored_or_timeout": 0,
+      "mean_progress_m": 9.006765365600586,
+      "mean_first_episode_seconds": 14.125,
+      "mean_return": 22.051977157592773,
+      "velocity_rmse_m_s": 0.20515601336956024
+    },
+    {
+      "mode": "zero",
+      "level": 0,
+      "episodes": 4,
+      "successes": 3,
+      "falls": 1,
+      "censored_or_timeout": 0,
+      "mean_progress_m": 8.472721099853516,
+      "mean_first_episode_seconds": 11.02,
+      "mean_return": 15.991541862487793,
+      "velocity_rmse_m_s": 0.23442643880844116
+    },
+    {
+      "mode": "zero",
+      "level": 1,
+      "episodes": 4,
+      "successes": 0,
+      "falls": 4,
+      "censored_or_timeout": 0,
+      "mean_progress_m": 7.863872051239014,
+      "mean_first_episode_seconds": 10.3,
+      "mean_return": 13.872966766357422,
+      "velocity_rmse_m_s": 0.2412603199481964
+    },
+    {
+      "mode": "zero",
+      "level": 2,
+      "episodes": 4,
+      "successes": 0,
+      "falls": 4,
+      "censored_or_timeout": 0,
+      "mean_progress_m": 2.79970383644104,
+      "mean_first_episode_seconds": 3.775,
+      "mean_return": 4.800587177276611,
+      "velocity_rmse_m_s": 0.28778746724128723
+    },
+    {
+      "mode": "zero",
+      "level": 3,
+      "episodes": 4,
+      "successes": 0,
+      "falls": 4,
+      "censored_or_timeout": 0,
+      "mean_progress_m": 2.5179266929626465,
+      "mean_first_episode_seconds": 3.075,
+      "mean_return": 3.759045124053955,
+      "velocity_rmse_m_s": 0.32707175612449646
+    },
+    {
+      "mode": "zero",
+      "level": 4,
+      "episodes": 4,
+      "successes": 0,
+      "falls": 4,
+      "censored_or_timeout": 0,
+      "mean_progress_m": 2.3598902225494385,
+      "mean_first_episode_seconds": 3.08,
+      "mean_return": 3.656135320663452,
+      "velocity_rmse_m_s": 0.35348206758499146
+    },
+    {
+      "mode": "zero",
+      "level": 5,
+      "episodes": 4,
+      "successes": 0,
+      "falls": 4,
+      "censored_or_timeout": 0,
+      "mean_progress_m": 2.1094205379486084,
+      "mean_first_episode_seconds": 2.105,
+      "mean_return": 2.420457124710083,
+      "velocity_rmse_m_s": 0.5993577837944031
+    },
+    {
+      "mode": "shuffle",
+      "level": 0,
+      "episodes": 4,
+      "successes": 4,
+      "falls": 0,
+      "censored_or_timeout": 0,
+      "mean_progress_m": 9.004094123840332,
+      "mean_first_episode_seconds": 15.725,
+      "mean_return": 26.068635940551758,
+      "velocity_rmse_m_s": 0.12044820934534073
+    },
+    {
+      "mode": "shuffle",
+      "level": 1,
+      "episodes": 4,
+      "successes": 3,
+      "falls": 1,
+      "censored_or_timeout": 0,
+      "mean_progress_m": 7.410231590270996,
+      "mean_first_episode_seconds": 14.815,
+      "mean_return": 21.899005889892578,
+      "velocity_rmse_m_s": 0.18281887471675873
+    },
+    {
+      "mode": "shuffle",
+      "level": 2,
+      "episodes": 4,
+      "successes": 0,
+      "falls": 4,
+      "censored_or_timeout": 0,
+      "mean_progress_m": 1.3720331192016602,
+      "mean_first_episode_seconds": 3.475,
+      "mean_return": 3.5446863174438477,
+      "velocity_rmse_m_s": 0.40791016817092896
+    },
+    {
+      "mode": "shuffle",
+      "level": 3,
+      "episodes": 4,
+      "successes": 0,
+      "falls": 4,
+      "censored_or_timeout": 0,
+      "mean_progress_m": 0.7867531776428223,
+      "mean_first_episode_seconds": 2.29,
+      "mean_return": 2.2083334922790527,
+      "velocity_rmse_m_s": 0.4257785975933075
+    },
+    {
+      "mode": "shuffle",
+      "level": 4,
+      "episodes": 4,
+      "successes": 0,
+      "falls": 4,
+      "censored_or_timeout": 0,
+      "mean_progress_m": 0.7010316252708435,
+      "mean_first_episode_seconds": 2.48,
+      "mean_return": 2.163433790206909,
+      "velocity_rmse_m_s": 0.5105085968971252
+    },
+    {
+      "mode": "shuffle",
+      "level": 5,
+      "episodes": 4,
+      "successes": 0,
+      "falls": 4,
+      "censored_or_timeout": 0,
+      "mean_progress_m": 0.5814685821533203,
+      "mean_first_episode_seconds": 1.795,
+      "mean_return": 1.5834109783172607,
+      "velocity_rmse_m_s": 0.5293888449668884
+    }
+  ],
+  "finished_at": "2026-11-02T13:01:46.505926+00:00",
+  "video_visual_review": "pending",
+  "video_env": 5
+}

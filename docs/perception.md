@@ -48,6 +48,9 @@ whether the evaluated geometry differs from the saved training heightfield.
 All three terrain profiles vary with the seed. Older calibration runs used a
 fixed stair/parkour layout; their evaluations retain that source difference.
 
+See [the November 2, 2026 training record](perception_training_20261102.md)
+for the active campaign, environment admission, validation and throughput.
+
 ## Throughput
 
 The G1 4,096-environment calibration completed 1,100 updates in 2,048.98

@@ -1,0 +1,19 @@
+{
+  "task": "locomotion/g1/stairs",
+  "num_envs": 4096,
+  "measured_updates": 198,
+  "warmup_updates_excluded": 100,
+  "first_completed_update": 101,
+  "last_completed_update": 298,
+  "elapsed_seconds": 333.15881871804595,
+  "ppo_updates_per_second": 0.5943111479440334,
+  "transitions_per_second": 58423.163087490255,
+  "median_update_seconds": 1.677664963528514,
+  "peak_allocated_gib": 0.762810230255127,
+  "tele_reference_outer_updates_per_second": 2.47115,
+  "tele_reference_seconds": 404.67,
+  "tele_reference_updates": 1000,
+  "algorithm_iteration_parity": false,
+  "protocol": "Wall intervals between logged updates; previous logging and checkpoint IO included. Initialization and selected warmup excluded.",
+  "comparison_limit": "PPO uses 24 simulator control steps and 20 minibatch optimizer steps per update. Tele uses a world model and imagined policy updates; iteration rates measure different workloads."
+}

@@ -1,0 +1,16 @@
+{
+  "phase": "training",
+  "task": "locomotion/g1/stairs",
+  "pid": 133876,
+  "updated_at": "2026-11-02T13:23:00.921094+00:00",
+  "completed_updates": 650,
+  "iteration_seconds": 1.8936047703027725,
+  "collection_seconds": 1.824976921081543,
+  "learning_seconds": 0.0676584243774414,
+  "transitions_per_second": 51913.68417617683,
+  "terrain_level_mean": 4.992919921875,
+  "peak_allocated_gib": 0.762810230255127,
+  "loss_value_function": 0.021571943163871767,
+  "loss_surrogate": -0.010455959319369868,
+  "loss_entropy": 84.5022964477539
+}

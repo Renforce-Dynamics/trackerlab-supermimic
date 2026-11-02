@@ -43,7 +43,15 @@ def qualify(task):
     if not (env.ray_geom >= 0).all().item():
         raise AssertionError(f"{task.id}: terrain rays missed the ground")
     before_q, before_v = env.qpos.clone(), env.qvel.clone()
+    before_xi = env.xi[[0, 2]].clone()
     env.reset(torch.tensor([0, 2], device=device))
+    reset_ids = torch.tensor([0, 2], device=device)
+    if torch.equal(env.xi[reset_ids], before_xi):
+        raise AssertionError(f"{task.id}: episode randomization did not refresh")
+    expected_com = env.base_body_ipos[reset_ids, env.com_id, :3] + env.xi[reset_ids, -3:]
+    torch.testing.assert_close(env.body_ipos[reset_ids, env.com_id, :3], expected_com)
+    torch.testing.assert_close(env.geom_friction[reset_ids, :, 0],
+                               env.xi[reset_ids, :1].expand(-1, env.geom_friction.shape[1]))
     keep = torch.ones(24, dtype=torch.bool, device=device)
     keep[[0, 2]] = False
     torch.testing.assert_close(env.qpos[keep], before_q[keep], atol=0, rtol=0)
@@ -58,7 +66,8 @@ def qualify(task):
     for value, copy in zip(snapshot, copies):
         torch.testing.assert_close(value, copy, atol=0, rtol=0)
     result = {"task": task.id, "physics": "passed", "partial_reset": "passed",
-              "state_snapshot_storage": "passed", "height_ray_max_abs_error": scan_error,
+              "state_snapshot_storage": "passed", "episode_randomization": "passed",
+              "height_ray_max_abs_error": scan_error,
               "num_joints": spec.num_joints, "simulator_contract": env.contract}
     return result
 

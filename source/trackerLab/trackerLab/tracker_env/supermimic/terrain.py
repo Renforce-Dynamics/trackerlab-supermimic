@@ -135,13 +135,12 @@ class TerrainSim:
     def _randomize(self, ids, initialize=False):
         count = len(ids)
         self.xi[ids, 1:-3] = (2 * torch.rand(count, self.spec.num_joints, device=self.device) - 1) * .01
-        if initialize:
-            self.xi[ids, 0] = .3 + .9 * torch.rand(count, device=self.device)
-            self.xi[ids, -3:] = (2 * torch.rand(count, 3, device=self.device) - 1) * (.025 * self.scale)
-            self.geom_friction[ids] = self.base_geom_friction[ids]
-            self.geom_friction[ids, :, 0] = self.xi[ids, 0:1]
-            self.body_ipos[ids] = self.base_body_ipos[ids]
-            self.body_ipos[ids, self.com_id, :3] += self.xi[ids, -3:]
+        self.xi[ids, 0] = .3 + .9 * torch.rand(count, device=self.device)
+        self.xi[ids, -3:] = (2 * torch.rand(count, 3, device=self.device) - 1) * (.025 * self.scale)
+        self.geom_friction[ids] = self.base_geom_friction[ids]
+        self.geom_friction[ids, :, 0] = self.xi[ids, 0:1]
+        self.body_ipos[ids] = self.base_body_ipos[ids]
+        self.body_ipos[ids, self.com_id, :3] += self.xi[ids, -3:]
 
     def _reset_state(self, ids):
         self.mw.reset_data(self.model, self.data, self.wp.from_torch(
@@ -171,10 +170,10 @@ class TerrainSim:
         if ids is None:
             ids = torch.arange(self.num_envs, device=self.device)
         ids = ids.to(device=self.device, dtype=torch.long)
-        self._randomize(ids)
         self.levels[ids] = (torch.randint(0, 2, (len(ids),), device=self.device)
                             if levels is None else levels.to(device=self.device, dtype=torch.long))
         with self._warp_context():
+            self._randomize(ids)
             self._reset_state(ids)
             self.mw.forward(self.model, self.data)
         self._update_rays()
@@ -255,8 +254,8 @@ class TerrainSim:
                 retreat = (fallen[ids] & (S1[0][ids, 0] < self.scale)).long()
                 self.levels[ids] = (self.levels[ids] + advance - retreat).clamp(0, 5)
             self.c[ids, 0] = self.centers[self.levels[ids]]
-            self._randomize(ids)
             with self._warp_context():
+                self._randomize(ids)
                 self._reset_state(ids)
                 self.mw.forward(self.model, self.data)
         self._update_rays()

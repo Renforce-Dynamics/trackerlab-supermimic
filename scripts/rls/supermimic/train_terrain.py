@@ -179,9 +179,12 @@ def main():
 
     if args.compile:
         wm_window = torch.compile(wm_window, mode="reduce-overhead")
-        imag_step = torch.compile(imag_step)
+        imag_step = torch.compile(imag_step, mode="reduce-overhead")
         reward_term = torch.compile(reward_term)
         critic_input = torch.compile(critic_input)
+        collect_actor = torch.compile(actor, mode="reduce-overhead")
+    else:
+        collect_actor = actor
 
     @torch.no_grad()
     def collect(steps):
@@ -197,7 +200,7 @@ def main():
             goal = mdp.goal(state, env.c)
             actor.obs_norm.update(obs)
             actor.goal_norm.update(goal)
-            action = actor(obs_hist, goal)
+            action = collect_actor(obs_hist, goal)
             action = action + .1 * torch.randn_like(action)
             transition = env.step(action)
             buffer.add(transition)
@@ -238,6 +241,8 @@ def main():
                 {key: torch.cat([row[key] for row in histories]) for key in histories[0]})
 
     def policy_update():
+        if args.compile:
+            torch.compiler.cudagraph_mark_step_begin()
         if args.profile:
             torch.cuda.synchronize()
             profile_start = time.monotonic()

@@ -22,6 +22,7 @@ from trackerLab.algorithms.supermimic.networks import WorldModel
 from trackerLab.algorithms.supermimic.terrain_networks import TerrainPolicy, TerrainWorldModel
 from trackerLab.tracker_env.mdp.supermimic import normalize_xi
 from trackerLab.tracker_env.mdp.supermimic_terrain import HeightField, TerrainMDP, terminal_masks
+from train_terrain import migrate_terrain_checkpoint
 
 
 class SuperMimicTerrainTests(unittest.TestCase):
@@ -149,6 +150,44 @@ class SuperMimicTerrainTests(unittest.TestCase):
         action.square().sum().backward()
         self.assertTrue(torch.isfinite(observations.grad).all())
         self.assertGreater(observations.grad[..., -187:].abs().sum().item(), 0)
+
+    def test_full_scan_checkpoint_migrates_weights_norms_and_adam_moments(self):
+        indices = torch.arange(0, 187, dtype=torch.long)[torch.tensor(
+            [index % 2 == 0 for index in range(187)])][:54]
+        world_weight = torch.arange(256 * 320, dtype=torch.float32).view(256, 320)
+        critic_weight = torch.arange(256 * 246, dtype=torch.float32).view(256, 246)
+        old_world_moment = world_weight.clone()
+        old_critic_moment = critic_weight.clone()
+        checkpoint = {
+            "world": {
+                "terrain_norm.mean": torch.arange(187, dtype=torch.float32),
+                "terrain_norm.var": torch.ones(187),
+                "terrain_adapter.0.weight": world_weight.clone(),
+            },
+            "critic": {
+                "norm.mean": torch.arange(246, dtype=torch.float32),
+                "norm.var": torch.ones(246),
+                "net.0.weight": critic_weight.clone(),
+            },
+            "opt_wm": {
+                "param_groups": [{"params": [10, 11]}],
+                "state": {11: {"exp_avg": old_world_moment, "exp_avg_sq": old_world_moment}},
+            },
+            "opt_v": {
+                "param_groups": [{"params": [20]}],
+                "state": {20: {"exp_avg": old_critic_moment, "exp_avg_sq": old_critic_moment}},
+            },
+        }
+        self.assertTrue(migrate_terrain_checkpoint(
+            checkpoint, indices, ("net.0.weight", "terrain_adapter.0.weight"),
+            ("net.0.weight",)))
+        torch.testing.assert_close(checkpoint["world"]["terrain_norm.mean"], indices.float())
+        torch.testing.assert_close(checkpoint["world"]["terrain_adapter.0.weight"][:, :133],
+                                   world_weight[:, :133])
+        torch.testing.assert_close(checkpoint["world"]["terrain_adapter.0.weight"][:, 133:],
+                                   world_weight[:, 133:].index_select(1, indices))
+        self.assertEqual(checkpoint["opt_wm"]["state"][11]["exp_avg"].shape, (256, 187))
+        self.assertEqual(checkpoint["opt_v"]["state"][20]["exp_avg"].shape, (256, 113))
 
     def test_success_fall_timeout_masks_are_mutually_exclusive(self):
         goal = torch.tensor([False, True, True, False])

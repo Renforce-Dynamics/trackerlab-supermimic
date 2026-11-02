@@ -74,7 +74,7 @@ def migrate_terrain_checkpoint(checkpoint, model_indices,
         return False
     if old_dim != 187:
         raise ValueError(f"Unsupported terrain checkpoint width {old_dim}")
-    index = model_indices.cpu()
+    index = model_indices.to(device=checkpoint["world"]["terrain_norm.mean"].device)
 
     world_state = checkpoint["world"]
     world_state["terrain_norm.mean"] = world_state["terrain_norm.mean"].index_select(0, index)

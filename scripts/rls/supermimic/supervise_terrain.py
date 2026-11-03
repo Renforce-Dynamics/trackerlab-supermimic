@@ -54,6 +54,14 @@ def trusted_checkpoint(job, threshold):
     return None
 
 
+def warm_start_source(task, initial_checkpoints, previous_by_robot, prefer_initial=False):
+    if prefer_initial and task.id in initial_checkpoints:
+        return initial_checkpoints[task.id]
+    if task.robot in previous_by_robot:
+        return previous_by_robot[task.robot][1]
+    return initial_checkpoints.get(task.id)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run-dir", type=Path, required=True)
@@ -65,6 +73,8 @@ def main():
     parser.add_argument("--validation-seeds", type=int, nargs="+", default=[43, 44, 45])
     parser.add_argument("--warm-start-min-success", type=float, default=.5)
     parser.add_argument("--initial-checkpoints", type=Path)
+    parser.add_argument("--prefer-initial-checkpoints", action="store_true")
+    parser.add_argument("--wait-for-lock", action="store_true")
     parser.add_argument("--plan", action="store_true")
     args = parser.parse_args()
     plan = [{"task": name, "iterations": args.iterations, "phase": "pending"} for name in args.tasks]
@@ -104,11 +114,22 @@ def main():
     import fcntl
     (REPO / "logs").mkdir(exist_ok=True)
     lock = (REPO / "logs" / ".supermimic-terrain-gpu0.lock").open("a")
-    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    while True:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except BlockingIOError:
+            if not args.wait_for_lock:
+                raise
+            if stop["requested"] or (root / "STOP").exists():
+                lock.close()
+                return
+            time.sleep(1)
     status = {"phase": "running", "pid": os.getpid(), "started_at": now(),
               "num_envs": args.num_envs, "jobs": plan,
               "validation_seeds": args.validation_seeds,
-              "warm_start_min_success": args.warm_start_min_success}
+              "warm_start_min_success": args.warm_start_min_success,
+              "prefer_initial_checkpoints": args.prefer_initial_checkpoints}
 
     def record():
         status["updated_at"] = now()
@@ -224,10 +245,11 @@ def main():
             (run / "STOP").unlink(missing_ok=True)
             if checkpoint.exists():
                 command.extend(("--resume", str(checkpoint)))
-            elif task.robot in previous_by_robot:
-                command.extend(("--warm-start", str(previous_by_robot[task.robot][1])))
-            elif task.id in initial_checkpoints:
-                command.extend(("--warm-start", str(initial_checkpoints[task.id])))
+            else:
+                source = warm_start_source(task, initial_checkpoints, previous_by_robot,
+                                           args.prefer_initial_checkpoints)
+                if source is not None:
+                    command.extend(("--warm-start", str(source)))
             job.update(phase="training", run_dir=str(run), started_at=now(), command=command)
             status["active_job"] = job
             record()

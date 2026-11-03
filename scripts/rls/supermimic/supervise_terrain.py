@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
+import shutil
 import signal
 import subprocess
 import sys
@@ -26,6 +27,33 @@ def save(path, value):
     temporary.replace(path)
 
 
+def evaluation_metrics(result):
+    lanes = result["lanes"]
+    if len(lanes) != 6 or any(row["episodes"] <= 0 for row in lanes):
+        raise ValueError("Evaluation must contain completed episodes at all six difficulty levels")
+    episodes = sum(row["episodes"] for row in lanes)
+    return {
+        "episodes": episodes,
+        "success_fraction": sum(row["successes"] for row in lanes) / episodes,
+        "fall_fraction": sum(row["falls"] for row in lanes) / episodes,
+        "macro_success": sum(row["successes"] / row["episodes"] for row in lanes) / len(lanes),
+        "macro_fall": sum(row["falls"] / row["episodes"] for row in lanes) / len(lanes),
+    }
+
+
+def choose_checkpoint(candidates):
+    return max(candidates, key=lambda row: (row["metrics"]["macro_success"],
+                                            -row["metrics"]["macro_fall"],
+                                            row["iteration"]))
+
+
+def trusted_checkpoint(job, threshold):
+    metrics = job.get("validation_metrics", {})
+    if metrics.get("min_seed_macro_success", -1) >= threshold:
+        return Path(job["best_checkpoint"])
+    return None
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run-dir", type=Path, required=True)
@@ -34,6 +62,9 @@ def main():
     parser.add_argument("--iterations", type=int, default=10000)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--evaluation-steps", type=int, default=1500)
+    parser.add_argument("--validation-seeds", type=int, nargs="+", default=[43, 44, 45])
+    parser.add_argument("--warm-start-min-success", type=float, default=.5)
+    parser.add_argument("--initial-checkpoints", type=Path)
     parser.add_argument("--plan", action="store_true")
     args = parser.parse_args()
     plan = [{"task": name, "iterations": args.iterations, "phase": "pending"} for name in args.tasks]
@@ -42,6 +73,20 @@ def main():
         return
     if min(args.num_envs, args.iterations) < 1:
         parser.error("Environment count and iteration target must be positive")
+    if (len(args.validation_seeds) < 2 or len(set(args.validation_seeds)) != len(args.validation_seeds)
+            or args.seed in args.validation_seeds):
+        parser.error("Use at least two unique validation seeds distinct from training")
+    if not 0 <= args.warm_start_min_success <= 1:
+        parser.error("Warm-start threshold must be between zero and one")
+    initial_checkpoints = {}
+    if args.initial_checkpoints:
+        initial_checkpoints = json.loads(args.initial_checkpoints.read_text(encoding="utf-8"))
+        if any(name not in TASKS for name in initial_checkpoints):
+            parser.error("Initial checkpoint map contains an unknown task")
+        initial_checkpoints = {name: Path(path).resolve()
+                               for name, path in initial_checkpoints.items()}
+        if any(not path.is_file() for path in initial_checkpoints.values()):
+            parser.error("An initial checkpoint is missing")
     root = args.run_dir.resolve()
     root.mkdir(parents=True, exist_ok=True)
     receipt_path = root / "campaign.json"
@@ -61,33 +106,92 @@ def main():
     lock = (REPO / "logs" / ".supermimic-terrain-gpu0.lock").open("a")
     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     status = {"phase": "running", "pid": os.getpid(), "started_at": now(),
-              "num_envs": args.num_envs, "jobs": plan}
+              "num_envs": args.num_envs, "jobs": plan,
+              "validation_seeds": args.validation_seeds,
+              "warm_start_min_success": args.warm_start_min_success}
 
     def record():
         status["updated_at"] = now()
         save(receipt_path, status)
 
-    def evaluate(job, checkpoint, run):
-        job["phase"] = "evaluating"
-        status["active_job"] = job
-        record()
-        evaluation = run / "evaluation.json"
+    def evaluate_one(job, checkpoint, output, seed, run):
         with (run / "evaluation_stdout.log").open("a", encoding="utf-8") as log:
             child = subprocess.Popen(
                 [sys.executable, "-u", str(Path(__file__).with_name("evaluate_terrain.py")),
-                 "--checkpoint", str(checkpoint), "--output", str(evaluation),
-                 "--steps", str(args.evaluation_steps), "--seed", str(args.seed + 1)],
+                 "--checkpoint", str(checkpoint), "--output", str(output),
+                 "--steps", str(args.evaluation_steps), "--seed", str(seed)],
                 cwd=REPO, stdout=log, stderr=subprocess.STDOUT,
             )
             status["child_pid"] = child.pid
             while child.poll() is None:
                 record()
                 time.sleep(5)
-        job.update(evaluation_exit_code=child.returncode, evaluation=str(evaluation),
-                   phase="completed" if child.returncode == 0 and evaluation.exists() else "failed",
-                   finished_at=now())
+        job["evaluation_exit_code"] = child.returncode
+        if child.returncode != 0 or not output.exists():
+            job.update(phase="failed", failed_evaluation=str(output), finished_at=now())
+            record()
+            return None
+        result = json.loads(output.read_text(encoding="utf-8"))
+        return {"checkpoint": str(checkpoint), "iteration": result["trained_iterations"],
+                "evaluation": str(output), "seed": seed, "metrics": evaluation_metrics(result)}
+
+    def evaluate(job, checkpoint, run):
+        job["phase"] = "evaluating"
+        status["active_job"] = job
         record()
-        return job["phase"] == "completed"
+        selection_seed, *test_seeds = args.validation_seeds
+        milestones = sorted(run.glob("iteration_*.pt"))
+        latest_milestone = run / f"iteration_{job['completed_iterations']:06d}.pt"
+        if latest_milestone not in milestones:
+            milestones.append(checkpoint)
+        candidates = []
+        for candidate in milestones:
+            if stop["requested"] or (root / "STOP").exists():
+                job["phase"] = "stopped"
+                record()
+                return False
+            row = evaluate_one(job, candidate, run / f"selection_{candidate.stem}.json",
+                               selection_seed, run)
+            if row is None:
+                return False
+            candidates.append(row)
+            save(run / "checkpoint_selection.json", {"seed": selection_seed, "candidates": candidates})
+        best = choose_checkpoint(candidates)
+        best_path = run / "best.pt"
+        shutil.copy2(best["checkpoint"], run / "best.pt.tmp")
+        (run / "best.pt.tmp").replace(best_path)
+        shutil.copy2(best["evaluation"], run / "evaluation.json")
+        validation = []
+        for seed in test_seeds:
+            if stop["requested"] or (root / "STOP").exists():
+                job["phase"] = "stopped"
+                record()
+                return False
+            row = evaluate_one(job, best_path, run / f"evaluation_seed_{seed}.json", seed, run)
+            if row is None:
+                return False
+            validation.append(row)
+        all_rows = [best, *validation]
+        metrics = {
+            "min_seed_macro_success": min(row["metrics"]["macro_success"] for row in all_rows),
+            "test_macro_success": sum(row["metrics"]["macro_success"] for row in validation) / len(validation),
+            "test_macro_fall": sum(row["metrics"]["macro_fall"] for row in validation) / len(validation),
+        }
+        save(run / "validation_summary.json",
+             {"selected": best, "test_seeds": validation, "metrics": metrics})
+        job.update(evaluation=str(run / "evaluation.json"), best_checkpoint=str(best_path),
+                   best_iteration=best["iteration"], validation_metrics=metrics,
+                   phase="completed", finished_at=now())
+        record()
+        return True
+
+    def remember(job, previous_by_robot):
+        checkpoint = trusted_checkpoint(job, args.warm_start_min_success)
+        if checkpoint is not None:
+            robot = TASKS[job["task"]].robot
+            score = job["validation_metrics"]["min_seed_macro_success"]
+            if robot not in previous_by_robot or score > previous_by_robot[robot][0]:
+                previous_by_robot[robot] = (score, checkpoint)
 
     try:
         record()
@@ -96,7 +200,7 @@ def main():
             if stop["requested"] or (root / "STOP").exists():
                 break
             if job.get("phase") == "completed":
-                previous_by_robot[TASKS[job["task"]].robot] = Path(job["checkpoint"])
+                remember(job, previous_by_robot)
                 continue
             task = TASKS[job["task"]]
             run = root / task.robot / task.profile
@@ -113,15 +217,17 @@ def main():
                 if summary.get("phase") == "completed" and summary.get("completed_iterations") >= args.iterations:
                     job.update(phase="completed", checkpoint=str(checkpoint),
                                completed_iterations=summary["completed_iterations"])
-                    previous_by_robot[task.robot] = checkpoint
                     if not evaluate(job, checkpoint, run):
                         break
+                    remember(job, previous_by_robot)
                     continue
             (run / "STOP").unlink(missing_ok=True)
             if checkpoint.exists():
                 command.extend(("--resume", str(checkpoint)))
             elif task.robot in previous_by_robot:
-                command.extend(("--warm-start", str(previous_by_robot[task.robot])))
+                command.extend(("--warm-start", str(previous_by_robot[task.robot][1])))
+            elif task.id in initial_checkpoints:
+                command.extend(("--warm-start", str(initial_checkpoints[task.id])))
             job.update(phase="training", run_dir=str(run), started_at=now(), command=command)
             status["active_job"] = job
             record()
@@ -156,9 +262,9 @@ def main():
                        completed_iterations=summary["completed_iterations"],
                        finished_at=now())
             if summary["phase"] == "completed":
-                previous_by_robot[task.robot] = checkpoint
                 if not evaluate(job, checkpoint, run):
                     break
+                remember(job, previous_by_robot)
             record()
             if summary["phase"] != "completed":
                 break

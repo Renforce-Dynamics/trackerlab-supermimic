@@ -7,6 +7,7 @@ import csv
 import json
 import os
 from pathlib import Path
+import shutil
 import time
 
 import torch
@@ -21,7 +22,7 @@ from trackerLab.algorithms.supermimic.networks import Critic
 import trackerLab.algorithms.supermimic.networks as networks
 from trackerLab.algorithms.supermimic.terrain_networks import TerrainPolicy, TerrainWorldModel
 from trackerLab.tracker_env.mdp.supermimic import normalize_xi, unflatten_state
-from trackerLab.tracker_env.mdp.supermimic_terrain import HeightField, TerrainMDP
+from trackerLab.tracker_env.mdp.supermimic_terrain import OBJECTIVE_VERSION, HeightField, TerrainMDP
 from trackerLab.tracker_env.supermimic.terrain import TerrainSim
 from warp_runtime.restore_optimizer_steps import restore_eager_adam_step_counters
 
@@ -53,6 +54,7 @@ def parse_args(argv=None):
     parser.add_argument("--wm-only-iters", type=int, default=500)
     parser.add_argument("--log-every", type=int, default=25)
     parser.add_argument("--ckpt-every", type=int, default=500)
+    parser.add_argument("--keep-every", type=int, default=2000)
     parser.add_argument("--speed-probe-updates", type=int, default=1000)
     parser.add_argument("--resume", type=Path)
     parser.add_argument("--warm-start", type=Path)
@@ -63,6 +65,28 @@ def parse_args(argv=None):
     parser.add_argument("--profile", action="store_true")
     apply_config(parser, argv)
     return parser.parse_args(argv)
+
+
+def validate_resume_objective(checkpoint, gamma):
+    if checkpoint.get("objective_version") != OBJECTIVE_VERSION:
+        raise ValueError("Changed terrain objective: use --warm-start in a new run directory")
+    if checkpoint["arguments"]["gamma"] != gamma:
+        raise ValueError("Resume discount factor differs; use --warm-start for a new objective")
+
+
+def load_terrain_initialization(actor, world, checkpoint, robot):
+    """New task objectives reuse dynamics and policy, with fresh value and optimizers."""
+    if checkpoint.get("robot") != robot:
+        raise ValueError("Warm-start checkpoint belongs to a different robot")
+    migrate_terrain_checkpoint(
+        checkpoint, world.field.model_indices,
+        tuple(name for name, _ in world.named_parameters()), ("net.0.weight",),
+    )
+    actor.load_state_dict(checkpoint["actor"])
+    world.load_state_dict(checkpoint["world"])
+    return {"source_task": checkpoint["task"], "source_iteration": checkpoint["iteration"],
+            "source_objective_version": checkpoint.get("objective_version", 1),
+            "critic_reset": True, "optimizers_reset": True, "task_start_iteration": 0}
 
 
 def migrate_terrain_checkpoint(checkpoint, model_indices,
@@ -122,7 +146,7 @@ def main():
     if args.task_profile and args.task_profile != task.profile:
         raise SystemExit("--task_profile differs from the selected task")
     if min(args.num_envs, args.iterations, args.horizon, args.hist, args.wm_batches,
-           args.wm_batch, args.pi_batch, args.log_every, args.ckpt_every,
+           args.wm_batch, args.pi_batch, args.log_every, args.ckpt_every, args.keep_every,
            args.critic_epochs, args.critic_minibatches, args.speed_probe_updates) < 1:
         raise SystemExit("Training sizes must be positive")
     if args.buffer_steps < max(args.horizon, args.wm_window) or args.utd <= 0:
@@ -131,6 +155,8 @@ def main():
         raise SystemExit("Imagination horizon must fit an episode and WM warmup must be nonnegative")
     if args.pi_batch * args.horizon < args.critic_minibatches:
         raise SystemExit("Each critic minibatch must contain at least one sample")
+    if not 0 < args.gamma < 1 or not 0 <= args.lam <= 1 or args.lr <= 0:
+        raise SystemExit("Invalid discount, GAE lambda or learning rate")
     if args.describe:
         print(json.dumps({
             "task": task.describe(), "algorithm": "supermimic-world-model-imagination-critic",
@@ -159,7 +185,7 @@ def main():
     qlo = torch.tensor(cpu_model.jnt_range[:, 0], dtype=torch.float32)[joint_ids].to(args.device)
     qhi = torch.tensor(cpu_model.jnt_range[:, 1], dtype=torch.float32)[joint_ids].to(args.device)
     default_q = torch.tensor(spec.default_q, device=args.device)
-    mdp = TerrainMDP(field, default_q, qlo, qhi)
+    mdp = TerrainMDP(field, default_q, qlo, qhi, gamma=args.gamma)
     env = TerrainSim(task, mdp, args.num_envs, args.device, args.seed,
                      args.solver_iterations, args.max_episode_steps)
     actor = TerrainPolicy(mdp.obs_dim, mdp.goal_dim, hist=args.hist,
@@ -173,10 +199,12 @@ def main():
     buffer = ReplayBuffer(args.buffer_steps, args.num_envs, args.device, spec.num_joints, scenario_dim=2)
     obs_hist = torch.zeros(args.num_envs, args.hist, mdp.obs_dim, device=args.device)
     start_it = 0
+    initialization = None
     if args.resume:
         ck = torch.load(args.resume.resolve(), map_location=args.device, weights_only=False)
         if ck["task"] != args.task:
             raise ValueError("Resume checkpoint task differs")
+        validate_resume_objective(ck, args.gamma)
         actor.load_state_dict(ck["actor"])
         migrated = migrate_terrain_checkpoint(
             ck, field.model_indices,
@@ -196,15 +224,13 @@ def main():
         start_it = ck["iteration"]
     elif args.warm_start:
         ck = torch.load(args.warm_start.resolve(), map_location=args.device, weights_only=False)
-        if ck.get("robot") != task.robot:
-            raise ValueError("Warm-start checkpoint belongs to a different robot")
-        actor.load_state_dict(ck["actor"])
-        world.load_state_dict(ck["world"])
-        critic.load_state_dict(ck["critic"])
+        initialization = load_terrain_initialization(actor, world, ck, task.robot)
     if start_it >= args.iterations:
         raise ValueError("Requested iterations must exceed resumed checkpoint iteration")
     with (run / "run_config.json").open("w", encoding="utf-8") as stream:
         json.dump({"arguments": vars(args) | {"run_dir": str(run)},
+                   "objective_version": OBJECTIVE_VERSION, "initialization": initialization,
+                   "success_terminal_value": mdp.success_reward,
                    "task": task.describe(), "algorithm": "SuperMimic model-based imagination",
                    "simulator_contract": contract, "robot": spec.name,
                    "num_joints": spec.num_joints, "obs_dim": mdp.obs_dim,
@@ -237,7 +263,7 @@ def main():
         return next_state, action, torch.cat((history[:, 1:], observation[:, None]), 1)
 
     def reward_term(state, action, previous, c):
-        return mdp.reward(state, action, previous, c), mdp.soft_termination(state, c)
+        return mdp.imagined_reward(state, action, previous, c)
 
     if args.compile:
         wm_window = torch.compile(wm_window, mode="reduce-overhead")
@@ -478,8 +504,10 @@ def main():
                 print("TRAINING_SPEED_SUMMARY " + json.dumps(probe_summary), flush=True)
                 probe_started_at = None
             stop_requested = (run / "STOP").exists()
-            if (iteration + 1) % args.ckpt_every == 0 or final or stop_requested:
+            keep = (iteration + 1) % args.keep_every == 0
+            if (iteration + 1) % args.ckpt_every == 0 or keep or final or stop_requested:
                 checkpoint = {"task": args.task, "iteration": iteration + 1,
+                              "objective_version": OBJECTIVE_VERSION,
                               "robot": task.robot,
                               "actor": actor.state_dict(), "world": world.state_dict(),
                               "critic": critic.state_dict(), "opt_wm": opt_wm.state_dict(),
@@ -487,6 +515,10 @@ def main():
                               "arguments": vars(args) | {"run_dir": str(run)}}
                 torch.save(checkpoint, run / "last.pt.tmp")
                 os.replace(run / "last.pt.tmp", run / "last.pt")
+                if keep:
+                    milestone = run / f"iteration_{iteration + 1:06d}.pt"
+                    shutil.copy2(run / "last.pt", milestone.with_suffix(".pt.tmp"))
+                    os.replace(milestone.with_suffix(".pt.tmp"), milestone)
             if stop_requested:
                 break
     if probe_started_at is not None:
@@ -510,6 +542,7 @@ def main():
         (run / "training_speed_summary.json").write_text(
             json.dumps(probe_summary, indent=2) + "\n", encoding="utf-8")
     summary = {"task": args.task, "completed_iterations": iteration + 1,
+               "objective_version": OBJECTIVE_VERSION,
                "requested_iterations": args.iterations,
                "phase": "completed" if iteration + 1 >= args.iterations else "stopped",
                "optimizer_updates": {

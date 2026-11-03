@@ -7,11 +7,27 @@ from trackerLab.tracker_env.mdp.supermimic import invariant_features
 
 TERMS = ("velocity", "progress", "alive", "upright", "lane", "height",
          "posture", "action_rate", "joint_velocity", "joint_limit")
+SUCCESS_BONUS = 0.5
+FALL_PENALTY = 0.5
+MAX_STEP_REWARD = 0.05
+OBJECTIVE_VERSION = 2
+
+
+def success_terminal_value(gamma):
+    if not 0 < gamma < 1:
+        raise ValueError("Discount factor must be in (0, 1)")
+    # Replace the positive continuation lost at the goal, then add a success bonus.
+    return SUCCESS_BONUS + gamma * MAX_STEP_REWARD / (1 - gamma)
 
 
 def terminal_masks(reached_goal, fallen, timeout):
     success = reached_goal & ~fallen
     return success, fallen | success | timeout, timeout & ~fallen & ~success
+
+
+def update_terrain_levels(levels, success, fallen, max_level=5):
+    change = success.to(levels.dtype) - fallen.to(levels.dtype)
+    return (levels + change).clamp(0, max_level)
 
 
 class HeightField:
@@ -67,8 +83,9 @@ class HeightField:
 
 class TerrainMDP:
     # c = (lane center Y in meters, commanded world-forward speed in m/s).
-    def __init__(self, field, default_q, qlo, qhi):
+    def __init__(self, field, default_q, qlo, qhi, gamma=.99):
         self.field, self.default_q = field, default_q
+        self.success_reward = success_terminal_value(gamma)
         mid, half = (qlo + qhi) / 2, (qhi - qlo) * .45
         self.soft_lo, self.soft_hi = mid - half, mid + half
         self.num_joints = len(default_q)
@@ -124,7 +141,7 @@ class TerrainMDP:
         return ((clearance < .42 * self.field.height) | (R[..., 2, 2] < .35)
                 | (lane.abs() > 1.75) | ~self.field.inside(p[..., :2]) | ~finite)
 
-    def soft_termination(self, S, c):
+    def soft_outcome_probabilities(self, S, c):
         p, R = S[:2]
         clearance = p[..., 2] - self.field.sample(p[..., :2])
         lane = (p[..., 1] - c[..., 0]) / self.field.scale
@@ -132,7 +149,25 @@ class TerrainMDP:
         tilt = torch.sigmoid((.35 - R[..., 2, 2]) / .04)
         lateral = torch.sigmoid((lane.abs() - 1.75) / .05)
         goal = torch.sigmoid((S[0][..., 0] - self.field.terrain.goal_x) / (.1 * self.field.scale))
-        return 1 - (1 - fall) * (1 - tilt) * (1 - lateral) * (1 - goal)
+        fall = 1 - (1 - fall) * (1 - tilt) * (1 - lateral)
+        success = goal * (1 - fall)
+        return success, fall
+
+    def soft_terminal_reward(self, S, c):
+        success, fall = self.soft_outcome_probabilities(S, c)
+        return self.terminal_reward(success, fall)
+
+    def terminal_reward(self, success, fall):
+        return self.success_reward * success - FALL_PENALTY * fall
+
+    def imagined_reward(self, S, a, a_prev, c):
+        success, fall = self.soft_outcome_probabilities(S, c)
+        return (self.reward(S, a, a_prev, c) + self.terminal_reward(success, fall),
+                (success + fall).clamp(0, 1))
+
+    def soft_termination(self, S, c):
+        success, fall = self.soft_outcome_probabilities(S, c)
+        return (success + fall).clamp(0, 1)
 
     def critic_features(self, S, xi, c):
         return torch.cat((self.field.invariant(S), self.normalize_context(xi),

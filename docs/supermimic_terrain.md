@@ -19,7 +19,17 @@ before the SuperMimic observation-history decoder. The dynamics model and
 critic use a 54-point front-and-side subset of that same heightfield at each
 predicted state; the critic also sees terrain-relative clearance. New episodes
 start on the two easiest lanes and advance through six difficulty levels using
-completed-episode success.
+completed-episode success. A physical fall moves an environment down one level,
+including falls after forward progress; timeouts leave the level unchanged.
+
+Objective version 2 uses a `-0.5` fall penalty. At success, it replaces the
+positive continuation lost when the episode terminates with
+`gamma * 0.05 / (1 - gamma)`, plus a `+0.5` success bonus (total `5.45` at
+`gamma=0.99`). Here `0.05` bounds the positive running reward. This makes
+reaching the goal preferable to delaying termination to collect more running
+reward. Imagined updates use soft success/fall probabilities and the same
+terminal magnitudes as physical collection. Unit tests cover this preference
+and the differentiable objective.
 
 ## List And Inspect
 
@@ -49,15 +59,44 @@ python scripts/rls/supermimic/supervise_terrain.py \
 ```
 
 The queue writes `campaign.json`, one run directory per task, training logs and
-optimizer-complete `last.pt` checkpoints. Jobs run serially and can be resumed
+optimizer-complete `last.pt` checkpoints. It also retains an
+`iteration_XXXXXX.pt` checkpoint every 2,000 iterations. Jobs run serially and can be resumed
 from their latest checkpoint by restarting the supervisor. Create `STOP` in the
 campaign directory to request a checkpointed pause. The next run resumes work
-from the saved iteration. Stairs, mountain and parkour tasks can initialize
-from a completed checkpoint for the same robot; each keeps its own 10,000
-iteration counter and output directory. Each completed run receives a
-1,500-step physics evaluation using a different terrain seed and all six
-difficulty lanes. Per-lane success, falls, timeouts, return and progress
-are written to `evaluation.json`.
+from the saved iteration. Objective-version or discount changes require
+`--warm-start` in a new directory instead of `--resume`. Warm starts load the
+actor and world model, and reset the critic, optimizers and iteration counter.
+
+Each completed run evaluates its retained checkpoints for 1,500 physics
+steps on all six difficulty lanes using seed 43. The highest mean per-lane
+success rate selects `best.pt`; lower fall rate breaks ties. The selected
+checkpoint receives separate tests on seeds 44 and 45. `evaluation.json`
+contains its selection-seed result, `evaluation_seed_44.json` and
+`evaluation_seed_45.json` contain the test results, and
+`validation_summary.json` combines them. Selection data and test data have
+different roles and must be reported separately.
+
+The queue warm-starts later tasks only from a same-robot checkpoint with at
+least 50% mean per-lane success on **every** evaluated seed; it retains the
+highest-scoring source rather than blindly forwarding the last task. An
+explicit `--initial-checkpoints path/to/map.json` can supply initial policies
+for the first task of each robot, with task IDs mapped to checkpoint paths.
+Each new task still receives its own 10,000 iterations.
+
+To repair low-scoring jobs and finish pending jobs while retaining a baseline:
+
+```bash
+python scripts/rls/supermimic/retrain_terrain.py \
+  --baseline /path/to/previous-campaign \
+  --run-dir /path/to/repair-campaign \
+  --iterations 10000 --num-envs 8096
+```
+
+This preserves completed baseline tasks scoring at least 50% mean per-lane
+success on the available baseline evaluation. The baseline gate is provisional
+when only one seed exists. The saved `retrain_plan.json` records retained tasks,
+new jobs and explicit initialization sources. Add `--plan` to inspect it without
+launching. Each repaired job is tested on the three-seed protocol above.
 
 The learner defaults use 8,096 environments, 10 world-model minibatches of
 2,048 windows, 32 imagined steps, one actor update and 20 critic minibatches

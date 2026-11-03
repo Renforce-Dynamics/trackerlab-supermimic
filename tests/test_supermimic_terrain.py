@@ -5,7 +5,9 @@ from dataclasses import replace
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import unittest
+from unittest.mock import Mock
 
 import numpy as np
 import torch
@@ -21,8 +23,15 @@ from trackerLab.algorithms.supermimic.buffer import ReplayBuffer
 from trackerLab.algorithms.supermimic.networks import WorldModel
 from trackerLab.algorithms.supermimic.terrain_networks import TerrainPolicy, TerrainWorldModel
 from trackerLab.tracker_env.mdp.supermimic import normalize_xi
-from trackerLab.tracker_env.mdp.supermimic_terrain import HeightField, TerrainMDP, terminal_masks
-from train_terrain import migrate_terrain_checkpoint
+from trackerLab.tracker_env.mdp.supermimic_terrain import (
+    FALL_PENALTY, MAX_STEP_REWARD, OBJECTIVE_VERSION, HeightField, TerrainMDP,
+    success_terminal_value, terminal_masks, update_terrain_levels,
+)
+from train_terrain import (
+    load_terrain_initialization, migrate_terrain_checkpoint, validate_resume_objective,
+)
+from supervise_terrain import choose_checkpoint, evaluation_metrics, trusted_checkpoint
+from retrain_terrain import build_retrain_plan
 
 
 class SuperMimicTerrainTests(unittest.TestCase):
@@ -197,6 +206,125 @@ class SuperMimicTerrainTests(unittest.TestCase):
         self.assertEqual(success.tolist(), [False, True, False, False])
         self.assertEqual(done.tolist(), [True] * 4)
         self.assertEqual(truncated.tolist(), [True, False, False, True])
+
+    def test_curriculum_demotes_late_falls_and_keeps_timeouts_at_current_level(self):
+        levels = torch.tensor([3, 3, 3, 0, 5])
+        success = torch.tensor([True, False, False, False, False])
+        fallen = torch.tensor([False, True, False, True, True])
+        updated = update_terrain_levels(levels, success, fallen)
+        self.assertEqual(updated.tolist(), [4, 2, 3, 0, 4])
+
+    def test_soft_terminal_reward_matches_success_and_fall_signals(self):
+        data = generate("stairs", .76, 42)
+        field = HeightField(data, .76, "cpu")
+        default = torch.zeros(12)
+        mdp = TerrainMDP(field, default, torch.full((12,), -2.), torch.full((12,), 2.))
+        center = float(data.centers[0])
+        xy = torch.tensor([[data.goal_x + 1., center],
+                           [3., center],
+                           [data.goal_x, center]], requires_grad=True)
+        ground = field.sample(xy.detach())
+        z = torch.stack((ground[0] + .76, ground[1] + .1, ground[2] + .76))
+        p = torch.cat((xy, z[:, None]), -1)
+        R = torch.eye(3).expand(3, 3, 3)
+        S = (p, R, torch.zeros(3, 3), torch.zeros(3, 3),
+             torch.zeros(3, 12), torch.zeros(3, 12))
+        c = torch.tensor([[center, .7]]).expand(3, 2)
+
+        reward = mdp.soft_terminal_reward(S, c)
+        self.assertGreater(reward[0].item(), mdp.success_reward * .9)
+        self.assertLess(reward[1].item(), -FALL_PENALTY * .9)
+        reward[2].backward()
+        self.assertGreater(xy.grad[2, 0].item(), 0)
+        self.assertTrue(torch.isfinite(xy.grad).all())
+
+        actions = torch.zeros(3, 12)
+        imagined, done = mdp.imagined_reward(S, actions, actions, c)
+        torch.testing.assert_close(imagined, mdp.reward(S, actions, actions, c) + reward)
+        torch.testing.assert_close(done, mdp.soft_termination(S, c))
+        self.assertTrue(((done >= 0) & (done <= 1)).all())
+        hard_success = torch.tensor([True, False])
+        hard_fall = torch.tensor([False, True])
+        torch.testing.assert_close(reward[:2], mdp.terminal_reward(hard_success, hard_fall),
+                                   atol=1e-3, rtol=1e-3)
+
+    def test_success_payout_dominates_delaying_with_maximum_running_reward(self):
+        for gamma in (.9, .99, .999):
+            success = success_terminal_value(gamma)
+            self.assertGreater(success, MAX_STEP_REWARD / (1 - gamma))
+            for delay in (1, 32, 500, 1000):
+                delayed = (MAX_STEP_REWARD * (1 - gamma ** delay) / (1 - gamma)
+                           + gamma ** delay * success)
+                self.assertGreater(success, delayed)
+        for gamma in (0, 1, -1, 1.1):
+            with self.assertRaises(ValueError):
+                success_terminal_value(gamma)
+
+    def test_resume_rejects_old_objective_and_changed_discount(self):
+        with self.assertRaisesRegex(ValueError, "warm-start"):
+            validate_resume_objective({"arguments": {"gamma": .99}}, .99)
+        ck = {"objective_version": OBJECTIVE_VERSION, "arguments": {"gamma": .99}}
+        validate_resume_objective(ck, .99)
+        with self.assertRaisesRegex(ValueError, "discount"):
+            validate_resume_objective(ck, .95)
+
+    def test_warm_start_transfers_only_policy_and_dynamics(self):
+        actor, world = Mock(), Mock()
+        world.field.model_indices = torch.arange(54)
+        world.named_parameters.return_value = ()
+        ck = {"task": "locomotion/g1/stairs", "robot": "g1", "iteration": 10000,
+              "actor": {"policy": "weights"}, "world": {"terrain_norm.mean": torch.zeros(54)},
+              "critic": {"obsolete_value": "must not load"}}
+        receipt = load_terrain_initialization(actor, world, ck, "g1")
+        actor.load_state_dict.assert_called_once_with(ck["actor"])
+        world.load_state_dict.assert_called_once_with(ck["world"])
+        self.assertTrue(receipt["critic_reset"])
+        self.assertTrue(receipt["optimizers_reset"])
+        self.assertEqual(receipt["task_start_iteration"], 0)
+        with self.assertRaisesRegex(ValueError, "different robot"):
+            load_terrain_initialization(actor, world, ck, "go2")
+
+    def test_checkpoint_selection_balances_difficulty_and_requires_validation(self):
+        result = {"lanes": [{"episodes": n, "successes": s, "falls": n - s}
+                            for n, s in [(100, 100)] + [(10, 0)] * 5]}
+        metrics = evaluation_metrics(result)
+        self.assertAlmostEqual(metrics["macro_success"], 1 / 6)
+        self.assertAlmostEqual(metrics["success_fraction"], 2 / 3)
+        candidates = [
+            {"iteration": 2000, "metrics": {"macro_success": .8, "macro_fall": .1}},
+            {"iteration": 10000, "metrics": {"macro_success": .1, "macro_fall": .8}},
+        ]
+        self.assertEqual(choose_checkpoint(candidates)["iteration"], 2000)
+        job = {"best_checkpoint": "best.pt",
+               "validation_metrics": {"min_seed_macro_success": .1}}
+        self.assertIsNone(trusted_checkpoint(job, .5))
+        job["validation_metrics"]["min_seed_macro_success"] = .8
+        self.assertEqual(trusted_checkpoint(job, .5), Path("best.pt"))
+        result["lanes"][0]["episodes"] = 0
+        with self.assertRaisesRegex(ValueError, "six difficulty"):
+            evaluation_metrics(result)
+
+    def test_retrain_plan_retains_good_task_and_preserves_baseline(self):
+        with tempfile.TemporaryDirectory() as directory:
+            baseline = Path(directory)
+            good = baseline / "a3/stairs"
+            good.mkdir(parents=True)
+            (good / "last.pt").touch()
+            result = {"task": "locomotion/a3/stairs", "trained_iterations": 10000,
+                      "lanes": [{"episodes": 10, "successes": 9, "falls": 1}] * 6}
+            (good / "evaluation.json").write_text(json.dumps(result), encoding="utf-8")
+            partial = baseline / "bumi/stairs"
+            partial.mkdir(parents=True)
+            (partial / "last.pt").touch()
+            plan = build_retrain_plan(baseline)
+            self.assertEqual(list(plan["retained"]), ["locomotion/a3/stairs"])
+            self.assertEqual(len(plan["jobs"]), 17)
+            self.assertEqual(plan["initial_checkpoints"]["locomotion/a3/mountain"],
+                             str(good / "last.pt"))
+            self.assertEqual(plan["initial_checkpoints"]["locomotion/bumi/stairs"],
+                             str(partial / "last.pt"))
+            self.assertNotIn("locomotion/pi_plus/stairs", plan["initial_checkpoints"])
+            self.assertEqual(json.loads((good / "evaluation.json").read_text()), result)
 
 
 if __name__ == "__main__":

@@ -13,7 +13,7 @@ from trackerTask.supermimic.mujoco_terrain import build_model
 from trackerLab.algorithms.supermimic.terrain_networks import TerrainPolicy
 import trackerLab.algorithms.supermimic.networks as networks
 from trackerLab.tracker_env.mdp.supermimic import unflatten_state
-from trackerLab.tracker_env.mdp.supermimic_terrain import HeightField, TerrainMDP
+from trackerLab.tracker_env.mdp.supermimic_terrain import OBJECTIVE_VERSION, HeightField, TerrainMDP
 from trackerLab.tracker_env.supermimic.terrain import TerrainSim
 
 
@@ -40,7 +40,8 @@ def main():
     model, *_ = build_model(task.robot, field_data)
     joint_ids = [model.joint(name).id for name in spec.joint_names]
     limits = torch.tensor(model.jnt_range[joint_ids], device=device, dtype=torch.float32)
-    mdp = TerrainMDP(field, torch.tensor(spec.default_q, device=device), limits[:, 0], limits[:, 1])
+    mdp = TerrainMDP(field, torch.tensor(spec.default_q, device=device), limits[:, 0], limits[:, 1],
+                     gamma=ck["arguments"].get("gamma", .99))
     env = TerrainSim(task, mdp, args.num_envs, device, args.seed,
                      max_episode_steps=ck["arguments"]["max_episode_steps"])
     env.curriculum = False
@@ -80,6 +81,8 @@ def main():
                    mean_max_progress_scale_m=row["progress_sum"] / denominator)
         lanes.append(row)
     result = {"task": task.id, "checkpoint": str(args.checkpoint.resolve()),
+              "checkpoint_objective_version": ck.get("objective_version", 1),
+              "evaluation_objective_version": OBJECTIVE_VERSION,
               "trained_iterations": ck["iteration"], "evaluation_seed": args.seed,
               "terrain_seed_held_out": args.seed != ck["arguments"]["seed"],
               "physics_steps": args.steps, "num_envs": args.num_envs,

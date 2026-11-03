@@ -6,7 +6,9 @@ import torch
 
 from trackerLab.kinematics.supermimic.rotations import quat_to_mat
 from trackerLab.tracker_env.mdp.supermimic import flatten_state
-from trackerLab.tracker_env.mdp.supermimic_terrain import terminal_masks
+from trackerLab.tracker_env.mdp.supermimic_terrain import (
+    FALL_PENALTY, terminal_masks, update_terrain_levels,
+)
 from trackerTask.supermimic.mujoco_terrain import build_model
 from trackerTask.supermimic.terrain import ROBOT_HEIGHTS, generate
 from trackerTask.supermimic.robots import get_robot
@@ -237,8 +239,11 @@ class TerrainSim:
         timeout = self.ep_step >= self.max_episode_steps
         success, done, truncated = terminal_masks(reached, fallen, timeout)
         reward, reward_terms = self.mdp.reward(S1, a, a_prev, self.c, terms=True)
-        reward = reward + .5 * success - .1 * fallen
-        reward = torch.nan_to_num(reward, nan=-.1, posinf=-.1, neginf=-.1)
+        terminal_reward = self.mdp.terminal_reward(success, fallen)
+        reward = reward + terminal_reward
+        reward_terms["terminal"] = terminal_reward
+        reward = torch.nan_to_num(reward, nan=-FALL_PENALTY, posinf=-FALL_PENALTY,
+                                  neginf=-FALL_PENALTY)
         self.ep_return += reward
         ids = done.nonzero(as_tuple=False).flatten()
         transition = {
@@ -259,9 +264,8 @@ class TerrainSim:
                                                      torch.zeros_like(self.ep_return))
             transition["term"] = fallen
             if self.curriculum:
-                advance = success[ids].long()
-                retreat = (fallen[ids] & (S1[0][ids, 0] < self.scale)).long()
-                self.levels[ids] = (self.levels[ids] + advance - retreat).clamp(0, 5)
+                self.levels[ids] = update_terrain_levels(
+                    self.levels[ids], success[ids], fallen[ids])
             self.c[ids, 0] = self.centers[self.levels[ids]]
             with self._warp_context():
                 self._randomize(ids)

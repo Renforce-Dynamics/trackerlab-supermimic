@@ -98,6 +98,22 @@ when only one seed exists. The saved `retrain_plan.json` records retained tasks,
 new jobs and explicit initialization sources. Add `--plan` to inspect it without
 launching. Each repaired job is tested on the three-seed protocol above.
 
+To queue another 10,000 iterations for jobs whose completed validation remains
+below 90% on at least one validation seed:
+
+```bash
+python scripts/rls/supermimic/queue_low_success_retrain.py \
+  --source-campaign /path/to/terrain-10000/campaign.json \
+  --run-dir /path/to/terrain-low-success-followup \
+  --iterations 10000 --num-envs 8096 --threshold 0.90
+```
+
+The command waits for a running source campaign to finish, selects completed
+jobs by `min_seed_macro_success`, orders them from lowest to highest, and
+launches a separate sequential SuperMimic queue. Every selected task starts
+from its own evaluated `best.pt`; the source campaign and its checkpoints are
+preserved. Use `--plan` to inspect the follow-up without launching it.
+
 The learner defaults use 8,096 environments, 10 world-model minibatches of
 2,048 windows, 32 imagined steps, one actor update and 20 critic minibatches
 per outer iteration after the 500-iteration world-model warmup. Training logs

@@ -30,6 +30,7 @@ from trackerLab.tracker_env.mdp.supermimic_terrain import (
 from train_terrain import (
     load_terrain_initialization, migrate_terrain_checkpoint, validate_resume_objective,
 )
+from queue_low_success_retrain import build_followup_plan
 from supervise_terrain import choose_checkpoint, evaluation_metrics, trusted_checkpoint
 from retrain_terrain import build_retrain_plan
 
@@ -325,6 +326,45 @@ class SuperMimicTerrainTests(unittest.TestCase):
                              str(partial / "last.pt"))
             self.assertNotIn("locomotion/pi_plus/stairs", plan["initial_checkpoints"])
             self.assertEqual(json.loads((good / "evaluation.json").read_text()), result)
+
+    def test_low_success_followup_plan_queues_only_completed_low_jobs(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            low = root / "g1/parkour/best.pt"
+            high = root / "g1/stairs/best.pt"
+            low.parent.mkdir(parents=True)
+            high.parent.mkdir(parents=True)
+            low.touch()
+            high.touch()
+            campaign = {
+                "phase": "completed",
+                "jobs": [
+                    {
+                        "task": "locomotion/g1/stairs",
+                        "phase": "completed",
+                        "best_checkpoint": str(high),
+                        "validation_metrics": {"min_seed_macro_success": .95},
+                    },
+                    {
+                        "task": "locomotion/g1/parkour",
+                        "phase": "completed",
+                        "best_checkpoint": str(low),
+                        "validation_metrics": {"min_seed_macro_success": .74},
+                    },
+                    {
+                        "task": "locomotion/go2/stairs",
+                        "phase": "training",
+                        "best_checkpoint": str(high),
+                        "validation_metrics": {"min_seed_macro_success": .2},
+                    },
+                ],
+            }
+            plan = build_followup_plan(campaign, iterations=10000, threshold=.9)
+            self.assertEqual([job["task"] for job in plan["jobs"]],
+                             ["locomotion/g1/parkour"])
+            self.assertEqual(plan["jobs"][0]["iterations"], 10000)
+            self.assertEqual(plan["initial_checkpoints"]["locomotion/g1/parkour"],
+                             str(low.resolve()))
 
 
 if __name__ == "__main__":

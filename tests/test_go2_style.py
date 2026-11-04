@@ -20,6 +20,11 @@ import prepare_go2_style as module
 from trackerTask.supermimic.robots import get_robot
 
 
+GO2_MODEL_AVAILABLE = Path(get_robot("go2").mjcf_path).is_file()
+requires_go2_model = unittest.skipUnless(
+    GO2_MODEL_AVAILABLE, "Local Go2 MJCF assets unavailable")
+
+
 def numeric_source(spec, x=0., jump=False):
     path = Path(spec.mjcf_path).resolve()
     model_path = str(path.relative_to(Path.cwd())) if path.is_relative_to(Path.cwd()) else str(path)
@@ -79,6 +84,22 @@ def fixture_source(directory):
     return originals
 
 
+def fixture_manifest(directory):
+    records = []
+    for name in sorted(module.expected_files()):
+        path = directory / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        content = f"fixture:{name}".encode()
+        path.write_bytes(content)
+        value = hashlib.sha256(content).hexdigest()
+        records.append({"file": name, "bytes": len(content), "sha256": value,
+                        "source_hash_algorithm": "sha256", "source_hash": value})
+    module.write_json(directory / "source_manifest.json", {
+        "dataset": module.DATASET, "revision": module.REVISION,
+        "clips": [row[0] for row in module.PLAN], "files": records,
+    })
+
+
 class Go2StyleTests(unittest.TestCase):
     def test_pinned_plan_uses_run02_and_jumpb_as_held_out_sources(self):
         self.assertEqual(module.REVISION, "7f03a3fb7f6b2e684899530862ba103e81570363")
@@ -88,8 +109,12 @@ class Go2StyleTests(unittest.TestCase):
         self.assertFalse(any(name.endswith((".pkl", ".pt")) for name in module.expected_files()))
 
     def test_resample_has_fifty_hz_duration_and_unit_quaternions(self):
-        raw = numeric_source(get_robot("go2"), jump=True)
-        values = module.convert_array(raw, get_robot("go2").joint_names)
+        spec = get_robot("go2")
+        raw = np.zeros((13, 61), dtype=np.float32)
+        raw[:, 48] = np.arange(len(raw)) * .004
+        raw[:, 50] = .3 + .15 * np.sin(np.pi * np.arange(len(raw)) / 12) ** 2
+        raw[:, 51] = 1
+        values = module.convert_array(raw, spec.joint_names)
         output = module.resample_50hz(values)
         self.assertEqual(output.shape, (11, 19))
         np.testing.assert_allclose(output[[0, -1]], values[[0, -1]], atol=1e-7)
@@ -99,6 +124,7 @@ class Go2StyleTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 module.resample_50hz(values, bad)
 
+    @requires_go2_model
     def test_everyframe_fk_guard_rejects_corrupt_feet_and_wrong_joint_order(self):
         spec = module.go2_spec()
         raw = numeric_source(spec)
@@ -142,6 +168,7 @@ class Go2StyleTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "allow_pickle"):
             np.load(buffer, allow_pickle=False)
 
+    @requires_go2_model
     def test_local_pool_end_to_end_fk_floor_split_config_and_corruption(self):
         with tempfile.TemporaryDirectory() as directory:
             source, output = Path(directory) / "raw", Path(directory) / "prepared"
@@ -167,7 +194,7 @@ class Go2StyleTests(unittest.TestCase):
     def test_tampered_or_unexpected_source_manifest_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             source = Path(directory)
-            fixture_source(source)
+            fixture_manifest(source)
             self.assertEqual(module.verify_source(source)["revision"], module.REVISION)
             (source / "LICENSE").write_text("changed", encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "hash mismatch"):

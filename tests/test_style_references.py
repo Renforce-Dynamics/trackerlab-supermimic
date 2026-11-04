@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+from contextlib import contextmanager
 from pathlib import Path
 import sys
 import tempfile
@@ -17,6 +18,25 @@ configure_paths()
 
 import prepare_style_references as style_refs
 from trackerTask.supermimic.robots import get_robot
+
+
+def style_test_robot(name="g1"):
+    actual = get_robot(name)
+    return type("StyleTestRobot", (), {
+        "name": actual.name,
+        "joint_names": actual.joint_names,
+        "num_joints": actual.num_joints,
+        "mjcf_path": str(Path(__file__).resolve()),
+    })()
+
+
+@contextmanager
+def temporary_data_directory():
+    data = REPO / "data"
+    data.mkdir(exist_ok=True)
+    with patch.object(style_refs, "get_robot", side_effect=style_test_robot):
+        with tempfile.TemporaryDirectory(dir=data) as directory:
+            yield directory
 
 
 def fake_g1(frames=360):
@@ -81,7 +101,7 @@ class StyleReferenceTests(unittest.TestCase):
         self.assertTrue(evidence["selection_semantics"].startswith("Kinematic"))
 
     def test_explicit_patterns_generate_local_hashes_and_preserve_upper_body(self):
-        with tempfile.TemporaryDirectory(dir=REPO / "data") as tmp:
+        with temporary_data_directory() as tmp:
             root = Path(tmp)
             source, output = root / "source", root / "derived"
             source.mkdir()
@@ -123,7 +143,7 @@ class StyleReferenceTests(unittest.TestCase):
             self.assertIn("CC BY-NC-ND", manifest["license"])
 
     def test_only_explicit_files_are_considered_and_take_split_does_not_leak(self):
-        with tempfile.TemporaryDirectory(dir=REPO / "data") as tmp:
+        with temporary_data_directory() as tmp:
             root = Path(tmp)
             source, output = root / "source", root / "derived"
             source.mkdir()
@@ -156,7 +176,7 @@ class StyleReferenceTests(unittest.TestCase):
             self.assertEqual(len(manifest["clips"]), 3)
 
     def test_walk_clips_cannot_substitute_for_original_aiming(self):
-        with tempfile.TemporaryDirectory(dir=REPO / "data") as tmp:
+        with temporary_data_directory() as tmp:
             root = Path(tmp)
             source, output = root / "source", root / "derived"
             source.mkdir()
@@ -173,7 +193,7 @@ class StyleReferenceTests(unittest.TestCase):
             self.assertEqual(len(manifest["required_original_aiming_files"]), 5)
 
     def test_source_config_preserves_fps_and_needs_disjoint_style_recordings(self):
-        with tempfile.TemporaryDirectory(dir=REPO / "data") as tmp:
+        with temporary_data_directory() as tmp:
             root = Path(tmp)
             source, output = root / "source", root / "derived"
             source.mkdir()
@@ -191,7 +211,7 @@ class StyleReferenceTests(unittest.TestCase):
             self.assertEqual(manifest["clips"][0]["frames"], 360)
 
     def test_origin_hash_mismatch_fails(self):
-        with tempfile.TemporaryDirectory(dir=REPO / "data") as tmp:
+        with temporary_data_directory() as tmp:
             root = Path(tmp)
             source = root / "source"
             source.mkdir()
@@ -204,7 +224,7 @@ class StyleReferenceTests(unittest.TestCase):
                     origin_manifest=origins)
 
     def test_unreviewed_original_bvh_hash_is_rejected(self):
-        with tempfile.TemporaryDirectory(dir=REPO / "data") as tmp:
+        with temporary_data_directory() as tmp:
             root = Path(tmp)
             source = root / "source"
             source.mkdir()
@@ -219,7 +239,7 @@ class StyleReferenceTests(unittest.TestCase):
                     origin_manifest=origins)
 
     def test_same_source_bytes_cannot_cross_splits(self):
-        with tempfile.TemporaryDirectory(dir=REPO / "data") as tmp:
+        with temporary_data_directory() as tmp:
             root = Path(tmp)
             source = root / "source"
             source.mkdir()
@@ -232,7 +252,7 @@ class StyleReferenceTests(unittest.TestCase):
                         holdout_groups=("walk2",))
 
     def test_audited_gait_bytes_are_copied_only_into_output(self):
-        with tempfile.TemporaryDirectory(dir=REPO / "data") as tmp:
+        with temporary_data_directory() as tmp:
             root = Path(tmp)
             gait, output = root / "gait", root / "output"
             gait.mkdir()
@@ -275,7 +295,7 @@ class StyleReferenceTests(unittest.TestCase):
         self.assertAlmostEqual(np.ptp(aligned[:, 2]), np.ptp(values[:, 2]))
 
     def test_parkour_pipeline_writes_the_floor_aligned_result(self):
-        with tempfile.TemporaryDirectory(dir=REPO / "data") as tmp:
+        with temporary_data_directory() as tmp:
             root = Path(tmp)
             source = root / "source"
             source.mkdir()
@@ -299,14 +319,14 @@ class StyleReferenceTests(unittest.TestCase):
                 self.assertFalse(row["floor_alignment"]["per_frame_clamp"])
 
     def test_unmatched_explicit_pattern_fails_instead_of_silently_omitting_data(self):
-        with tempfile.TemporaryDirectory(dir=REPO / "data") as tmp:
+        with temporary_data_directory() as tmp:
             root = Path(tmp)
             self.write_source(root, "walk1_subject1.csv")
             with self.assertRaisesRegex(FileNotFoundError, "matched no files"):
                 style_refs._resolve_inputs(root, ("walk1*.csv", "walk2*.csv"))
 
     def test_go2_is_rejected_and_other_humanoids_need_explicit_opt_in(self):
-        with tempfile.TemporaryDirectory(dir=REPO / "data") as tmp:
+        with temporary_data_directory() as tmp:
             root = Path(tmp)
             source = root / "source"
             source.mkdir()

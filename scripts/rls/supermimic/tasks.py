@@ -24,11 +24,16 @@ def main():
     if not args.task:
         parser.error("--task is required")
     if args.command == "gait-supervise":
+        from trackerTask.supermimic.gait import ROBOTS
+        robot = args.task.removeprefix("gait/")
+        selected = list(ROBOTS) if robot == "all" else [robot]
+        if any(name not in ROBOTS for name in selected):
+            parser.error("--task must be all or gait/<robot>")
         command = [
             sys.executable, str(Path(__file__).with_name("supervise_gait.py")),
             "--references", str(REPO / "logs/gait-foundation-v1/references.json"),
             "--run-dir", str(REPO / "logs/gait-foundation-v1/runs"),
-            "--robots", args.task, *extra,
+            "--robots", *selected, *extra,
         ]
         subprocess.run(command, check=True, cwd=REPO)
         return

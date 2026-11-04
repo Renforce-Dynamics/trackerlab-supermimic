@@ -242,10 +242,10 @@ def main():
             record()
         all_qualified = all(any(
             j["robot"] == robot and j.get("quality_passed") for j in status["jobs"])
-            for robot in args.robots)
+            for robot in ROBOTS)
         if all_qualified:
             foundations = {}
-            for robot in args.robots:
+            for robot in ROBOTS:
                 selected = max(
                     (job for job in status["jobs"] if job["robot"] == robot and job.get("quality_passed")),
                     key=lambda job: (json.loads(Path(job["validation"]).read_text())["selection"]["iteration"],

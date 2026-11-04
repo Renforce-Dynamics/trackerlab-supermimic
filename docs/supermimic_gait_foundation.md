@@ -70,8 +70,8 @@ python scripts/rls/supermimic/supervise_gait.py \
 
 `references.json` maps each robot to its audited reference directory. Each
 round adds 10,000 iterations, with full actor, world-model, critic and Adam
-state retained. A failed quality gate transfers the best candidate into a
-fresh optimizer and continues with another round. Terrain tasks do not start
+state retained. A failed quality gate resumes the selected candidate with its
+saved optimizer state for another round. Terrain tasks do not start
 from this queue.
 
 ## Motion-Quality Gate

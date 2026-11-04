@@ -29,7 +29,7 @@ Prepare G1 and Go2 references:
 ```bash
 python scripts/rls/supermimic/prepare_gait_references.py \
   --robot g1 --bones-source /path/to/BONES-SEED/extracted/g1/csv \
-  --output data/gait-foundation-v3/g1
+  --output data/gait-foundation-v5/g1
 
 python scripts/rls/supermimic/prepare_kine2go.py \
   --source_dir data/raw/kine2go-gait-foundation \
@@ -40,7 +40,7 @@ python scripts/rls/supermimic/prepare_kine2go.py \
 python scripts/rls/supermimic/prepare_gait_references.py \
   --robot go2 --source-config data/raw-go2-gait.json \
   --holdout ai4_dog_walk_02 \
-  --output data/gait-foundation-v3/go2
+  --output data/gait-foundation-v5/go2
 ```
 
 Prepare the four humanoid references from G1:
@@ -48,8 +48,8 @@ Prepare the four humanoid references from G1:
 ```bash
 for robot in a3 t1 bumi pi_plus; do
   python scripts/rls/supermimic/retarget_gait_references.py \
-    --robot "$robot" --donor data/gait-foundation-v3/g1 \
-    --output "data/gait-foundation-v3/$robot"
+    --robot "$robot" --donor data/gait-foundation-v5/g1 \
+    --output "data/gait-foundation-v5/$robot"
 done
 ```
 
@@ -63,8 +63,8 @@ The queue runs one robot at a time on the shared GPU:
 
 ```bash
 python scripts/rls/supermimic/supervise_gait.py \
-  --references logs/gait-foundation-v3/references.json \
-  --run-dir logs/gait-foundation-v3/runs \
+  --references data/gait-foundation-v5/references.json \
+  --run-dir logs/gait-foundation-v2/runs \
   --iterations 10000 --max-rounds 3 --num-envs 8096
 ```
 
@@ -88,7 +88,10 @@ held-out seeds, across every held-out clip:
 | Tracked-foot position RMSE | at most 0.06 robot-height scales |
 | Stance-foot horizontal speed | at most 0.12 robot-height scales/s |
 
-All six per-robot reports must pass before advanced-task scheduling. The
+All six per-robot reports must pass before the supervisor automatically queues
+all eighteen terrain tasks in the separate `advanced-terrain-v1` directory.
+The first terrain task for each robot initializes from its qualified gait
+checkpoint. The
 terrain initializer transfers the gait world model and matching proprioceptive
 decoder weights. It creates a new terrain-goal encoder, height-scan encoder,
 terrain adapter, value critic and optimizer states. Legacy terrain checkpoints
@@ -100,10 +103,10 @@ An individual gait foundation can be checked against its held-out clips:
 
 ```bash
 python scripts/rls/supermimic/evaluate_gait.py \
-  --checkpoint logs/gait-foundation-v3/runs/g1/round_01/attempt_01/best.pt \
-  --motion-config data/gait-foundation-v3/g1/test.json \
-  --output logs/gait-foundation-v3/g1-heldout.json \
-  --seed 44 --trajectory-output logs/gait-foundation-v3/g1-heldout.npz
+  --checkpoint logs/gait-foundation-v2/runs/g1/round_01/attempt_01/best.pt \
+  --motion-config data/gait-foundation-v5/g1/test.json \
+  --output logs/gait-foundation-v2/g1-heldout.json \
+  --seed 44 --trajectory-output logs/gait-foundation-v2/g1-heldout.npz
 ```
 
 The evaluator records full-clip outcomes, measured foot contacts and slip,

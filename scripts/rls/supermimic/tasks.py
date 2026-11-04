@@ -31,8 +31,8 @@ def main():
             parser.error("--task must be all or gait/<robot>")
         command = [
             sys.executable, str(Path(__file__).with_name("supervise_gait.py")),
-            "--references", str(REPO / "logs/gait-foundation-v1/references.json"),
-            "--run-dir", str(REPO / "logs/gait-foundation-v1/runs"),
+            "--references", str(REPO / "data/gait-foundation-v5/references.json"),
+            "--run-dir", str(REPO / "logs/gait-foundation-v2/runs"),
             "--robots", *selected, *extra,
         ]
         subprocess.run(command, check=True, cwd=REPO)
@@ -67,11 +67,11 @@ def main():
     if entry.runtime_task == "gait-foundation":
         if args.command not in ("train", "smoke"):
             parser.error("Use train or smoke for a gait foundation")
-        references = REPO / "logs/gait-foundation-v1/references" / entry.robot
+        references = REPO / "data/gait-foundation-v5" / entry.robot
         command = [
             sys.executable, str(Path(__file__).with_name("train_gait.py")),
             "--task", entry.robot, "--motion_config", str(references / "train.json"),
-            "--log_dir", str(REPO / "logs/gait-foundation-v1/runs" / entry.robot / "single-run"),
+            "--log_dir", str(REPO / "logs/gait-foundation-v2/runs" / entry.robot / "single-run"),
             *extra,
         ]
         subprocess.run(command, check=True, cwd=REPO)

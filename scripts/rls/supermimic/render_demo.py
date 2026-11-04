@@ -90,7 +90,8 @@ def main():
     policy_simulator = str(trajectory.get("simulator", "IsaacLab / PhysX"))
     spec = get_robot(str(trajectory.get("task", "g1")))
     evaluation = json.loads(args.evaluation.read_text())
-    provenance = evaluation.get("protocol", {}).get("data_provenance", {})
+    protocol = evaluation.get("protocol", {})
+    provenance = protocol.get("data_provenance", {}) if isinstance(protocol, dict) else {}
     reference_label = {
         "g1": "G1 LAFAN1 motion", "a3": "A3 public SOMA reference",
         "t1": "T1 Booster dance reference",

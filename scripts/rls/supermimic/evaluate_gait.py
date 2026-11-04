@@ -64,17 +64,15 @@ def main():
     sums = {name: torch.zeros(count * trials, device=device) for name in names}
     selected = torch.arange(count, device=device) * trials
     recorded, alive = [], []
-    final_states = None
+    if args.trajectory_output:
+        initial = unflatten_state(env.state())
+        final_states = torch.cat((initial[0], mat_to_quat(initial[1]), initial[4]), -1)[selected]
+        recorded.append(final_states.cpu().numpy())
+        alive.append((~env.done_eval[selected]).cpu().numpy())
     scale = ROBOT_HEIGHTS[robot] / .76
     for step in range(int(motion.clip_len.max().item())):
         state = env.state()
         active = ~env.done_eval
-        if args.trajectory_output:
-            flat = torch.cat((state[0], mat_to_quat(state[1]), state[4]), -1)[selected]
-            final_states = flat if final_states is None else torch.where(
-                active[selected, None], flat, final_states)
-            recorded.append(final_states.cpu().numpy())
-            alive.append(active[selected].cpu().numpy())
         if not active.any():
             break
         observation = mdp.add_noise(mdp.obs(state, env.a_prev, env.xi, env.f))
@@ -84,6 +82,11 @@ def main():
         action = actor(histories, motion.goal(env.f, train_args["goal_frames"]))
         transition = env.step(action)
         state = unflatten_state(transition["s1"])
+        if args.trajectory_output:
+            flat = torch.cat((state[0], mat_to_quat(state[1]), state[4]), -1)[selected]
+            final_states = torch.where(active[selected, None], flat, final_states)
+            recorded.append(final_states.cpu().numpy())
+            alive.append(active[selected].cpu().numpy())
         frame = transition["f"] + 1
         body = kin.forward(*state)
         reference_root = motion.root_p[frame]

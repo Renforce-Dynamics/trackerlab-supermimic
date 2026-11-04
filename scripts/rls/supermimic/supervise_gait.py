@@ -56,6 +56,7 @@ def main():
     parser.add_argument("--max-rounds", type=int, default=3)
     parser.add_argument("--num-envs", type=int, default=8096)
     parser.add_argument("--robots", nargs="+", choices=ROBOTS, default=list(ROBOTS))
+    parser.add_argument("--bootstrap-campaign", type=Path)
     args = parser.parse_args()
     if min(args.iterations, args.max_rounds, args.num_envs) < 1:
         parser.error("Queue dimensions must be positive")
@@ -75,12 +76,31 @@ def main():
     signal.signal(signal.SIGTERM, lambda *_: stop.update(requested=True))
     signal.signal(signal.SIGINT, lambda *_: stop.update(requested=True))
     receipt = root / "campaign.json"
-    status = (json.loads(receipt.read_text(encoding="utf-8")) if receipt.exists()
-              else {"stage": "gait-foundation", "jobs": [
-                  {"robot": robot, "round": 1, "phase": "pending", "new_iterations": args.iterations}
-                  for robot in args.robots], "quality_limits": QUALITY_LIMITS,
-                    "advanced_tasks": {"phase": "held_until_gait_qualification",
-                                       "count": 18, "old_terrain_objective": "retired"}})
+    if receipt.exists():
+        status = json.loads(receipt.read_text(encoding="utf-8"))
+    else:
+        jobs = []
+        if args.bootstrap_campaign:
+            previous = json.loads(args.bootstrap_campaign.resolve().read_text(encoding="utf-8"))
+            for old in previous.get("jobs", []):
+                if old.get("robot") not in args.robots:
+                    continue
+                checkpoint = Path(old.get("run_dir", "")) / "last.pt"
+                iteration = int(old.get("completed_iterations", 0))
+                if iteration and checkpoint.is_file():
+                    jobs.append({
+                        "robot": old["robot"], "round": 1, "phase": "pending",
+                        "new_iterations": args.iterations, "source_checkpoint": str(checkpoint),
+                        "source_iteration": iteration,
+                        "bootstrap_campaign": str(args.bootstrap_campaign.resolve()),
+                    })
+        known = {job["robot"] for job in jobs}
+        jobs.extend({"robot": robot, "round": 1, "phase": "pending",
+                     "new_iterations": args.iterations}
+                    for robot in args.robots if robot not in known)
+        status = {"stage": "gait-foundation", "jobs": jobs, "quality_limits": QUALITY_LIMITS,
+                  "advanced_tasks": {"phase": "held_until_gait_qualification",
+                                     "count": 18, "old_terrain_objective": "retired"}}
     status.update(phase="running", pid=os.getpid(), started_at=now(), num_envs=args.num_envs)
 
     def record():
@@ -268,6 +288,31 @@ def main():
         raise
     finally:
         gpu_lock.close()
+    if (status.get("phase") == "gait_qualified"
+            and not stopping()
+            and status.get("advanced_tasks", {}).get("phase") == "held_until_gait_qualification"):
+        advanced_root = root / "advanced-terrain-v1"
+        advanced_root.mkdir(parents=True, exist_ok=True)
+        tasks = [f"locomotion/{robot}/{profile}"
+                 for robot in ROBOTS for profile in ("stairs", "mountain", "parkour")]
+        command = [
+            sys.executable, "-u", str(Path(__file__).with_name("supervise_terrain.py")),
+            "--run-dir", str(advanced_root), "--num-envs", str(args.num_envs),
+            "--iterations", "10000", "--gait-foundations", str(root / "gait_foundations.json"),
+            "--wait-for-lock", "--tasks", *tasks,
+        ]
+        with (root / "advanced-terrain-launcher.log").open("a", encoding="utf-8") as stream:
+            child = subprocess.Popen(command, cwd=REPO, stdout=stream,
+                                     stderr=subprocess.STDOUT, start_new_session=True)
+        status["advanced_tasks"] = {
+            "phase": "queued_after_gait_qualification",
+            "run_dir": str(advanced_root),
+            "pid": child.pid,
+            "iterations_per_task": 10000,
+            "task_count": len(tasks),
+            "queue": tasks,
+        }
+        record()
 
 
 if __name__ == "__main__":

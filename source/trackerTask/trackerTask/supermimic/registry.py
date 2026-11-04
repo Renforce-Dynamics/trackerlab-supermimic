@@ -25,7 +25,7 @@ class TaskEntry:
     def describe(self):
         value = asdict(self)
         if self.runtime_task in ("terrain", "command"):
-            value.update(objective="command-driven-locomotion", objective_version=3,
+            value.update(objective="command-driven-locomotion", objective_version=4,
                          scenario_dim=7, runtime_reference_motion=False)
         return value
 

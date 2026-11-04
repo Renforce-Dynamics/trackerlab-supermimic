@@ -62,9 +62,11 @@ def parse_args(argv=None):
     parser.add_argument("--gait-warm-start", type=Path)
     parser.add_argument("--gait-quality", type=Path)
     parser.add_argument("--amp-motion-config", type=Path)
-    parser.add_argument("--amp-weight", type=float, default=.5)
-    parser.add_argument("--amp-batch", type=int, default=1024)
-    parser.add_argument("--amp-updates", type=int, default=1)
+    parser.add_argument("--amp-weight", type=float, default=.25)
+    parser.add_argument("--amp-batch", type=int, default=2048)
+    parser.add_argument("--amp-updates", type=int, default=2)
+    parser.add_argument("--amp-history", type=int, default=10)
+    parser.add_argument("--command-range-mode", choices=("reference", "full"), default="reference")
     parser.add_argument("--style-feature-mode", choices=("full", "proprioceptive"),
                         default="proprioceptive")
     parser.add_argument("--reference-reset-probability", type=float, default=.7)
@@ -291,6 +293,8 @@ def main():
         raise SystemExit("Command locomotion requires an existing --amp-motion-config")
     if args.amp_weight <= 0 or min(args.amp_batch, args.amp_updates) < 1:
         raise SystemExit("Every command task requires a positive AMP weight and update count")
+    if args.amp_history < 2 or args.hist < args.amp_history:
+        raise SystemExit("Actor history must cover the complete AMP history (at least two frames)")
     if (not 0 <= args.reference_reset_probability <= 1
             or not 0 <= args.jump_probability <= 1 or args.jump_height < 0):
         raise SystemExit("Invalid reference reset or jump-command parameters")
@@ -340,8 +344,25 @@ def main():
     opt_v = torch.optim.Adam(critic.parameters(), lr=args.lr, fused=args.fused_optimizers)
     kin = RobotKinematics(args.device, spec)
     motion = MotionLib.from_config(str(args.amp_motion_config.resolve()), kin, args.device)
+    from trackerLab.algorithms.supermimic.locomotion_quality import LocomotionQuality
+    from command_envelope import reference_envelope
+    quality = LocomotionQuality(kin, field, contract["motors_effort_velocity_kp_kd_armature"])
+    quality.calibrate(motion)
+    command_envelope = None
+    if args.command_range_mode == "reference":
+        command_envelope = reference_envelope(
+            motion, terrain_navigation=task.profile in ("stairs", "mountain", "parkour"),
+            minimum_forward_speed=.08 if task.profile == "stealth" else .15,
+            forward_only=task.profile != "stealth")
+        env.set_command_ranges(command_envelope["ranges"])
     style = AMPStyle(kin, motion, robot_height, ground_sampler=field.sample,
-                     feature_mode=args.style_feature_mode).to(args.device)
+                     feature_mode=args.style_feature_mode, history_steps=args.amp_history,
+                     hidden=(1024, 512), gradient_penalty_weight=5.,
+                     gradient_penalty_scope="both", activation="ReLU",
+                     optimizer_name="AdamW", weight_decay_coefficient=3e-4,
+                     logit_weight_decay_coefficient=.04,
+                     minimum_forward_speed=.15 if task.profile == "velocity" else 0.,
+                     replay_capacity=48 * args.num_envs).to(args.device)
     grounded = None
     if args.reference_reset_probability:
         import numpy as np
@@ -359,6 +380,8 @@ def main():
     buffer = ReplayBuffer(args.buffer_steps, args.num_envs, args.device, spec.num_joints,
                           scenario_dim=SCENARIO_DIM)
     obs_hist = torch.zeros(args.num_envs, args.hist, mdp.obs_dim, device=args.device)
+    style_hist = style.frame_features(env.state())[:, None].expand(
+        -1, style.history_steps, -1).clone()
     start_it = 0
     initialization = None
     if args.resume:
@@ -369,7 +392,8 @@ def main():
                 or ck.get("objective_version") != COMMAND_VERSION):
             raise ValueError("Resume requires the same command/style objective")
         for name in ("gamma", "hist", "amp_weight", "clearance_ratio",
-                     "style_feature_mode", "jump_height", "jump_probability", "action_limit"):
+                     "style_feature_mode", "amp_history", "command_range_mode",
+                     "jump_height", "jump_probability", "action_limit"):
             if ck["arguments"].get(name) != getattr(args, name):
                 raise ValueError(f"Resume {name} differs from the saved objective")
         actor.load_state_dict(ck["actor"])
@@ -425,6 +449,9 @@ def main():
                    "runtime_motion_reference": False,
                    "training_reference_resets": env.contract.get("reference_resets"),
                    "style_reference_validation": reference_receipt,
+                   "command_envelope": command_envelope,
+                   "locomotion_quality": {"foot_support": "geometry estimate, not measured force",
+                                          "sole_height": quality.sole_height.cpu().tolist()},
                    "style": {"motion_config": str(args.amp_motion_config.resolve()),
                              "training_only": True, "weight": args.amp_weight,
                              "feature_mode": args.style_feature_mode,
@@ -472,6 +499,7 @@ def main():
 
     style_reward_fn = style.reward_from_features
     style_frame_fn = style.frame_features
+    regularization_reward_fn = quality.reward
     from warp_runtime.critic_runtime import make_critic_minibatch_loss
     critic_loss_fn = make_critic_minibatch_loss(
         critic, compile_enabled=args.compile and args.compile_critic)
@@ -483,18 +511,23 @@ def main():
         collect_actor = torch.compile(actor, mode="reduce-overhead")
         style_reward_fn = torch.compile(style_reward_fn)
         style_frame_fn = torch.compile(style_frame_fn)
+        regularization_reward_fn = torch.compile(regularization_reward_fn)
     else:
         collect_actor = actor
+    env.locomotion_reward_fn = regularization_reward_fn
 
     @torch.no_grad()
     def collect(steps):
-        nonlocal obs_hist
+        nonlocal obs_hist, style_hist
         outcomes = {key: torch.zeros((), dtype=torch.int64, device=args.device)
                     for key in ("episodes", "successes", "falls", "timeouts")}
         for _ in range(steps):
             state = env.state()
             obs = mdp.add_noise(env.observe())
             fresh = env.ep_step == 0
+            first_frame = style.frame_features(state)
+            style_hist = torch.where(fresh[:, None, None],
+                                     first_frame[:, None].expand_as(style_hist), style_hist)
             obs_hist = torch.where(fresh[:, None, None], obs[:, None].expand_as(obs_hist),
                                    torch.cat((obs_hist[:, 1:], obs[:, None]), 1))
             goal = mdp.goal(state, env.c)
@@ -509,7 +542,9 @@ def main():
             outcomes["falls"] += transition["episode_fall"].sum()
             outcomes["timeouts"] += transition["episode_timeout"].sum()
             s0, s1 = unflatten_state(transition["s"]), unflatten_state(transition["s1"])
-            style.observe(s0, s1, valid=~transition["done"])
+            style_hist = torch.cat((style_hist[:, 1:], style.frame_features(s1)[:, None]), 1)
+            style.observe_window(style_hist, valid=(~transition["done"]) & (
+                transition["ep_step"] >= style.history_steps - 2))
             world.in_norm.update(world.inputs(s0, transition["a"], normalize_xi(transition["xi"])))
             world.out_norm.update(world.targets(s0, s1))
             world.update_terrain_norm(s0)
@@ -533,7 +568,8 @@ def main():
             if tries > 64:
                 raise RuntimeError("Replay has too few episode-interior starts for imagined rollouts")
             data, hist = buffer.sample_starts(2 * batch, args.hist)
-            valid = data["ep_step"] + args.horizon < args.max_episode_steps
+            valid = ((data["ep_step"] + args.horizon < args.max_episode_steps)
+                     & (data["history_steps"] >= style.history_steps))
             idx = valid.nonzero().flatten()[:batch - count]
             starts.append({key: value[idx] for key, value in data.items()})
             histories.append({key: value[idx] for key, value in hist.items()})
@@ -555,7 +591,9 @@ def main():
             history_states = unflatten_state(hist["s"])
             obs_hist_local = mdp.add_noise(mdp.obs(
                 history_states, hist["a_prev"], hist["xi"], hist["c"]))
-        actor_hist = obs_hist_local
+        actor_hist = obs_hist_local[:, -args.hist:]
+        with torch.no_grad():
+            style_history = style_frame_fn(history_states)[:, -style.history_steps:]
         frozen = (*world.parameters(), *critic.parameters(), *style.parameters())
         old_flags = [p.requires_grad for p in frozen]
         for parameter in frozen:
@@ -574,12 +612,16 @@ def main():
         reward, done = reward_term(tuple(value.flatten(0, 1) for value in states),
                                    torch.stack(actions).flatten(0, 1),
                                    torch.stack(previous).flatten(0, 1), flat_c)
-        style_states = tuple(torch.cat((initial[i].unsqueeze(0), states[i]), 0)
-                             for i in range(6))
-        style_frames = style_frame_fn(style_states)
-        style_pairs = torch.cat((style_frames[:-1], style_frames[1:]), -1).flatten(0, 1)
-        style_reward = style_reward_fn(style_pairs)
-        reward = reward + args.amp_weight * .02 * style_reward
+        preceding = tuple(torch.cat((initial[i][None], states[i][:-1]), 0).flatten(0, 1)
+                          for i in range(6))
+        reward = reward + regularization_reward_fn(
+            preceding, tuple(value.flatten(0, 1) for value in states),
+            torch.stack(actions).flatten(0, 1),
+            xi.unsqueeze(0).expand(args.horizon, -1, -1).flatten(0, 1))
+        style_frames = style_frame_fn(states)
+        style_windows = style.rollout_features(style_history, style_frames).flatten(0, 1)
+        style_reward = style_reward_fn(style_windows)
+        reward = reward + args.amp_weight * style_reward
         reward, done = reward.view(args.horizon, -1), done.view(args.horizon, -1)
         alive = torch.cumprod(1 - done, 0)
         alive_prev = torch.cat((torch.ones_like(alive[:1]), alive[:-1]), 0)
@@ -744,6 +786,8 @@ def main():
                               "training_stage": "command-style",
                               "objective_version": COMMAND_VERSION,
                               "robot": task.robot,
+                              "command_envelope": command_envelope,
+                              "quality_sole_height": quality.sole_height,
                               "actor": actor.state_dict(), "world": world.state_dict(),
                               "critic": critic.state_dict(), "opt_wm": opt_wm.state_dict(),
                               "opt_pi": opt_pi.state_dict(), "opt_v": opt_v.state_dict(),

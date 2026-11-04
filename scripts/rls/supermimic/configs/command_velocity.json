@@ -14,7 +14,8 @@
   "critic_epochs": 5,
   "critic_minibatches": 4,
   "wm_only_iters": 500,
-  "amp_weight": 0.5,
-  "amp_batch": 1024,
-  "amp_updates": 1
+  "amp_weight": 0.25,
+  "amp_batch": 2048,
+  "amp_updates": 2,
+  "amp_history": 10
 }

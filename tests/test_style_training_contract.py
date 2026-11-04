@@ -24,7 +24,7 @@ from trackerLab.kinematics.supermimic.rotations import so3_exp
 from trackerLab.motion_buffer.motion_lib.supermimic import MotionLib
 from trackerLab.tracker_env.mdp.supermimic import flatten_state, normalize_xi, unflatten_state
 from trackerLab.tracker_env.mdp.supermimic_command import (
-    CONTROL_DT, SCENARIO_DIM, CommandMDP, advance_command,
+    CONTROL_DT, SCENARIO_DIM, COMMAND_MAX_STEP_REWARD, CommandMDP, advance_command,
 )
 from trackerLab.tracker_env.mdp.supermimic_terrain import (
     FALL_PENALTY, MAX_STEP_REWARD, SUCCESS_BONUS, HeightField,
@@ -51,9 +51,10 @@ class LocalKinematics:
         return positions, R.unsqueeze(-3).expand(-1, 2, -1, -1), v[:, None], w[:, None]
 
 
-def expert_motion():
-    t = torch.arange(9, dtype=torch.float32)
-    lengths = torch.tensor([4, 5])
+def expert_motion(lengths=(4, 5)):
+    lengths = torch.tensor(lengths)
+    t = torch.arange(int(lengths.sum()), dtype=torch.float32)
+    starts = lengths.cumsum(0) - lengths
     return SimpleNamespace(
         root_p=torch.stack((0.02 * t, t * 0, 0.76 + 0.01 * t.sin()), -1),
         root_R=so3_exp(torch.stack((0.04 * t.sin(), 0.05 * t.cos(), 0.02 * t), -1)),
@@ -61,7 +62,7 @@ def expert_motion():
         root_w=torch.stack((0.01 * t, 0.01 * t.cos(), 0.1 + 0.01 * t.sin()), -1),
         q=torch.stack((0.1 + 0.05 * t.sin(), -0.2 + 0.03 * t.cos(), 0.3 + 0.01 * t), -1),
         qd=torch.stack((0.1 * t.cos(), 0.2 * t.sin(), 0.1 + 0.03 * t), -1),
-        clip_len=lengths, clip_start=torch.tensor([0, 4]), clip_end=torch.tensor([3, 8]),
+        clip_len=lengths, clip_start=starts, clip_end=starts + lengths - 1,
         clip_id=torch.repeat_interleave(torch.arange(2), lengths),
         names=["first", "second"], provenance={"source": "CPU training-contract fixture"},
     )
@@ -135,7 +136,7 @@ class StyleTrainingContractTests(unittest.TestCase):
         p, R, v, w, q, qd = S0
         Rt = R.transpose(-1, -2)
         expected = torch.cat((
-            -R[..., 2, :], q - torch.tensor(self.kin.robot.default_q), qd * .1,
+            -R[..., 2, :], q - torch.tensor(self.kin.robot.default_q), qd * .05,
             (Rt @ v[..., None]).squeeze(-1), (Rt @ w[..., None]).squeeze(-1),
         ), -1)
         self.assertEqual(learner.frame_dim, 9 + 2 * self.kin.num_joints)
@@ -373,10 +374,11 @@ class StyleTrainingContractTests(unittest.TestCase):
         self.assertEqual(learner.replay_size, 0)
 
     def test_production_policy_update_gets_style_only_actor_gradient_on_cpu(self):
+        self.motion = expert_motion((12, 13))
         mdp = make_command_mdp()
         mdp.set_style_weight(.5)
-        initial, _ = self.states()
-        actor = TerrainPolicy(mdp.obs_dim, mdp.goal_dim, hist=2, num_joints=3, action_limit=4.)
+        initial = recorded_state(self.motion, torch.tensor([9, 21]))
+        actor = TerrainPolicy(mdp.obs_dim, mdp.goal_dim, hist=10, num_joints=3, action_limit=4.)
         world = TerrainWorldModel(mdp.field, 3, hidden=(16, 16))
         with torch.no_grad():
             world.net[-1].weight.normal_(std=.04)
@@ -384,7 +386,7 @@ class StyleTrainingContractTests(unittest.TestCase):
         with torch.no_grad():
             critic.net[-1].weight.zero_()
             critic.net[-1].bias.zero_()
-        learner = self.learner()
+        learner = self.learner(history_steps=10)
         style_norm = copy.deepcopy(learner.norm.state_dict())
         world_before = copy.deepcopy(world.state_dict())
         style_before = copy.deepcopy(learner.discriminator.state_dict())
@@ -394,8 +396,10 @@ class StyleTrainingContractTests(unittest.TestCase):
         xi[:, 0] = .75
         initial_flat = flatten_state(initial)
         data = {"s": initial_flat, "xi": xi, "c": command, "a_prev": torch.zeros(2, 3)}
-        history = {key: value[:, None].expand(-1, 2, *value.shape[1:]) for key, value in data.items()}
-        args = SimpleNamespace(device="cpu", compile=False, profile=False, horizon=3, hist=2, pi_batch=2,
+        history = {key: value[:, None].expand(-1, 10, *value.shape[1:]) for key, value in data.items()}
+        ids = torch.stack((torch.arange(10), torch.arange(12, 22)))
+        history["s"] = flatten_state(recorded_state(self.motion, ids))
+        args = SimpleNamespace(device="cpu", compile=False, profile=False, horizon=3, hist=10, pi_batch=2,
                                amp_weight=.5, gamma=.99, lam=.95,
                                critic_epochs=1, critic_minibatches=1)
         namespace = {
@@ -403,6 +407,7 @@ class StyleTrainingContractTests(unittest.TestCase):
             "critic": critic, "style": learner,
             "style_reward_fn": learner.reward_from_features,
             "style_frame_fn": learner.frame_features,
+            "regularization_reward_fn": lambda previous, state, action, xi: action.sum(-1) * 0,
             "mdp": mdp, "advance_command": advance_command,
             "normalize_xi": normalize_xi, "unflatten_state": unflatten_state,
             "sample_starts": lambda _: (data, history),
@@ -457,12 +462,14 @@ class StyleTrainingContractTests(unittest.TestCase):
             for gamma in (.9, .99, .999):
                 mdp = make_command_mdp(profile, gamma=gamma)
                 mdp.set_style_weight(.5)
-                maximum = MAX_STEP_REWARD + .5 * CONTROL_DT
+                maximum = COMMAND_MAX_STEP_REWARD + .5
                 expected = SUCCESS_BONUS + gamma * maximum / (1 - gamma)
                 self.assertAlmostEqual(mdp.success_reward, expected)
+                goal_step_return = maximum + expected
                 for delay in (1, 32, 500):
-                    delayed = maximum * (1 - gamma ** delay) / (1 - gamma) + gamma ** delay * expected
-                    self.assertGreater(expected, delayed)
+                    delayed = (maximum * (1 - gamma ** delay) / (1 - gamma)
+                               + gamma ** delay * goal_step_return)
+                    self.assertGreater(goal_step_return, delayed)
         mdp = make_command_mdp("stairs")
         mdp.set_style_weight(.5)
         c = torch.zeros(1, SCENARIO_DIM)

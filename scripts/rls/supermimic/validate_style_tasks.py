@@ -19,9 +19,9 @@ def smoke_command(job, config, run):
         "--task", job["task"], "--run-dir", str(run),
         "--amp-motion-config", str(config), "--num-envs", "16",
         "--iterations", "4", "--wm-only-iters", "1", "--wm-batches", "1",
-        "--wm-batch", "8", "--pi-batch", "8", "--horizon", "4", "--hist", "2",
-        "--wm-window", "2", "--buffer-steps", "16", "--critic-epochs", "1",
-        "--critic-minibatches", "1", "--warmup-steps", "8", "--log-every", "1",
+        "--wm-batch", "8", "--pi-batch", "8", "--horizon", "4", "--hist", "10",
+        "--wm-window", "2", "--buffer-steps", "32", "--critic-epochs", "1",
+        "--critic-minibatches", "1", "--warmup-steps", "16", "--log-every", "1",
         "--amp-batch", "16", "--no-compile",
     ]
     if job["profile"] == "stealth":

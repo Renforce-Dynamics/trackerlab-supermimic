@@ -218,6 +218,21 @@ class CommandSim(TerrainSim):
         self.ctrl[ids[:, None], self._actuator_ids] = target
         self.a_prev[ids] = ((target - self.default_q - offsets) / self.action_scale).clamp(
             -self.action_limit, self.action_limit)
+        if hasattr(self, "_command_ranges"):
+            body_v = (R.transpose(-1, -2) @ v[..., None]).squeeze(-1)
+            body_w = (R.transpose(-1, -2) @ w[..., None]).squeeze(-1)
+            twist = torch.cat((body_v[:, :2], body_w[:, 2:3]), -1)
+            if self.mdp.terrain_navigation:
+                twist[:, 1:] = 0.
+            self.c[ids, 1:4] = twist.clamp(self._command_ranges[:, 0], self._command_ranges[:, 1])
+
+    def set_command_ranges(self, ranges):
+        ranges = torch.as_tensor(ranges, device=self.device, dtype=self.c.dtype)
+        if (ranges.shape != (3, 2) or not bool(torch.isfinite(ranges).all())
+                or bool((ranges[:, 0] > ranges[:, 1]).any())):
+            raise ValueError("Command ranges must be finite ordered vx/vy/wz pairs")
+        self._command_ranges = ranges.clone()
+        self.contract["command_ranges"] = ranges.cpu().tolist()
 
     @torch.no_grad()
     def sample_commands(self, ids=None, *, jump_height=None):
@@ -237,7 +252,13 @@ class CommandSim(TerrainSim):
         if not count:
             return
         u = torch.rand(count, 4, device=self.device, dtype=self.c.dtype)
-        if self.mdp.terrain_navigation:
+        if hasattr(self, "_command_ranges"):
+            commands = self._command_ranges[:, 0] + u[:, :3] * (
+                self._command_ranges[:, 1] - self._command_ranges[:, 0])
+            if self.mdp.terrain_navigation:
+                commands[:, 0].clamp_min_(.1 * self.scale)
+                commands[:, 1:] = 0.
+        elif self.mdp.terrain_navigation:
             commands = torch.zeros(count, 3, device=self.device, dtype=self.c.dtype)
             commands[:, 0] = (.5 + .6 * u[:, 0]) * self.scale
         else:
@@ -296,6 +317,10 @@ class CommandSim(TerrainSim):
         if not self.mdp.terrain_navigation:
             success = timeout & ~fallen & (fraction >= .8) & (self.ep_step >= self.min_success_steps)
         reward, reward_terms = self.mdp.reward(S1, a, a_prev, c1, terms=True)
+        if hasattr(self, "locomotion_reward_fn"):
+            penalty = self.locomotion_reward_fn(S0, S1, a, self.xi)
+            reward = reward + penalty
+            reward_terms["locomotion_regularization"] = penalty
         terminal_reward = self.mdp.terminal_reward(success, fallen)
         reward_terms["terminal"] = terminal_reward
         reward = torch.nan_to_num(reward + terminal_reward, nan=-FALL_PENALTY,

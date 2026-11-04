@@ -70,6 +70,7 @@ def export(checkpoint_path, output):
         "action_formula": "clip(default_q + joint_offset + clip(action,-action_limit,action_limit)*action_scale, joint_limits)",
         "runtime_reference_motion": False, "runtime_discriminator": False,
         "runtime_world_model": False, "normalization_included": True,
+        "trained_command_envelope": checkpoint.get("command_envelope"),
         "validation_max_error": errors,
         "deployment_requirement": "Local height map and a body-velocity estimate; simulator truth is used in training.",
     }

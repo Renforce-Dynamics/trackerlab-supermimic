@@ -3,6 +3,7 @@
 import argparse
 import csv
 from datetime import datetime, timezone
+import hashlib
 import json
 import math
 import os
@@ -46,7 +47,7 @@ def command_quality(reports, profile):
     """Physical tracking and survival gate; discriminator scores alone never qualify."""
     if len(reports) < 2:
         return {"passed": False, "reason": "two held-out physical evaluations required"}
-    rows, style_scores = [], []
+    rows, style_scores, gait_rows = [], [], []
     for report in reports:
         metrics = report.get("command_metrics", {})
         lanes = report.get("lanes", [])
@@ -70,6 +71,14 @@ def command_quality(reports, profile):
                        for value in rows[-1].values())):
             return {"passed": False, "reason": "nonfinite or invalid evaluation metric"}
         style_scores.append(score)
+        gait = report.get("gait_metrics", {})
+        gait_limits = {"support_foot_slip_scale_m_s": .12,
+                       "close_feet_fraction": .1,
+                       "joint_acceleration_squared": 2.5e5}
+        if any(type(gait.get(name)) not in (int, float) or not math.isfinite(gait[name])
+               or gait[name] < 0 for name in gait_limits):
+            return {"passed": False, "reason": "independent foot and acceleration measurements missing"}
+        gait_rows.append({name: gait[name] for name in gait_limits})
     limits = {"success": .9 if profile in ("velocity", "stealth") else .8,
               "fall": .1 if profile in ("velocity", "stealth") else .2,
               "velocity_rmse_scale_m_s": .35, "yaw_rate_rmse_rad_s": .5}
@@ -79,9 +88,10 @@ def command_quality(reports, profile):
         and row["velocity_rmse_scale_m_s"] <= limits["velocity_rmse_scale_m_s"]
         and row["yaw_rate_rmse_rad_s"] <= limits["yaw_rate_rmse_rad_s"]
         for row in rows
-    )
+    ) and all(row[name] <= limit for row in gait_rows for name, limit in gait_limits.items())
     return {"passed": passed, "seeds": rows, "limits": limits,
             "style_reward_rate_by_seed": style_scores, "minimum_style_reward_rate": .55,
+            "gait_measurements": gait_rows, "gait_limits": gait_limits,
             "visual_style_review": "required; AMP score is not a visual-quality certificate"}
 
 
@@ -100,13 +110,99 @@ def resolve_styles(path):
 
 def recover_jobs(status):
     """A restarted owner retries failed work and completes interrupted exports."""
+    revalidate_qualifications(status)
     for job in status["jobs"]:
         if job["phase"] == "failed":
             job["phase"] = "pending"
             job["restarted_after_failure"] = True
         elif (job["phase"] == "completed" and job.get("quality_passed")
               and job["task"] not in status["qualified"]):
-            job["phase"] = "exporting"
+            job["phase"] = "awaiting_visual_review"
+
+
+def visual_review_binding(directory, checkpoint):
+    """Return the current approval's artifact identities, or fail closed."""
+    directory, checkpoint = Path(directory).resolve(), Path(checkpoint).resolve()
+    receipt = directory / "visual_review.json"
+    trajectory = directory / "trajectories.npz"
+    try:
+        raw_review = receipt.read_bytes()
+        review = json.loads(raw_review.decode("utf-8"))
+        if (not isinstance(review, dict) or review.get("passed") is not True
+                or not isinstance(review.get("reviewer"), str) or not review["reviewer"].strip()
+                or not isinstance(review.get("notes"), str) or not review["notes"].strip()):
+            return None
+        binding = {
+            "checkpoint": str(checkpoint), "trajectory": str(trajectory),
+            "visual_review": str(receipt),
+            "visual_review_sha256": hashlib.sha256(raw_review).hexdigest(),
+        }
+        for path, key in ((checkpoint, "checkpoint_sha256"), (trajectory, "trajectory_sha256")):
+            with path.open("rb") as stream:
+                binding[key] = hashlib.file_digest(stream, "sha256").hexdigest()
+            if review.get(key) != binding[key]:
+                return None
+        return binding
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+
+
+def visual_review_passed(directory, checkpoint):
+    return visual_review_binding(directory, checkpoint) is not None
+
+
+def revalidate_qualifications(status):
+    """Revoke stale approvals and hold dependent jobs without discarding outputs."""
+    qualified, removed = status["qualified"], {}
+    for task, entry in list(qualified.items()):
+        checkpoint = entry.get("checkpoint") if isinstance(entry, dict) else None
+        binding = (visual_review_binding(Path(checkpoint).parent, checkpoint)
+                   if isinstance(checkpoint, str) and checkpoint else None)
+        if binding is None or any(entry.get(key) != value for key, value in binding.items()):
+            removed[task] = qualified.pop(task)
+    dependencies = {job["task"]: job.get("depends_on") for job in status["jobs"]}
+    while True:
+        stale = [task for task in qualified
+                 if dependencies.get(task) and dependencies[task] not in qualified]
+        if not stale:
+            break
+        for task in stale:
+            removed[task] = qualified.pop(task)
+    active_phases = {
+        "pending", "training", "evaluating", "waiting_style_data",
+        "held_for_velocity_quality", "stopped", "exporting", "awaiting_visual_review",
+    }
+    for job in status["jobs"]:
+        if job["task"] in removed and job.get("quality_passed"):
+            entry = removed[job["task"]]
+            previous = entry.get("checkpoint") if isinstance(entry, dict) else None
+            current = job.get("checkpoint")
+            if current is None and job.get("run_dir"):
+                current = str(Path(job["run_dir"]) / "last.pt")
+            if not previous or not current or Path(current).resolve() == Path(previous).resolve():
+                job["phase"] = "awaiting_visual_review"
+                job.pop("visual_review_binding", None)
+        dependency = job.get("depends_on")
+        if dependency and dependency not in qualified and job["phase"] in active_phases:
+            job["phase"] = "held_for_velocity_quality"
+    return set(removed)
+
+
+def dispatch_ready(status, job, directory, kind):
+    """Recheck approvals immediately before training/export and after export."""
+    revalidate_qualifications(status)
+    dependency = job.get("depends_on")
+    if dependency and dependency not in status["qualified"]:
+        job["phase"] = "held_for_velocity_quality"
+        return False
+    if kind == "export":
+        binding = visual_review_binding(directory, Path(directory) / "last.pt")
+        if (not job.get("quality_passed") or binding is None
+                or binding != job.get("visual_review_binding")):
+            job["phase"] = "awaiting_visual_review"
+            job.pop("visual_review_binding", None)
+            return False
+    return True
 
 
 def checkpoint_iteration(path, task):
@@ -160,8 +256,8 @@ def main():
     root.mkdir(parents=True, exist_ok=True)
     receipt = root / "campaign.json"
     status = (json.loads(receipt.read_text(encoding="utf-8")) if receipt.exists() else
-              {"stage": "supermimic-command-amp-v1", "jobs": jobs, "qualified": {}})
-    if status["stage"] != "supermimic-command-amp-v1":
+              {"stage": "supermimic-command-amp-v4", "jobs": jobs, "qualified": {}})
+    if status["stage"] != "supermimic-command-amp-v4":
         raise ValueError("Use a fresh campaign for the new command/style objective")
     recover_jobs(status)
     if (root / "STOP").exists():
@@ -184,6 +280,9 @@ def main():
         return stopping["requested"] or (root / "STOP").exists()
 
     def invoke(command, directory, kind, job):
+        if kind in ("train", "export") and not dispatch_ready(status, job, directory, kind):
+            record()
+            return None
         with (directory / f"{kind}_stdout.log").open("a", encoding="utf-8") as stream:
             child = subprocess.Popen(command, cwd=REPO, stdout=stream,
                                      stderr=subprocess.STDOUT)
@@ -211,12 +310,17 @@ def main():
     try:
         record()
         while not stop_requested():
+            revalidate_qualifications(status)
             ready = None
             for job in status["jobs"]:
                 if job["phase"] not in ("pending", "training", "evaluating",
                                          "waiting_style_data", "held_for_velocity_quality",
-                                         "stopped", "exporting"):
+                                         "stopped", "exporting", "awaiting_visual_review"):
                     continue
+                if job["phase"] == "awaiting_visual_review":
+                    directory = Path(job["run_dir"])
+                    if not visual_review_passed(directory, directory / "last.pt"):
+                        continue
                 dependency = job["depends_on"]
                 if dependency and dependency not in status["qualified"]:
                     job["phase"] = "held_for_velocity_quality"
@@ -260,7 +364,7 @@ def main():
                     "--task", job["task"], "--run-dir", str(run),
                     "--amp-motion-config", str(styles[job["robot"]][job["style"]]),
                     "--num-envs", str(args.num_envs), "--iterations", str(job["iterations"]),
-                    "--amp-weight", ".5" if job["profile"] in ("velocity", "stealth") else ".25",
+                    "--amp-weight", ".25",
                 ]
                 if job["profile"] == "stealth":
                     command.extend(("--clearance-ratio", ".8"))
@@ -271,7 +375,10 @@ def main():
                 elif job["depends_on"]:
                     command.extend(("--warm-start", status["qualified"][job["depends_on"]]["checkpoint"]))
                 job["phase"] = "training"
-                if not invoke(command, run, "train", job):
+                training_result = invoke(command, run, "train", job)
+                if training_result is None:
+                    continue
+                if not training_result:
                     job.update(phase="failed", finished_at=now())
                     status["phase"] = "failed"
                     record()
@@ -281,10 +388,14 @@ def main():
             if summary["phase"] != "completed" or stop_requested():
                 job["phase"] = "stopped"
                 break
+            reviewed = job["phase"] == "awaiting_visual_review"
             job["phase"] = "evaluating"
             reports = []
             for seed in args.validation_seeds:
                 output = run / f"evaluation_seed_{seed}.json"
+                if reviewed and output.is_file():
+                    reports.append(json.loads(output.read_text()))
+                    continue
                 command = [
                     sys.executable, "-u", str(Path(__file__).with_name("evaluate_terrain.py")),
                     "--checkpoint", str(checkpoint), "--output", str(output),
@@ -300,7 +411,7 @@ def main():
             if stop_requested():
                 break
             quality = command_quality(reports, job["profile"])
-            if (run / "trajectories.npz").exists():
+            if not reviewed and (run / "trajectories.npz").exists():
                 import shutil
                 shutil.copy2(run / f"evaluation_seed_{args.validation_seeds[0]}.json",
                              run / "evaluation.json")
@@ -311,22 +422,31 @@ def main():
                 if not invoke(command, run, "demo", job):
                     raise RuntimeError(f"Demo rendering failed for {job['task']}")
             save(run / "quality.json", quality)
-            job.update(phase="exporting" if quality["passed"] else "completed",
+            review_binding = visual_review_binding(run, checkpoint) if quality["passed"] else None
+            job.update(phase=("exporting" if review_binding else
+                              "awaiting_visual_review" if quality["passed"] else "completed"),
                        quality_passed=quality["passed"],
+                       visual_review_binding=review_binding,
                        checkpoint=str(checkpoint), quality=str(run / "quality.json"),
                        finished_at=now())
-            if quality["passed"]:
+            if review_binding:
                 export_command = [
                     sys.executable, "-u", str(Path(__file__).with_name("export_command_policy.py")),
                     "--checkpoint", str(checkpoint), "--output", str(run / "export"),
                 ]
-                if not invoke(export_command, run, "export", job):
+                export_result = invoke(export_command, run, "export", job)
+                if export_result is None:
+                    continue
+                if not export_result:
                     raise RuntimeError(f"Actor export failed for {job['task']}")
+                if not dispatch_ready(status, job, run, "export"):
+                    record()
+                    continue
                 status["qualified"][job["task"]] = {
-                    "checkpoint": str(checkpoint), "quality": str(run / "quality.json"),
+                    **review_binding, "quality": str(run / "quality.json"),
                 }
                 job["phase"] = "completed"
-            elif job["round"] < args.max_rounds:
+            elif not quality["passed"] and job["round"] < args.max_rounds:
                 next_round = job["round"] + 1
                 if not any(other["task"] == job["task"] and other["round"] == next_round
                            for other in status["jobs"]):
@@ -338,6 +458,7 @@ def main():
                         "source_checkpoint": str(checkpoint),
                     })
             record()
+        revalidate_qualifications(status)
         requested_tasks = {job["task"] for job in jobs}
         status["phase"] = ("stopped" if stop_requested() else
                            "completed" if requested_tasks.issubset(status["qualified"]) else

@@ -1,4 +1,8 @@
-"""Evaluate a terrain actor in physics on six held-out difficulty lanes."""
+"""Evaluate physical task returns, including checkpoint-calibrated locomotion penalties.
+
+AMP is reported separately as a diagnostic score; physical task returns are
+not the combined imagined task-plus-AMP training objective.
+"""
 
 import argparse
 import json
@@ -52,6 +56,59 @@ class FirstEpisodeRecorder:
                             control_dt=np.float64(.02), **metadata)
 
 
+def attach_locomotion_quality(env, kin, field, motors, checkpoint):
+    """Use the saved training calibration for both physical rewards and metrics."""
+    from trackerLab.algorithms.supermimic.locomotion_quality import LocomotionQuality
+    quality = LocomotionQuality(kin, field, motors)
+    sole_height = torch.as_tensor(
+        checkpoint["quality_sole_height"], device=kin.device, dtype=quality.sole_height.dtype)
+    if sole_height.shape != quality.sole_height.shape or not bool(torch.isfinite(sole_height).all()):
+        raise ValueError("Checkpoint sole calibration must contain one finite height per foot")
+    quality.sole_height = sole_height.detach().clone()
+    env.locomotion_reward_fn = quality.reward
+    return quality
+
+
+def command_evaluation_summary(command_sum, command_count, motion_sum, style_sum,
+                               quality_sum, command_envelope):
+    metrics = (command_sum / command_count.clamp_min(1)).sqrt().cpu().tolist()
+    return {
+        "runtime_motion_reference": False,
+        "command_metrics": dict(zip(
+            ("velocity_rmse_scale_m_s", "yaw_rate_rmse_rad_s", "clearance_rmse_scale_m"),
+            metrics,
+        )),
+        "command_metric_samples": int(command_count.item()),
+        "motion_metrics": {
+            **dict(zip(("mean_requested_planar_speed_mps", "mean_projected_velocity_along_command_mps"),
+                       (motion_sum / command_count.clamp_min(1)).cpu().tolist())),
+            "samples": int(command_count.item()),
+        },
+        "task_return_definition": {
+            "components": ["command_task_reward", "locomotion_regularization", "terminal_reward"],
+            "aggregation": "undiscounted sum per completed physical episode",
+            "includes_amp_style_reward": False,
+            "matches_combined_training_objective": False,
+            "amp_role": "Separate diagnostic scoring; excluded from physical task returns",
+        },
+        "style_metrics": {
+            "mean_reward_rate": float((style_sum[0] / style_sum[1].clamp_min(1)).item()),
+            "samples": int(style_sum[1].item()),
+            "role": "offline scoring only; actor never reads scorer or motion data",
+            "independent_style_validation": False,
+        },
+        "style_quality": "Requires video/physical review; training discriminator score alone is insufficient",
+        "command_envelope": command_envelope,
+        "gait_metrics": {
+            **dict(zip(("support_foot_slip_scale_m_s", "support_foot_tilt_squared",
+                        "joint_acceleration_squared", "close_feet_fraction"),
+                       (quality_sum[:4] / quality_sum[4].clamp_min(1)).cpu().tolist())),
+            "support": "geometry estimate; independent of discriminator outputs",
+            "samples": int(quality_sum[4].item()),
+        },
+    }
+
+
 @torch.no_grad()
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -71,7 +128,7 @@ def main():
     ck = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
     command_mode = ck.get("training_stage") == "command-style"
     task = get_task(ck["task"])
-    spec, height, _ = robot_parameters(task.robot)
+    spec, height, motors = robot_parameters(task.robot)
     field_data = generate(task.profile, height, args.seed)
     field = HeightField(field_data, height, device)
     solver_iterations = ck["arguments"].get("solver_iterations", 50)
@@ -101,6 +158,9 @@ def main():
                        if command_mode else {})
     env = simulation(task, mdp, args.num_envs, device, args.seed, solver_iterations,
                      max_episode_steps=ck["arguments"]["max_episode_steps"], **runtime_options)
+    if command_mode and ck.get("command_envelope"):
+        from command_envelope import validate_envelope
+        env.set_command_ranges(validate_envelope(ck["command_envelope"])["ranges"])
     env.curriculum = False
     levels = torch.arange(args.num_envs, device=device) % 6
     env.reset(levels=levels)
@@ -117,6 +177,10 @@ def main():
         from trackerLab.kinematics.supermimic.robot import RobotKinematics
         kin = RobotKinematics(device, spec)
         style = AMPStyle.for_scoring(kin, ck["amp_style"], ground_sampler=field.sample)
+        quality = attach_locomotion_quality(env, kin, field, motors, ck)
+        quality_sum = torch.zeros(5, device=device)
+        style_history = style.frame_features(env.state())[:, None].expand(
+            -1, style.history_steps, -1).clone()
     recorder = None
     if args.trajectory_output:
         free_id = np.flatnonzero(model.jnt_type == 0)[0]
@@ -133,7 +197,12 @@ def main():
     progress = torch.zeros(args.num_envs, device=device)
     command_sum = torch.zeros(3, device=device)
     command_count = torch.zeros((), device=device)
+    motion_sum = torch.zeros(2, device=device)
     for _ in range(args.steps):
+        if command_mode:
+            first_frame = style.frame_features(env.state())
+            style_history = torch.where((env.ep_step == 0)[:, None, None],
+                                        first_frame[:, None].expand_as(style_history), style_history)
         observation = mdp.add_noise(env.observe())
         history = torch.where((env.ep_step == 0)[:, None, None],
                               observation[:, None].expand_as(history),
@@ -153,8 +222,24 @@ def main():
             command_sum += torch.stack((velocity_error[valid].sum(), yaw_error[valid].sum(),
                                         clearance_error[valid].sum()))
             command_count += valid.sum()
-            rate = style.reward(unflatten_state(tr["s"]), unflatten_state(tr["s1"]))
-            style_sum += torch.stack((rate[valid].sum(), valid.sum()))
+            motion_sum += torch.stack((
+                tr["command_metrics"]["command_speed_mps"][valid].sum(),
+                tr["command_metrics"]["commanded_progress_mps"][valid].sum(),
+            ))
+            style_history = torch.cat((style_history[:, 1:],
+                style.frame_features(unflatten_state(tr["s1"]))[:, None]), 1)
+            rate = style.reward_from_features(style.window_features(style_history))
+            style_valid = valid & (tr["ep_step"] >= style.history_steps - 2)
+            style_sum += torch.stack((rate[style_valid].sum(), style_valid.sum()))
+            measured = quality.measurements(unflatten_state(tr["s1"]), unflatten_state(tr["s"]))
+            quality_sum += torch.stack((
+                measured["support_foot_slip_scale_m_s"][valid].sum(),
+                measured["support_foot_tilt_squared"][valid].sum(),
+                measured["joint_acceleration_squared"][valid].sum(),
+                (measured["foot_separation_scale_m"][valid] < .08).float().sum()
+                if quality.biped else valid.sum() * 0.,
+                valid.sum(),
+            ))
         if recorder is not None and recorder.active.any():
             recorder.add(
                 tr["s1"][:6].cpu().numpy(),
@@ -189,20 +274,8 @@ def main():
               "physics_steps": args.steps, "num_envs": args.num_envs,
               "policy_exploration_noise": False, "observation_noise": True, "lanes": lanes}
     if command_mode:
-        metrics = (command_sum / command_count.clamp_min(1)).sqrt().cpu().tolist()
-        result.update(
-            runtime_motion_reference=False,
-            command_metrics=dict(zip(
-                ("velocity_rmse_scale_m_s", "yaw_rate_rmse_rad_s", "clearance_rmse_scale_m"),
-                metrics,
-            )),
-            command_metric_samples=int(command_count.item()),
-            style_metrics={"mean_reward_rate": float((style_sum[0] / style_sum[1].clamp_min(1)).item()),
-                           "samples": int(style_sum[1].item()),
-                           "role": "offline scoring only; actor never reads scorer or motion data",
-                           "independent_style_validation": False},
-            style_quality="Requires video/physical review; training discriminator score alone is insufficient",
-        )
+        result.update(command_evaluation_summary(
+            command_sum, command_count, motion_sum, style_sum, quality_sum, ck.get("command_envelope")))
     if recorder is not None:
         recorder.save(args.trajectory_output, seed=np.int64(args.seed),
                       task=np.array(task.id), iteration=np.int64(ck["iteration"]),

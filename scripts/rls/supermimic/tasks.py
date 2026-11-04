@@ -40,8 +40,8 @@ def main():
     if args.command == "supervise-style":
         command = [
             sys.executable, str(Path(__file__).with_name("supervise_style.py")),
-            "--run-dir", str(REPO / "logs/supermimic-command-style-v1"),
-            "--style-map", str(REPO / "data/style-references-v2/style-map.json"), *extra,
+            "--run-dir", str(REPO / "logs/supermimic-command-style-v4-20261105"),
+            "--style-map", str(REPO / "data/style-references-v7/style-map.json"), *extra,
         ]
         subprocess.run(command, check=True, cwd=REPO)
         return
@@ -56,8 +56,8 @@ def main():
         folder = Path(__file__).resolve().parent
         if args.command == "supervise":
             command = [sys.executable, str(folder / "supervise_style.py"),
-                       "--run-dir", str(REPO / "logs/supermimic-command-style-v1"),
-                       "--style-map", str(REPO / "data/style-references-v2/style-map.json"),
+                       "--run-dir", str(REPO / "logs/supermimic-command-style-v4-20261105"),
+                       "--style-map", str(REPO / "data/style-references-v7/style-map.json"),
                        "--tasks", entry.id, *extra]
         else:
             command = [sys.executable, str(folder / "train_terrain.py"),
@@ -66,7 +66,7 @@ def main():
                 from supervise_style import resolve_styles
                 style = ("stealth" if entry.profile == "stealth" else
                          "parkour" if entry.profile in ("stairs", "mountain", "parkour") else "walk")
-                mapping = REPO / "data/style-references-v2/style-map.json"
+                mapping = REPO / "data/style-references-v7/style-map.json"
                 if not mapping.is_file():
                     parser.error("Prepare a style-map or supply --amp-motion-config")
                 config = resolve_styles(mapping).get(entry.robot, {}).get(style)
@@ -81,8 +81,8 @@ def main():
         if args.command == "smoke":
             command += ["--num-envs", "16", "--iterations", "4", "--wm-only-iters", "1",
                         "--wm-batches", "1", "--wm-batch", "8", "--pi-batch", "8",
-                        "--horizon", "4", "--hist", "2", "--wm-window", "2",
-                        "--buffer-steps", "16", "--critic-epochs", "1",
+                        "--horizon", "4", "--hist", "10", "--wm-window", "2",
+                        "--buffer-steps", "32", "--critic-epochs", "1",
                         "--critic-minibatches", "1", "--no-compile",
                         "--run-dir", str(REPO / "logs" / "terrain-smoke" / entry.robot / entry.profile)]
         elif args.command == "train" and "--run-dir" not in extra:

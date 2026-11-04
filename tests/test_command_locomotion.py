@@ -23,7 +23,7 @@ from trackerLab.kinematics.supermimic.rotations import so3_exp, yaw_mat
 from trackerLab.motion_buffer.motion_lib.supermimic import MotionLib
 from trackerLab.tracker_env.mdp.supermimic import flatten_state
 from trackerLab.tracker_env.mdp.supermimic_command import (
-    COMMAND_FIELDS, COMMAND_VERSION, CONTROL_DT, GOAL_DIM, JUMP_DURATION,
+    COMMAND_FIELDS, COMMAND_VERSION, COMMAND_MAX_STEP_REWARD, CONTROL_DT, GOAL_DIM, JUMP_DURATION,
     SCENARIO_DIM, CommandMDP, advance_command, body_velocities, jump_pulse,
     target_clearance,
 )
@@ -229,8 +229,8 @@ class CommandLocomotionTests(unittest.TestCase):
         c = make_command(mdp, 4)
         c[:, 1:4] = torch.tensor([.6, -.3, .8])
         _, terms = mdp.reward(S, S[4], S[4], c, terms=True)
-        torch.testing.assert_close(terms["body_velocity"], torch.full((4,), .025))
-        torch.testing.assert_close(terms["yaw_rate"], torch.full((4,), .008))
+        torch.testing.assert_close(terms["body_velocity"], torch.full((4,), .04))
+        torch.testing.assert_close(terms["yaw_rate"], torch.full((4,), .04))
         torch.testing.assert_close(mdp.command_metrics(S, c)["velocity_error_mps"], torch.zeros(4),
                                    atol=1e-6, rtol=0)
 
@@ -484,6 +484,22 @@ class CommandLocomotionTests(unittest.TestCase):
             self.assertEqual(transition["reward_terms"]["terminal"].item(), 0.)
             self.assertEqual(sim.ep_step.item(), 0)
 
+    def test_stationary_policy_cannot_pass_low_speed_moving_commands(self):
+        sim = CpuCommandSim(batch=6, max_episode_steps=500)
+        sim.set_command_ranges([[.15, .20], [0., 0.], [0., 0.]])
+        sim.sample_commands()
+        sim._command_interval.fill_(1000)
+        for _ in range(500):
+            transition = sim.step(torch.zeros(6, 4))
+            self.assertFalse(transition["command_metrics"]["command_tracking"].any())
+        self.assertTrue(transition["episode_survived"].all())
+        self.assertFalse(transition["episode_success"].any())
+        mdp = make_mdp()
+        state, command = list(make_state(mdp, 3)), make_command(mdp, 3)
+        command[:, 1:3] = torch.tensor([[.15, 0.], [-.15, 0.], [0., .15]])
+        state[2][:, :2] = .8 * command[:, 1:3]
+        self.assertTrue(mdp.command_metrics(state, command)["command_tracking"].all())
+
     def test_flat_field_goal_is_ignored_and_terrain_goal_terminates(self):
         for profile, reached in (("velocity", False), ("stealth", False), ("stairs", True)):
             sim = CpuCommandSim(profile)
@@ -515,6 +531,17 @@ class CommandLocomotionTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 CommandSim(task, mdp, device="cpu", **kwargs)
 
+    def test_expert_command_ranges_use_physical_units_without_robot_rescaling(self):
+        sim = CpuCommandSim(batch=256)
+        ranges = torch.tensor([[.3, .55], [-.04, .04], [-.1, .1]])
+        sim.set_command_ranges(ranges)
+        sim.sample_commands()
+        self.assertTrue(bool((sim.c[:, 1:4] >= ranges[:, 0]).all()))
+        self.assertTrue(bool((sim.c[:, 1:4] <= ranges[:, 1]).all()))
+        self.assertGreater(sim.c[:, 1].std().item(), .04)
+        with self.assertRaises(ValueError):
+            sim.set_command_ranges([[1., 0.], [0., 0.], [0., 0.]])
+
     def test_style_weight_replaces_total_positive_continuation_at_terrain_goals(self):
         for gamma in (.9, .99, .999):
             for profile in PROFILES:
@@ -522,19 +549,20 @@ class CommandLocomotionTests(unittest.TestCase):
                 dimensions = (mdp.obs_dim, mdp.goal_dim, mdp.scenario_dim, mdp.critic_dim)
                 for weight in (0., .5, 2.):
                     mdp.set_style_weight(weight)
-                    maximum = MAX_STEP_REWARD + .02 * weight
+                    maximum = COMMAND_MAX_STEP_REWARD + weight
                     expected = SUCCESS_BONUS + gamma * maximum / (1 - gamma)
                     self.assertAlmostEqual(mdp.success_reward, expected)
+                    goal_step_return = maximum + expected
                     self.assertAlmostEqual(mdp.max_step_reward, maximum)
                     self.assertEqual(mdp.style_weight, weight)
                     self.assertEqual(dimensions, (mdp.obs_dim, mdp.goal_dim,
                                                   mdp.scenario_dim, mdp.critic_dim))
                     for delay in (1, 32, 500):
                         delayed = (maximum * (1 - gamma ** delay) / (1 - gamma)
-                                   + gamma ** delay * mdp.success_reward)
-                        self.assertGreater(mdp.success_reward, delayed)
+                                   + gamma ** delay * goal_step_return)
+                        self.assertGreater(goal_step_return, delayed)
                 mdp.set_style_weight(.5)
-                self.assertAlmostEqual(mdp.success_reward, SUCCESS_BONUS + gamma * .06 / (1 - gamma))
+                self.assertAlmostEqual(mdp.success_reward, SUCCESS_BONUS + gamma * .652 / (1 - gamma))
                 before = mdp.success_reward
                 for invalid in (-1., float("nan"), float("inf")):
                     with self.assertRaises(ValueError):

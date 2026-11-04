@@ -16,12 +16,13 @@ from trackerLab.tracker_env.mdp.supermimic_terrain import (
 from trackerTask.supermimic.terrain import COMMAND_PROFILES, PROFILES
 
 
-COMMAND_VERSION = 3
+COMMAND_VERSION = 4
 SCENARIO_DIM = 7
 GOAL_DIM = 12
 CONTROL_DT = .02
 JUMP_DURATION = .8
 ACTION_LIMIT = 4.
+COMMAND_MAX_STEP_REWARD = .152
 COMMAND_FIELDS = (
     "lane_center_world_y", "body_vx", "body_vy", "body_wz",
     "target_clearance_m", "jump_height_m", "jump_elapsed_seconds",
@@ -34,6 +35,7 @@ GOAL_FIELDS = (
 TERMS = (
     "body_velocity", "yaw_rate", "alive", "upright", "height", "posture",
     "action_rate", "joint_velocity", "joint_limit", "progress", "lane", "heading",
+    "dont_wait",
 )
 
 
@@ -111,7 +113,7 @@ class CommandMDP(TerrainMDP):
         """Replace the lost task and bounded AMP continuation at terrain goals."""
         if not math.isfinite(weight) or weight < 0:
             raise ValueError("Style weight must be finite and nonnegative")
-        maximum = MAX_STEP_REWARD + CONTROL_DT * weight
+        maximum = COMMAND_MAX_STEP_REWARD + weight
         success = SUCCESS_BONUS + self.gamma * maximum / (1 - self.gamma)
         if not math.isfinite(success):
             raise ValueError("Style weight produces a nonfinite terminal payout")
@@ -162,13 +164,15 @@ class CommandMDP(TerrainMDP):
         else:
             progress, lane, heading = zero, zero, zero
         values = (
-            .025 * torch.exp(-ev / .25), .008 * torch.exp(-ew / .25),
-            torch.full_like(ev, .005), -.01 * (1 - R[..., 2, 2]),
+            .04 * torch.exp(-ev / .25), .04 * torch.exp(-ew / .25),
+            torch.full_like(ev, .06), -.06 * (1 - R[..., 2, 2]),
             -.004 * ((clearance - target_clearance(c)) / (.2 * self.field.height)).square(),
             -.0006 * (q - self.default_q).square().mean(-1),
             -.0008 * (a - a_prev).square().mean(-1), -.00002 * qd.square().mean(-1),
             -.04 * (torch.relu(q - self.soft_hi) + torch.relu(self.soft_lo - q)).sum(-1),
             progress, lane, heading,
+            -.01 * (c[..., 1] / scale > .15).to(ev.dtype)
+            * torch.sigmoid((.1 - v_body[..., 0] / scale) / .03),
         )
         reward = sum(values)
         return (reward, dict(zip(TERMS, values))) if terms else reward
@@ -227,14 +231,20 @@ class CommandMDP(TerrainMDP):
     def command_metrics(self, S, c):
         v_body, w_body = body_velocities(S)
         velocity_error = torch.linalg.vector_norm(v_body[..., :2] - c[..., 1:3], dim=-1)
+        command_speed = torch.linalg.vector_norm(c[..., 1:3], dim=-1)
+        commanded_progress = (v_body[..., :2] * c[..., 1:3]).sum(-1) / command_speed.clamp_min(
+            .01 * self.field.scale)
+        moving_command = command_speed > .1 * self.field.scale
         yaw_error = (w_body[..., 2] - c[..., 3]).abs()
         clearance = self._clearance(S)
         clearance_error = (clearance - target_clearance(c)).abs()
         tracking = ((velocity_error <= .25 * self.field.scale) & (yaw_error <= .25)
                     & (clearance_error <= .12 * self.field.height)
-                    & (S[1][..., 2, 2] >= .7) & ~self.termination(S, c))
+                    & (S[1][..., 2, 2] >= .7) & ~self.termination(S, c)
+                    & (~moving_command | (commanded_progress >= .5 * command_speed)))
         return {
             "velocity_error_mps": velocity_error, "yaw_rate_error_rps": yaw_error,
             "clearance_error_m": clearance_error, "command_tracking": tracking,
+            "commanded_progress_mps": commanded_progress, "command_speed_mps": command_speed,
             "physical_clearance_m": clearance,
         }

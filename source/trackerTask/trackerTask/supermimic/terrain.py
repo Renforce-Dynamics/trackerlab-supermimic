@@ -29,7 +29,7 @@ class TerrainTask:
     def describe(self):
         return {"id": self.id, "robot": self.robot, "profile": self.profile,
                 "height_m": self.height, "algorithm": "supermimic",
-                "objective": "command-driven-locomotion", "objective_version": 3,
+                "objective": "command-driven-locomotion", "objective_version": 4,
                 "scenario_dim": 7, "runtime_reference_motion": False,
                 "terrain_navigation": self.profile in PROFILES}
 

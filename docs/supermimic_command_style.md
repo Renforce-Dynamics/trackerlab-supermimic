@@ -32,25 +32,25 @@ their individual notices remain relevant to any future code reuse.
 Each full iteration collects real simulator transitions, updates the world
 model, fits an AMP discriminator, differentiates an imagined rollout to update
 the actor, and fits a GAE critic. The discriminator sees only detached real
-transitions and adjacent expert frames. No training sample crosses a reference
-clip boundary.
+transitions and ten-frame expert windows. No training sample crosses a
+reference clip boundary.
 
 The style reward is
-`max(0, 1 - 0.25 * (D(s_t, s_t+1) - 1)^2)`.
-The expert target is +1 and the policy target is -1. Our implementation uses an
-expert-input gradient penalty, following the AMP-style R1 formulation.
-InstinctMJ's inspected implementation instead applies its gradient penalty to
-combined policy/expert windows. This is an explicit implementation difference.
+`max(0, 1 - 0.25 * (D(window_t) - 1)^2)`.
+The expert target is +1 and the policy target is -1. The discriminator uses a
+ReLU MLP, AdamW, combined policy/expert input-gradient penalty, and the
+weight-decay regularizers used by the inspected InstinctMJ configuration.
 
 During actor updates, world-model, critic and discriminator parameters are
 frozen; state/action gradients still flow through their computations.
-The reward is multiplied by the 20 ms control interval and the task's style
-coefficient. Terrain terminal compensation includes this bounded positive
-reward so stopping at the goal remains preferable to delaying completion.
+The task's style coefficient multiplies the reward once per 20 ms policy
+step, matching InstinctMJ. Terrain terminal compensation includes this
+bounded positive reward so stopping at the goal remains preferable to
+delaying completion.
 
 The default `proprioceptive` discriminator features are projected gravity,
-joint offsets, joint velocities, and body linear/angular velocities, over
-two adjacent frames. A full feature option additionally includes body
+joint offsets, joint velocities, and body linear/angular velocities, over ten
+consecutive frames. Joint velocity is scaled by 0.05. A full feature option additionally includes body
 positions and terrain-relative height. The default avoids a fixed flat-ground
 height target in the parkour discriminator. It still requires diverse motions
 and physical testing; walking data alone cannot establish jumping quality.
@@ -60,7 +60,7 @@ and physical testing; walking data alone cannot establish jumping quality.
 For J joints, each observation contains `3J + 196` values:
 
 - joint position relative to default and randomized offset: J
-- joint velocity times 0.1: J
+- joint velocity times 0.1: J (actor; AMP alone uses 0.05)
 - body angular velocity times 0.25: 3
 - projected gravity: 3
 - preceding executed action: J
@@ -95,8 +95,8 @@ matches; a different style pool initializes a new discriminator.
 
 ```bash
 python scripts/rls/supermimic/supervise_style.py \
-  --style-map data/style-references-v2/style-map.json \
-  --run-dir runs/supermimic-command-style-v1 \
+  --style-map data/style-references-v7/style-map.json \
+  --run-dir runs/supermimic-command-style-v4-20261105 \
   --iterations 10000 --max-rounds 3 --num-envs 8096
 ```
 
@@ -107,9 +107,11 @@ held-out seeds, saves fixed first-attempt trajectories, and renders a demo.
 No outcome filtering is used when choosing demo attempts.
 
 The physical gate combines completed episodes, success/fall rates, velocity
-and yaw-rate errors, and a minimum style score. The training discriminator's
-score is not an independent visual-quality metric. Videos and foot behavior
-remain necessary evidence when judging motion appearance.
+and yaw-rate errors, foot geometry and a minimum style score. A passing numeric
+gate enters `awaiting_visual_review`; it cannot release dependent terrain jobs
+or exports. A reviewer records `visual_review.json` with a reviewer, notes, and
+SHA-256 hashes of the exact checkpoint and recorded first-attempt trajectory.
+Changing either artifact invalidates that review.
 
 The old `supervise_gait.py` campaign is stopped. Its checkpoints do not count
 as command-controlled training progress.
@@ -133,6 +135,12 @@ clamping, matching the source controller's action range. A magnitude-four
 cap excluded valid Pi+/T1 and held-object arm poses under their vendor
 action scales. Optional reset frames are checked with actual MuJoCo foot
 collider distances, rather than assuming a foot link origin lies on the floor.
+
+The command-style map is published under the ignored
+`data/style-references-v7/` tree. Moving-reference envelopes and the AMP
+history sampler respect clip boundaries. Velocity AMP requires moving frames
+in at least eight of ten samples and a moving window mean. Parkour AMP keeps
+all complete windows, including airborne and takeoff/landing frames.
 
 LAFAN1's original archive contains:
 

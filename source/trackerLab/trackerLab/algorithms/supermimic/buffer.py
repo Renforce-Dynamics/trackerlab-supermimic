@@ -86,5 +86,6 @@ class ReplayBuffer:
         keys = ("s", "a_prev", "xi", "f") + (("c",) if "c" in self.fields else ())
         start_keys = keys + ("ep_step", "motion_id")
         start = {k: self.data[k][row, env] for k in start_keys}
+        start["history_steps"] = torch.minimum(ep_step, age) + 1
         hist_d = {k: self.data[k][hrows, henv] for k in keys}
         return start, hist_d

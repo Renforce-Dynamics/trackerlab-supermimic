@@ -271,6 +271,45 @@ class AMPStyleTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "clip bounds"):
             self.learner(motion)
 
+    def test_full_history_windows_keep_clip_identity_and_chronological_gradients(self):
+        learner = self.learner(history_steps=3)
+        features, starts, ends = learner.sample_expert(128, return_indices=True)
+        self.assertEqual(features.shape, (128, 3 * learner.frame_dim))
+        self.assertTrue(torch.equal(self.motion.clip_id[starts], self.motion.clip_id[ends]))
+        self.assertTrue(torch.all(ends - starts == 2))
+
+        history = torch.zeros(2, 3, learner.frame_dim)
+        following = torch.arange(4 * 2 * learner.frame_dim, dtype=torch.float32)
+        following = following.reshape(4, 2, learner.frame_dim).requires_grad_()
+        windows = learner.rollout_features(history, following)
+        self.assertEqual(windows.shape, (4, 2, 3 * learner.frame_dim))
+        expected = torch.cat((history[0, 1:], following[:1, 0]), 0)
+        torch.testing.assert_close(windows[0, 0], expected.flatten())
+        windows.sum().backward()
+        self.assertTrue(bool(torch.isfinite(following.grad).all()))
+        self.assertGreater(following.grad.abs().sum().item(), 0)
+
+    def test_real_history_observation_filters_invalid_windows(self):
+        learner = self.learner(history_steps=3, replay_capacity=4)
+        frames = torch.randn(3, 3, learner.frame_dim)
+        accepted = learner.observe_window(frames, torch.tensor([True, False, True]))
+        self.assertEqual(accepted, 2)
+        self.assertEqual(learner.replay_size, 2)
+        self.assertEqual(learner._observed, 2)
+        with self.assertRaisesRegex(ValueError, "boolean validity"):
+            learner.observe_window(frames, torch.ones(3))
+
+    def test_motion_prior_can_exclude_standing_windows_without_mutating_source(self):
+        motion = make_motion((20, 20))
+        motion.root_v[:10, 0] = 0.
+        motion.root_v[10:20, 0] = .3
+        original = motion.root_v.clone()
+        learner = self.learner(motion, history_steps=10, minimum_forward_speed=.15)
+        _, starts, ends = learner.sample_expert(128, return_indices=True)
+        self.assertTrue(bool((starts >= 8).all()))
+        self.assertTrue(bool((ends - starts == 9).all()))
+        torch.testing.assert_close(motion.root_v, original)
+
     def test_update_trains_discriminator_without_expert_or_state_gradients(self):
         motion = make_motion(requires_grad=True)
         learner = self.learner(motion)
@@ -361,6 +400,37 @@ class AMPStyleTests(unittest.TestCase):
             layer.weight.fill_(0.02)
         metrics = learner.update(batch_size=4)
         self.assertAlmostEqual(metrics["gradient_penalty"], learner.feature_dim * 0.02 ** 2, places=6)
+
+    def test_ten_frame_relu_prior_roundtrip_and_zero_gradient_penalty(self):
+        motion = make_motion((12, 13))
+        learner = self.learner(
+            motion, history_steps=10, activation="ReLU", optimizer_name="AdamW",
+            gradient_penalty_scope="both", gradient_penalty_weight=5.)
+        features, start, end = learner.sample_expert(8, return_indices=True)
+        self.assertTrue(torch.all(end - start == 9))
+        self.assertTrue(torch.equal(motion.clip_id[start], motion.clip_id[end]))
+        learner.observe_window(features.reshape(8, 10, learner.frame_dim), torch.ones(8, dtype=torch.bool))
+        with torch.no_grad():
+            for parameter in learner.discriminator.parameters():
+                parameter.zero_()
+        result = learner.update(batch_size=4)
+        self.assertEqual(result["gradient_penalty"], 0.)
+        self.assertTrue(all(bool(torch.isfinite(value).all()) for value in learner.parameters()))
+        saved = learner.checkpoint()
+        self.kin.device = "cpu"
+        scorer = AMPStyle.for_scoring(self.kin, saved)
+        torch.testing.assert_close(scorer.reward_from_features(features),
+                                   learner.reward_from_features(features))
+        for name in ("activation", "hidden", "optimizer_name", "history_steps",
+                     "gradient_penalty_scope", "weight_decay_coefficient"):
+            changed = copy.deepcopy(saved)
+            changed.pop(name)
+            with self.assertRaisesRegex(ValueError, "metadata|history|weight_decay|penalty"):
+                AMPStyle.for_scoring(self.kin, changed)
+        changed = copy.deepcopy(saved)
+        changed["hidden"] = [99]
+        with self.assertRaisesRegex(ValueError, "hidden"):
+            AMPStyle.for_scoring(self.kin, changed)
 
     def test_normalization_is_bounded_shared_and_differentiable(self):
         learner = self.learner()

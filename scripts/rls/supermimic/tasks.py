@@ -41,7 +41,7 @@ def main():
         command = [
             sys.executable, str(Path(__file__).with_name("supervise_style.py")),
             "--run-dir", str(REPO / "logs/supermimic-command-style-v4-20261105"),
-            "--style-map", str(REPO / "data/style-references-v7/style-map.json"), *extra,
+            "--style-map", str(REPO / "data/style-references-v9-stealth/style-map.json"), *extra,
         ]
         subprocess.run(command, check=True, cwd=REPO)
         return
@@ -57,7 +57,7 @@ def main():
         if args.command == "supervise":
             command = [sys.executable, str(folder / "supervise_style.py"),
                        "--run-dir", str(REPO / "logs/supermimic-command-style-v4-20261105"),
-                       "--style-map", str(REPO / "data/style-references-v7/style-map.json"),
+                       "--style-map", str(REPO / "data/style-references-v9-stealth/style-map.json"),
                        "--tasks", entry.id, *extra]
         else:
             command = [sys.executable, str(folder / "train_terrain.py"),
@@ -66,7 +66,7 @@ def main():
                 from supervise_style import resolve_styles
                 style = ("stealth" if entry.profile == "stealth" else
                          "parkour" if entry.profile in ("stairs", "mountain", "parkour") else "walk")
-                mapping = REPO / "data/style-references-v7/style-map.json"
+                mapping = REPO / "data/style-references-v9-stealth/style-map.json"
                 if not mapping.is_file():
                     parser.error("Prepare a style-map or supply --amp-motion-config")
                 config = resolve_styles(mapping).get(entry.robot, {}).get(style)

@@ -504,13 +504,19 @@ class AMPStyle(nn.Module):
             raise RuntimeError("Unfreeze the discriminator before update")
         sums = self._replay.new_zeros(4)
         for _ in range(updates):
-            expert = self._normalize(self.sample_expert(batch_size)).detach().requires_grad_(True)
+            expert = self._normalize(self.sample_expert(batch_size)).detach()
             indices = torch.randint(self.replay_size, (batch_size,), device=self._replay.device)
             policy = self._normalize(self._replay[indices].detach()).detach()
-            expert_score, policy_score = self._score(expert), self._score(policy)
-            gp_input = (torch.cat((policy, expert), 0).detach().requires_grad_(True)
-                        if self.gradient_penalty_scope == "both" else expert)
-            gp_score = self._score(gp_input) if self.gradient_penalty_scope == "both" else expert_score
+            if self.gradient_penalty_scope == "both":
+                # Reuse the GP batch forward for the LSGAN terms: the samples
+                # and discriminator graph are identical to three separate calls.
+                gp_input = torch.cat((policy, expert), 0).detach().requires_grad_(True)
+                gp_score = self._score(gp_input)
+                policy_score, expert_score = gp_score.split(batch_size)
+            else:
+                expert = expert.requires_grad_(True)
+                expert_score, policy_score = self._score(expert), self._score(policy)
+                gp_input, gp_score = expert, expert_score
             gradient = torch.autograd.grad(
                 gp_score.sum(), gp_input, create_graph=True, only_inputs=True,
             )[0]

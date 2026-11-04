@@ -56,6 +56,17 @@ class FirstEpisodeRecorder:
                             control_dt=np.float64(.02), **metadata)
 
 
+def command_runtime_options(checkpoint):
+    """Restore command timing and control settings without training references."""
+    arguments = checkpoint["arguments"]
+    return {
+        "jump_height": arguments.get("jump_height", 0.),
+        "jump_probability": arguments.get("jump_probability", .15),
+        "action_limit": arguments.get("action_limit", 4.),
+        "command_resample_steps": tuple(arguments.get("command_resample_steps", (100, 250))),
+    }
+
+
 def attach_locomotion_quality(env, kin, field, motors, checkpoint):
     """Use the saved training calibration for both physical rewards and metrics."""
     from trackerLab.algorithms.supermimic.locomotion_quality import LocomotionQuality
@@ -152,10 +163,7 @@ def main():
                          gamma=ck["arguments"].get("gamma", .99))
         simulation = TerrainSim
         evaluation_version = OBJECTIVE_VERSION
-    runtime_options = ({"jump_height": ck["arguments"].get("jump_height", 0.),
-                        "jump_probability": ck["arguments"].get("jump_probability", .15),
-                        "action_limit": ck["arguments"].get("action_limit", 4.)}
-                       if command_mode else {})
+    runtime_options = command_runtime_options(ck) if command_mode else {}
     env = simulation(task, mdp, args.num_envs, device, args.seed, solver_iterations,
                      max_episode_steps=ck["arguments"]["max_episode_steps"], **runtime_options)
     if command_mode and ck.get("command_envelope"):

@@ -19,7 +19,7 @@ from supervise_style import (
     visual_review_passed, visual_review_binding, revalidate_qualifications, dispatch_ready,
 )
 import supervise_style
-from train_terrain import parse_args
+from train_terrain import parse_args, validate_resume_command_resampling
 from trackerTask.supermimic.registry import get_task
 
 
@@ -123,6 +123,34 @@ class StyleQueueTests(unittest.TestCase):
                 "--command-resample-steps", "1000", "1000",
             ])
             self.assertEqual(fixed.command_resample_steps, [1000, 1000])
+
+    def test_resume_command_resampling_accepts_equal_lists_and_tuples(self):
+        for interval in ((100, 250), (1000, 1000)):
+            for saved in (interval, list(interval)):
+                for requested in (interval, list(interval)):
+                    with self.subTest(saved=saved, requested=requested):
+                        validate_resume_command_resampling(
+                            {"arguments": {"command_resample_steps": saved}},
+                            SimpleNamespace(command_resample_steps=requested))
+
+    def test_resume_command_resampling_accepts_legacy_default_only(self):
+        checkpoint = {"arguments": {}}
+        for interval in ((100, 250), [100, 250]):
+            validate_resume_command_resampling(
+                checkpoint, SimpleNamespace(command_resample_steps=interval))
+        with self.assertRaisesRegex(ValueError, "Resume command_resample_steps differs"):
+            validate_resume_command_resampling(
+                checkpoint, SimpleNamespace(command_resample_steps=[1000, 1000]))
+
+    def test_resume_command_resampling_rejects_changed_intervals(self):
+        for saved, requested in (([1000, 1000], (100, 250)),
+                                 ((100, 250), [1000, 1000]),
+                                 ([100, 250], (100, 251))):
+            with self.subTest(saved=saved, requested=requested):
+                with self.assertRaisesRegex(ValueError, "Resume command_resample_steps differs"):
+                    validate_resume_command_resampling(
+                        {"arguments": {"command_resample_steps": saved}},
+                        SimpleNamespace(command_resample_steps=requested))
 
     def test_every_new_task_factory_is_reference_free_and_simulator_free(self):
         for job in build_plan():

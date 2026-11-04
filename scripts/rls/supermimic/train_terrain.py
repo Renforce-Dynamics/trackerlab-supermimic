@@ -93,6 +93,12 @@ def validate_resume_objective(checkpoint, gamma):
         raise ValueError("Resume discount factor differs; use --warm-start for a new objective")
 
 
+def validate_resume_command_resampling(checkpoint, args):
+    saved = checkpoint["arguments"].get("command_resample_steps", (100, 250))
+    if tuple(saved) != tuple(args.command_resample_steps):
+        raise ValueError("Resume command_resample_steps differs from the saved objective")
+
+
 def validate_style_references(config_path, robot):
     """Verify immutable campaign pools, or the audited gait pool used in probes."""
     config_path = Path(config_path).resolve()
@@ -397,10 +403,10 @@ def main():
         if (ck.get("training_stage") != "command-style"
                 or ck.get("objective_version") != COMMAND_VERSION):
             raise ValueError("Resume requires the same command/style objective")
+        validate_resume_command_resampling(ck, args)
         for name in ("gamma", "hist", "amp_weight", "clearance_ratio",
                      "style_feature_mode", "amp_history", "command_range_mode",
-                     "command_resample_steps", "jump_height", "jump_probability",
-                     "action_limit"):
+                     "jump_height", "jump_probability", "action_limit"):
             if ck["arguments"].get(name) != getattr(args, name):
                 raise ValueError(f"Resume {name} differs from the saved objective")
         actor.load_state_dict(ck["actor"])

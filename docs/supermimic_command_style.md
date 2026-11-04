@@ -95,7 +95,7 @@ matches; a different style pool initializes a new discriminator.
 
 ```bash
 python scripts/rls/supermimic/supervise_style.py \
-  --style-map data/style-references-v7/style-map.json \
+  --style-map data/style-references-v9-stealth/style-map.json \
   --run-dir runs/supermimic-command-style-v4-20261105 \
   --iterations 10000 --max-rounds 3 --num-envs 8096
 ```
@@ -137,10 +137,15 @@ action scales. Optional reset frames are checked with actual MuJoCo foot
 collider distances, rather than assuming a foot link origin lies on the floor.
 
 The command-style map is published under the ignored
-`data/style-references-v7/` tree. Moving-reference envelopes and the AMP
+`data/style-references-v9-stealth/` tree. Moving-reference envelopes and the AMP
 history sampler respect clip boundaries. Velocity AMP requires moving frames
 in at least eight of ten samples and a moving window mean. Parkour AMP keeps
 all complete windows, including airborne and takeoff/landing frames.
+
+The LAFAN stealth extension preserves the original Aiming1 holdout and adds
+three slower, source-range-pinned Aiming2 windows to each humanoid pool. Each
+window passed the retargeted low-profile screen; the source-direction labels
+are provenance, and physical performance remains subject to policy evaluation.
 
 LAFAN1's original archive contains:
 

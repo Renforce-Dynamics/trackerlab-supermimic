@@ -9,7 +9,7 @@ from pathlib import Path
 import sys
 from types import SimpleNamespace
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import torch
 from torch import nn
@@ -431,6 +431,19 @@ class AMPStyleTests(unittest.TestCase):
         changed["hidden"] = [99]
         with self.assertRaisesRegex(ValueError, "hidden"):
             AMPStyle.for_scoring(self.kin, changed)
+
+    def test_combined_gradient_penalty_reuses_score_forward_for_lsgan_terms(self):
+        motion = make_motion((12, 13))
+        learner = self.learner(
+            motion, history_steps=10, gradient_penalty_scope="both",
+            gradient_penalty_weight=5.)
+        features = learner.sample_expert(8).reshape(8, 10, learner.frame_dim)
+        learner.observe_window(features, torch.ones(8, dtype=torch.bool))
+        with patch.object(learner, "_score", wraps=learner._score) as score:
+            metrics = learner.update(batch_size=4)
+        self.assertEqual(score.call_count, 1)
+        self.assertTrue(torch.isfinite(torch.tensor(metrics["loss"])))
+        self.assertTrue(all(parameter.grad is None for parameter in learner.parameters()))
 
     def test_normalization_is_bounded_shared_and_differentiable(self):
         learner = self.learner()

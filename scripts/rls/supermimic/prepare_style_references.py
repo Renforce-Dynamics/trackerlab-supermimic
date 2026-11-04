@@ -60,7 +60,7 @@ STYLE_POLICIES = {
         "minimum_speed_m_s": 0.08,
         "maximum_speed_m_s": 2.0,
         "minimum_clearance_m": 0.30,
-        "maximum_clearance_m": 0.67,
+        "maximum_clearance_m": 0.70,
         "require_forward_hands": True,
         "minimum_hand_forward_m": 0.12,
         "maximum_hand_separation_m": 0.72,

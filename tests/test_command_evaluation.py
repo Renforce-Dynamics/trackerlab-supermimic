@@ -14,7 +14,9 @@ sys.path.insert(0, str(REPO / "scripts/rls/supermimic"))
 from bootstrap import configure_paths
 configure_paths()
 
-from evaluate_terrain import attach_locomotion_quality, command_evaluation_summary
+from evaluate_terrain import (
+    attach_locomotion_quality, command_evaluation_summary, command_runtime_options,
+)
 from trackerLab.algorithms.supermimic.locomotion_quality import LocomotionQuality
 from trackerLab.tracker_env.mdp.supermimic import unflatten_state
 from test_command_locomotion import CpuCommandSim
@@ -37,6 +39,25 @@ class EvaluationKinematics:
 
 
 class CommandEvaluationTests(unittest.TestCase):
+    def test_runtime_options_restore_checkpoint_command_resampling(self):
+        for interval in ([1000, 1000], (1000, 1000), [100, 250], (100, 250)):
+            with self.subTest(interval=interval):
+                arguments = {
+                    "command_resample_steps": interval, "jump_height": .2,
+                    "jump_probability": .3, "action_limit": 20.,
+                }
+                self.assertEqual(command_runtime_options({"arguments": arguments}), {
+                    "command_resample_steps": tuple(interval), "jump_height": .2,
+                    "jump_probability": .3, "action_limit": 20.,
+                })
+                self.assertIs(arguments["command_resample_steps"], interval)
+
+    def test_runtime_options_preserve_legacy_checkpoint_defaults(self):
+        self.assertEqual(command_runtime_options({"arguments": {}}), {
+            "command_resample_steps": (100, 250), "jump_height": 0.,
+            "jump_probability": .15, "action_limit": 4.,
+        })
+
     def test_evaluation_uses_saved_calibration_and_includes_penalty_in_episode_return(self):
         sim = CpuCommandSim(max_episode_steps=1)
         kin = EvaluationKinematics()

@@ -83,8 +83,28 @@ the forward-motion filter, preserving complete jump and landing histories.
 The T1/Bumi anomaly filter matches the original filename, including source
 records whose output names are prefixed. The identified upright failure clip
 is excluded from both walk and parkour pools by original source hash and exact
-crop identity. Moving clips are cropped into immutable, source-hashed windows with
-separate recording-level train/test membership.
+crop identity. Moving clips are cropped into immutable, source-hashed windows
+with separate recording-level train/test membership.
+
+## Fixed-Command G1 Diagnostic
+
+The G1 velocity checkpoint completed 2,500 iterations with one 1.0 m/s-class
+expert-derived command held for each episode. Two held-out seeds both survived
+all six difficulty lanes to timeout. Mean projected velocity along the command
+was 0.465 and 0.462 m/s; velocity RMSE was 0.222 and 0.215 m/s, while yaw-rate
+RMSE was 0.720 and 0.717 rad/s. Geometry-based support-foot slip was 0.460 and
+0.456 scale-m/s. Both evaluations had zero task successes, so this checkpoint
+does not qualify for downstream terrain or stealth work. The rendered attempts
+show forward steps with stiff posture and visible foot sliding; they are
+retained for comparison rather than labeled successful.
+
+The complete update window 541--1540 measured 1.9268 iterations/s, below the
+teleoperation reference 2.47115. This is not a matched-workload result:
+SuperMimic includes two AMP updates per actor update, whereas the referenced
+teleoperation window used 20,000 critic updates per 1,000 outer iterations.
+The AMP combined gradient-penalty path currently repeats discriminator
+forwards; reusing its combined batch forward is a measured-workload-preserving
+optimization candidate, not yet applied or benchmarked.
 
 All six velocity foundations and dependent terrain/stealth jobs retain their
 10,000-update initial target. A numerical pass now waits for a hash-bound

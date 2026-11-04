@@ -96,6 +96,7 @@ class GaitTests(unittest.TestCase):
                     "obs_norm.count": torch.zeros(()),
                     "dec.0.weight": torch.zeros(3, 32 + 53 * 2),
                     "dec.0.bias": torch.zeros(3), "dec.2.weight": torch.zeros(2, 3),
+                    "enc.0.weight": torch.zeros(4, 2),
                 }
             def state_dict(self):
                 return self.state
@@ -120,6 +121,7 @@ class GaitTests(unittest.TestCase):
             "obs_norm.count": torch.tensor(99.),
             "dec.0.weight": torch.arange(3 * (32 + 18 * 2.)).reshape(3, 68),
             "dec.0.bias": torch.ones(3), "dec.2.weight": torch.ones(2, 3),
+            "enc.0.weight": torch.ones(4, 2),
         }
         source_world = {"net.layer": torch.ones(2)}
         checkpoint = {"args": {"task": "g1", "gait_foundation_version": 1, "hist": 2},
@@ -130,15 +132,19 @@ class GaitTests(unittest.TestCase):
         self.assertEqual(receipt["source_iteration"], 2000)
         self.assertTrue(receipt["critic_reset"])
         self.assertTrue(receipt["optimizers_reset"])
-        # Gait features are q, qd, angular rate, gravity, previous action, orientation.
-        # Terrain inserts three root-velocity features before the orientation block.
-        self.assertTrue(torch.equal(actor.state["dec.0.weight"][:, 32:32 + 8],
-                                    source_actor["dec.0.weight"][:, 32:32 + 8]))
-        self.assertTrue(torch.equal(actor.state["dec.0.weight"][:, 32 + 53:32 + 53 + 12],
-                                    source_actor["dec.0.weight"][:, 32 + 18:32 + 18 + 12]))
-        self.assertTrue(torch.equal(actor.state["dec.0.weight"][:, 32 + 53 + 15:32 + 53 + 21],
-                                    source_actor["dec.0.weight"][:, 32 + 30:32 + 36]))
+        self.assertTrue(torch.equal(actor.state["dec.0.weight"][:, 32:32 + 12],
+                                    source_actor["dec.0.weight"][:, 32:32 + 12]))
+        self.assertTrue(torch.all(actor.state["dec.0.weight"][:, 32 + 12:32 + 15] == 0))
+        self.assertTrue(torch.equal(actor.state["dec.0.weight"][:, 32 + 15:32 + 21],
+                                    source_actor["dec.0.weight"][:, 32 + 12:32 + 18]))
         self.assertEqual(actor.state["obs_norm.mean"][12:15].tolist(), [0., 0., 0.])
+        self.assertEqual(actor.state["obs_norm.mean"][15:21].tolist(), [12., 13., 14., 15., 16., 17.])
+        self.assertTrue(torch.all(actor.state["dec.0.weight"][:, 32 + 21:32 + 53] == 0))
+        self.assertTrue(torch.equal(
+            actor.state["dec.0.weight"][:, 32 + 53 + 15:32 + 53 + 21],
+            source_actor["dec.0.weight"][:, 32 + 18 + 12:32 + 18 + 18],
+        ))
+        self.assertTrue(torch.all(actor.state["dec.0.weight"][:, 32 + 53 + 12:32 + 53 + 15] == 0))
         self.assertTrue(torch.equal(world.loaded["net.layer"], source_world["net.layer"]))
         quality["held_out_tests"][1]["quality_passed"] = False
         with self.assertRaisesRegex(ValueError, "quality gate"):

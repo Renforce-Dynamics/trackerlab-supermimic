@@ -127,6 +127,10 @@ def load_gait_foundation(actor, world, checkpoint, quality, robot):
         for source_feature, target_feature in zip(source_indices, target_indices):
             target_first[:, latent_dim + step * target_slot + target_feature] = (
                 source_first[:, latent_dim + step * source_slot + source_feature])
+        target_first[:, latent_dim + step * target_slot + 3 * joints + 6:
+                     latent_dim + step * target_slot + 3 * joints + 9] = 0
+        target_first[:, latent_dim + step * target_slot + target_proprio_dim:
+                     latent_dim + (step + 1) * target_slot] = 0
     target["dec.0.weight"] = target_first
     for name, value in source.items():
         if name.startswith("dec.") and name != "dec.0.weight":

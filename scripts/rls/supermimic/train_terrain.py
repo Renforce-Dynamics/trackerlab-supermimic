@@ -74,6 +74,7 @@ def parse_args(argv=None):
     parser.add_argument("--action-limit", type=float, default=20.)
     parser.add_argument("--jump-height", type=float, default=0.)
     parser.add_argument("--jump-probability", type=float, default=.15)
+    parser.add_argument("--command-resample-steps", type=int, nargs=2, default=(100, 250))
     parser.add_argument("--solver-iterations", type=int, default=50)
     parser.add_argument("--max-episode-steps", type=int, default=1000)
     parser.add_argument("--describe", action="store_true")
@@ -298,6 +299,10 @@ def main():
     if (not 0 <= args.reference_reset_probability <= 1
             or not 0 <= args.jump_probability <= 1 or args.jump_height < 0):
         raise SystemExit("Invalid reference reset or jump-command parameters")
+    if (len(args.command_resample_steps) != 2
+            or not 100 <= args.command_resample_steps[0] <= args.command_resample_steps[1]
+            or args.command_resample_steps[1] > args.max_episode_steps):
+        raise SystemExit("Command resampling interval must lie within the episode")
     if not 0 < args.action_limit <= 20:
         raise SystemExit("Action limit must be positive and at most 20")
     if not .5 <= args.clearance_ratio <= 1.2:
@@ -332,7 +337,8 @@ def main():
     env = CommandSim(task, mdp, args.num_envs, args.device, args.seed,
                      args.solver_iterations, args.max_episode_steps,
                      jump_height=args.jump_height, jump_probability=args.jump_probability,
-                     action_limit=args.action_limit)
+                     action_limit=args.action_limit,
+                     command_resample_steps=tuple(args.command_resample_steps))
     actor = TerrainPolicy(mdp.obs_dim, mdp.goal_dim, hist=args.hist,
                           num_joints=spec.num_joints, action_limit=args.action_limit).to(args.device)
     world = TerrainWorldModel(field, spec.num_joints).to(args.device)
@@ -393,7 +399,8 @@ def main():
             raise ValueError("Resume requires the same command/style objective")
         for name in ("gamma", "hist", "amp_weight", "clearance_ratio",
                      "style_feature_mode", "amp_history", "command_range_mode",
-                     "jump_height", "jump_probability", "action_limit"):
+                     "command_resample_steps", "jump_height", "jump_probability",
+                     "action_limit"):
             if ck["arguments"].get(name) != getattr(args, name):
                 raise ValueError(f"Resume {name} differs from the saved objective")
         actor.load_state_dict(ck["actor"])

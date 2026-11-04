@@ -114,8 +114,15 @@ class StyleQueueTests(unittest.TestCase):
             self.assertEqual(args.iterations, 10000)
             self.assertEqual(args.amp_weight, .25)
             self.assertEqual(args.amp_history, 10)
+            self.assertEqual(args.command_resample_steps, (100, 250))
             self.assertIsNone(args.gait_warm_start)
             self.assertIsNone(args.gait_quality)
+            fixed = parse_args([
+                "--task", "locomotion/g1/velocity", "--run-dir", "fixed-command-probe",
+                "--amp-motion-config", "data/style/train.json", "--max-episode-steps", "1000",
+                "--command-resample-steps", "1000", "1000",
+            ])
+            self.assertEqual(fixed.command_resample_steps, [1000, 1000])
 
     def test_every_new_task_factory_is_reference_free_and_simulator_free(self):
         for job in build_plan():

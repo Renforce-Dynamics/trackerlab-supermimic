@@ -228,6 +228,7 @@ def main():
     parser.add_argument("--max-rounds", type=int, default=3)
     parser.add_argument("--num-envs", type=int, default=8096)
     parser.add_argument("--evaluation-steps", type=int, default=1500)
+    parser.add_argument("--command-resample-steps", type=int, nargs=2, default=(100, 250))
     parser.add_argument("--validation-seeds", nargs="+", type=int, default=[44, 45])
     parser.add_argument("--robots", nargs="+", choices=ROBOTS, default=list(ROBOTS))
     parser.add_argument("--tasks", nargs="+", choices=tuple(ALL_TASKS))
@@ -365,6 +366,7 @@ def main():
                     "--amp-motion-config", str(styles[job["robot"]][job["style"]]),
                     "--num-envs", str(args.num_envs), "--iterations", str(job["iterations"]),
                     "--amp-weight", ".25",
+                    "--command-resample-steps", *map(str, args.command_resample_steps),
                 ]
                 if job["profile"] == "stealth":
                     command.extend(("--clearance-ratio", ".8"))

@@ -527,9 +527,17 @@ class CommandLocomotionTests(unittest.TestCase):
         mdp, task = make_mdp(), get_task("locomotion/g1/velocity")
         for kwargs in ({"action_limit": 0}, {"jump_height": -1}, {"jump_probability": 2},
                        {"target_clearance_m": 0}, {"command_resample_steps": (99, 250)},
-                       {"command_resample_steps": (250, 100)}, {"max_episode_steps": 0}):
+                       {"command_resample_steps": (1000, 1001)},
+                       {"command_resample_steps": (1001, 1001)}, {"max_episode_steps": 0}):
             with self.assertRaises(ValueError):
                 CommandSim(task, mdp, device="cpu", **kwargs)
+        from trackerLab.tracker_env.supermimic.terrain import TerrainSim
+        def stub_parent(self, *args, **kwargs):
+            self.contract = {}
+        with patch.object(TerrainSim, "__init__", new=stub_parent):
+            sim = CommandSim(task, mdp, device="cpu", max_episode_steps=1000,
+                             command_resample_steps=(1000, 1000))
+        self.assertEqual(sim.command_resample_steps, (1000, 1000))
 
     def test_expert_command_ranges_use_physical_units_without_robot_rescaling(self):
         sim = CpuCommandSim(batch=256)

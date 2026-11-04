@@ -36,12 +36,13 @@ class CommandSim(TerrainSim):
             raise ValueError("Jump probability must lie in [0, 1]")
         if not math.isfinite(action_limit) or action_limit <= 0:
             raise ValueError("Action limit must be finite and positive")
-        if (len(command_resample_steps) != 2
-                or any(not isinstance(value, int) for value in command_resample_steps)
-                or not 100 <= command_resample_steps[0] <= command_resample_steps[1] <= 250):
-            raise ValueError("Command resampling interval must lie within 100--250 actions")
         if max_episode_steps < 1:
             raise ValueError("Episode length must be positive")
+        if (len(command_resample_steps) != 2
+                or any(type(value) is not int for value in command_resample_steps)
+                or not 100 <= command_resample_steps[0] <= command_resample_steps[1]
+                or command_resample_steps[1] > max_episode_steps):
+            raise ValueError("Command resampling interval must lie within the episode")
         self.target_clearance_m = float(clearance)
         self.jump_height, self.action_limit = float(jump_height), float(action_limit)
         self.jump_probability = float(jump_probability)

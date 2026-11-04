@@ -31,6 +31,7 @@ from train_terrain import (
     load_terrain_initialization, migrate_terrain_checkpoint, validate_resume_objective,
 )
 from queue_low_success_retrain import build_followup_plan
+from evaluate_terrain import FirstEpisodeRecorder
 from supervise_terrain import choose_checkpoint, evaluation_metrics, trusted_checkpoint
 from retrain_terrain import build_retrain_plan
 
@@ -54,6 +55,26 @@ class SuperMimicTerrainTests(unittest.TestCase):
         for name, task in TASKS.items():
             self.assertEqual(task.id, name)
             self.assertEqual(task.describe()["algorithm"], "supermimic")
+
+    def test_demo_records_terminal_pose_and_never_shows_auto_reset(self):
+        pose = np.zeros((2, 9), dtype=np.float32)
+        scan = np.zeros((2, 187), dtype=np.float32)
+        recorder = FirstEpisodeRecorder(pose, scan, 0, np.array([8, 7]))
+        state = np.arange(34, dtype=np.float32).reshape(2, 17)
+        recorder.add(state, scan + 1, np.array([True, False]),
+                     np.array([False, False]), np.array([True, False]))
+        terminal = recorder.poses[-1][0].copy()
+        np.testing.assert_array_equal(terminal[:7], state[0, :7])
+        np.testing.assert_array_equal(terminal[[8, 7]], state[0, 13:15])
+        recorder.add(state + 100, scan + 2, np.array([False, True]),
+                     np.array([False, True]), np.array([False, False]))
+        np.testing.assert_array_equal(recorder.poses[-1][0], terminal)
+        np.testing.assert_array_equal(recorder.scans[-1][0], scan[0] + 1)
+        self.assertEqual(recorder.terminal_steps.tolist(), [1, 2])
+        self.assertEqual(recorder.outcomes.tolist(), ["fall", "success"])
+        recorder.add(state, scan, np.array([True, True]),
+                     np.array([True, True]), np.array([False, False]))
+        self.assertEqual(len(recorder.poses), 3)
 
     def test_plan_has_one_ten_thousand_iteration_job_per_task(self):
         result = subprocess.run(

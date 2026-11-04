@@ -9,7 +9,7 @@ import numpy as np
 from trackerTask.supermimic.terrain import robot_parameters
 
 
-def build_model(robot, terrain, solver_iterations=50):
+def build_model(robot, terrain, solver_iterations=50, *, render_size=None):
     import mujoco
 
     spec, height, motors = robot_parameters(robot)
@@ -57,6 +57,33 @@ def build_model(robot, terrain, solver_iterations=50):
         "friction": "1 .005 .0001", "condim": "3", "priority": "1",
         "solref": ".04 1", "solimp": ".9 .95 .001 .5 2",
     })
+    if render_size is not None:
+        width, render_height = render_size
+        visual = document.find("visual")
+        if visual is None:
+            visual = ET.SubElement(document, "visual")
+        settings = visual.find("global")
+        if settings is None:
+            settings = ET.SubElement(visual, "global")
+        settings.set("offwidth", str(width))
+        settings.set("offheight", str(render_height))
+        ET.SubElement(asset, "texture", {
+            "name": "terrain_demo_sky", "type": "skybox", "builtin": "gradient",
+            "rgb1": ".72 .83 .90", "rgb2": ".94 .97 .98", "width": "256", "height": "1536",
+        })
+        ET.SubElement(asset, "texture", {
+            "name": "terrain_demo_grid", "type": "2d", "builtin": "checker",
+            "rgb1": ".53 .64 .53", "rgb2": ".64 .73 .62", "width": "512", "height": "512",
+        })
+        ET.SubElement(asset, "material", {
+            "name": "terrain_demo_ground", "texture": "terrain_demo_grid",
+            "texrepeat": "12 18", "texuniform": "false", "reflectance": "0",
+        })
+        world.find("geom[@name='supermimic_ground']").set("material", "terrain_demo_ground")
+        ET.SubElement(world, "light", {
+            "pos": "0 0 8", "dir": ".1 .2 -1", "directional": "true",
+            "diffuse": ".65 .65 .65", "ambient": ".25 .25 .25",
+        })
     actuators = ET.SubElement(document, "actuator")
     for name, (effort, _velocity, kp, kd, _armature) in zip(spec.joint_names, motors):
         ET.SubElement(actuators, "general", {

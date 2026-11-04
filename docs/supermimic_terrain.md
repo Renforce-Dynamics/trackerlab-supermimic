@@ -132,6 +132,36 @@ historical 2.47115 iterations/second measurement is a reference target, not a
 result for these terrain tasks. Record each robot/profile rate from its own
 training log before claiming parity.
 
+## Recorded Demos
+
+Generate an MP4 and a local video gallery for every completed campaign job:
+
+```bash
+python scripts/rls/supermimic/render_terrain.py \
+  --campaign /path/to/terrain-10000/campaign.json \
+  --output /path/to/terrain-demos --seed 44
+```
+
+The evaluator records the first episode of environments 0 through 5, one for
+each difficulty. It saves the physical pre-reset terminal poses and keeps
+finished attempts frozen. The video shows difficulty 6/6 at 1x speed, retains
+falls and timeouts, and labels the one-second terminal hold. A contact sheet
+shows all six difficulty lanes at a fixed snapshot time. The inset visualizes
+the 187 noise-free heightfield samples; the policy still uses observation noise.
+MP4 decode, frame count, finite poses, and nonblank/moving pixels are checked.
+Each `demo.json` records checkpoint and trajectory hashes, the exact checkpoint
+iteration, held-out terrain seed and all first-attempt outcomes.
+
+`index.html` opens directly in a browser. Checkpoint iterations may be below
+10,000 because validation selected an earlier milestone. The displayed test
+success rate comes from the separate campaign evaluation, rather than one
+demo attempt. A retained baseline with only one seed remains labelled as such.
+Repeat the command to add tasks completed since the previous recording; use
+`--tasks locomotion/g1/stairs` to limit recording to specific completed tasks.
+Add `--portable --overview` to create a standalone HTML containing every
+video and a continuous MP4 compilation. `--gallery-only --output /path/to/terrain-demos`
+rebuilds these viewing artifacts from the saved manifest without simulation.
+
 ## Validate
 
 Run focused CPU contracts with `python -m pytest tests/test_supermimic_terrain.py`.

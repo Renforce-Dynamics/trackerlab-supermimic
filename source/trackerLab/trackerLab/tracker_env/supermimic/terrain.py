@@ -17,7 +17,7 @@ from trackerTask.supermimic.robots import get_robot
 class TerrainSim:
     def __init__(self, task, mdp, num_envs=4096, device="cuda:0", seed=42,
                  solver_iterations=50, max_episode_steps=1000,
-                 physical_ray_validation=False):
+                 physical_ray_validation=False, scenario_dim=2):
         import mujoco
         import mujoco_warp as mw
         import warp as wp
@@ -39,7 +39,7 @@ class TerrainSim:
         self.ep_return = torch.zeros(num_envs, device=device)
         self.a_prev = torch.zeros(num_envs, self.spec.num_joints, device=device)
         self.xi = torch.zeros(num_envs, self.spec.context_dim, device=device)
-        self.c = torch.zeros(num_envs, 2, device=device)
+        self.c = torch.zeros(num_envs, scenario_dim, device=device)
         self.levels = torch.randint(0, 2, (num_envs,), device=device)
         self.centers = torch.tensor(self.terrain.centers, device=device, dtype=torch.float32)
         self.default_q = torch.tensor(self.spec.default_q, device=device)

@@ -17,10 +17,17 @@ class TaskEntry:
 
     def make_env_cfg(self):
         module, name = self.env_entry.split(":")
-        return getattr(import_module(module), name)()
+        factory = getattr(import_module(module), name)
+        if self.runtime_task in ("terrain", "command"):
+            return factory(self.id, self.robot, self.profile)
+        return factory()
 
     def describe(self):
-        return asdict(self)
+        value = asdict(self)
+        if self.runtime_task in ("terrain", "command"):
+            value.update(objective="command-driven-locomotion", objective_version=3,
+                         scenario_dim=7, runtime_reference_motion=False)
+        return value
 
 
 _ROOT = "trackerTask.supermimic"
@@ -63,11 +70,16 @@ _ENTRIES = (
       for profile, filename in (("standard", "velocity_dodge"), ("rapid", "rapid_dodge"),
                                 ("jump", "jump_dodge"), ("adaptive", "adaptive_dodge"))),
     *(TaskEntry(f"locomotion/{robot}/{profile}", robot, "terrain",
-               (_QUADRUPED + ".go2.env_cfg:SuperMimicGo2TaskCfg" if robot == "go2" else
-                _HUMANOID + f".{robot}.env_cfg:SuperMimic{robot.title().replace('_', '')}TaskCfg"),
+               _ROOT + ".locomotion.command_cfg:CommandTaskCfg",
                f"scripts/rls/supermimic/configs/terrain_{profile}.json", "procedural heightfield", profile)
       for robot in ("g1", "go2", "a3", "t1", "bumi", "pi_plus")
       for profile in ("stairs", "mountain", "parkour")),
+    *(TaskEntry(f"locomotion/{robot}/{profile}", robot, "command",
+               _ROOT + ".locomotion.command_cfg:CommandTaskCfg",
+               f"scripts/rls/supermimic/configs/command_{profile}.json",
+               "none (command locomotion)", profile)
+      for robot in ("g1", "go2", "a3", "t1", "bumi", "pi_plus")
+      for profile in ("velocity", "stealth") if profile != "stealth" or robot != "go2"),
     *(TaskEntry(f"gait/{robot}", robot, "gait-foundation",
                (_QUADRUPED + ".go2.env_cfg:SuperMimicGo2TaskCfg" if robot == "go2" else
                 _HUMANOID + f".{robot}.env_cfg:SuperMimic{robot.title().replace('_', '')}TaskCfg"),

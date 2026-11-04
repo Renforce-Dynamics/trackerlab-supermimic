@@ -1,5 +1,17 @@
 # TrackerLab SuperMimic
 
+## Command Locomotion And AMP
+
+New locomotion training uses velocity/skill commands, local terrain perception
+and an adversarial motion prior with the SuperMimic world-model learner.
+The actor runs without motion-reference frames. The campaign contains six
+velocity tasks, the existing eighteen terrain tasks, and five humanoid stealth
+tasks using original LAFAN1 Aiming motion sources.
+
+[Inputs, research sources, data provenance, training queue and qualification](docs/supermimic_command_style.md).
+The motion-tracking demonstrations below are historical results from different
+objectives; they do not represent the new command/style policies.
+
 [中文说明](README_zh.md)
 
 A focused implementation of TrackerLab's **G1, Go2, A3, T1, Bumi and Pi+ motion-tracking workflow**,

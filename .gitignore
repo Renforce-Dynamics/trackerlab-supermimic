@@ -9,6 +9,7 @@ build/
 dist/
 data/
 logs/
+runs/
 outputs/
 results/
 *.pt

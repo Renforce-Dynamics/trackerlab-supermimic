@@ -1,0 +1,64 @@
+{
+  "date": "2026-11-04",
+  "campaign": "supermimic-command-style-v1",
+  "algorithm": "SuperMimic world-model BPTT plus real-data-only AMP style discriminator",
+  "runtime_reference_motion": false,
+  "code_base_before_change": "3d7cd50fa44fdcd8956f5658be064e5d0df8b49f",
+  "cpu_tests": {
+    "command": "pytest -q",
+    "passed": 332,
+    "skipped": 1,
+    "warnings": 1,
+    "warning_scope": "Existing precision qualification fixture converts an autograd tensor to float."
+  },
+  "gpu_task_smoke": {
+    "passed": true,
+    "tasks": 29,
+    "velocity": 6,
+    "terrain": 18,
+    "stealth": 5,
+    "environments": 16,
+    "iterations_per_task": 4,
+    "world_model_only_iterations": 1,
+    "actor_updates_per_task": 3,
+    "device": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+    "receipt": "logs/command-style-validation-v2/validation.json",
+    "scope": "Real simulation, reference reset filtering, AMP update, world-model update, actor gradient and critic update; no trained-quality claim."
+  },
+  "speed_probe": {
+    "receipt": "logs/command-style-speed-g1-v5-fused/training_speed_summary.json",
+    "task": "locomotion/g1/velocity",
+    "environments": 8096,
+    "first_iteration": 991,
+    "last_iteration": 1140,
+    "measured_updates": 150,
+    "wall_seconds": 64.02855505794287,
+    "complete_iterations_per_second": 2.342704748908623,
+    "world_model_optimizer_updates": 1500,
+    "actor_optimizer_updates": 150,
+    "critic_optimizer_updates": 3000,
+    "amp_optimizer_updates": 150,
+    "tele_historical_iterations_per_second": 2.47115,
+    "scope": "Development checkpoint using the magnitude-four controller; final magnitude-twenty command campaign gets its own 1000-update probe. No exact 2.5 iterations/s claim."
+  },
+  "data": {
+    "style_map": "data/style-references-v2/style-map.json",
+    "immutable_reference_pools": true,
+    "humanoid_parkour_sources": [
+      "LAFAN1 G1 walk/run/jump retargets",
+      "Original LAFAN1 Obstacles BVHs retargeted with Mink"
+    ],
+    "stealth_training_source": "aiming2_subject2.bvh, frames [5210,5510)",
+    "stealth_held_out_source": "aiming1_subject1.bvh, frames [3420,3720)",
+    "stealth_provenance": "Original Aiming crops are screened after 30-to-50 Hz retargeting; source upper-body posture retained.",
+    "go2": "Pinned Kine2Go native Go2 references, including forward jump A for training and jump B for held-out evaluation.",
+    "motion_data_committed": false
+  },
+  "pipeline": {
+    "physical_evaluation": "logs/command-style-pipeline-check/evaluation.json",
+    "trajectory_and_demo": "logs/command-style-pipeline-check",
+    "video_decode_and_pixel_motion_checks": "passed",
+    "source_independent_actor_export": "CPU serialization and batch parity tested",
+    "held_out_policy_quality": "Pending full training and command evaluation."
+  }
+}

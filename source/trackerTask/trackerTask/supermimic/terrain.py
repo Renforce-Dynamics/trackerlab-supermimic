@@ -9,6 +9,7 @@ from trackerTask.supermimic.robots import TRACKING_TASKS, get_robot
 
 
 PROFILES = ("stairs", "mountain", "parkour")
+COMMAND_PROFILES = ("velocity", "stealth")
 ROBOTS = TRACKING_TASKS
 ROBOT_HEIGHTS = {
     "g1": .76, "go2": .30, "a3": 1.09, "t1": .69, "bumi": .65, "pi_plus": .351,
@@ -27,7 +28,10 @@ class TerrainTask:
 
     def describe(self):
         return {"id": self.id, "robot": self.robot, "profile": self.profile,
-                "height_m": self.height, "algorithm": "supermimic"}
+                "height_m": self.height, "algorithm": "supermimic",
+                "objective": "command-driven-locomotion", "objective_version": 3,
+                "scenario_dim": 7, "runtime_reference_motion": False,
+                "terrain_navigation": self.profile in PROFILES}
 
 
 TASKS = {
@@ -36,13 +40,26 @@ TASKS = {
     )
     for robot in ROBOTS for profile in PROFILES
 }
+COMMAND_TASKS = {
+    f"locomotion/{robot}/velocity": TerrainTask(
+        f"locomotion/{robot}/velocity", robot, "velocity",
+    )
+    for robot in ROBOTS
+}
+STEALTH_TASKS = {
+    f"locomotion/{robot}/stealth": TerrainTask(
+        f"locomotion/{robot}/stealth", robot, "stealth",
+    )
+    for robot in ROBOTS if robot != "go2"
+}
+ALL_TASKS = TASKS | COMMAND_TASKS | STEALTH_TASKS
 
 
 def get_task(name):
     try:
-        return TASKS[name]
+        return ALL_TASKS[name]
     except KeyError as error:
-        raise ValueError(f"Unknown SuperMimic terrain task {name!r}; choices: {tuple(TASKS)}") from error
+        raise ValueError(f"Unknown SuperMimic locomotion task {name!r}; choices: {tuple(ALL_TASKS)}") from error
 
 
 def robot_parameters(name):
@@ -91,11 +108,15 @@ class Terrain:
 
 
 def generate(profile, height, seed=0):
-    if profile not in PROFILES:
+    if profile not in (*PROFILES, *COMMAND_PROFILES):
         raise ValueError(f"Unknown terrain profile {profile!r}")
     if not np.isfinite(height) or height <= 0:
         raise ValueError("Robot height must be finite and positive")
     scale = height / .76
+    if profile in COMMAND_PROFILES:
+        extent = 32. * scale
+        return Terrain(np.zeros((129, 129), dtype=np.float32), -extent, extent,
+                       -extent, extent, (0.,) * 6, 24. * scale, seed, profile)
     x = np.linspace(-2, 14, 129) * scale
     y = np.linspace(-12, 12, 193) * scale
     xx, yy = np.meshgrid(x / scale, y / scale)

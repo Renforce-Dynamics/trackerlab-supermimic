@@ -12,10 +12,12 @@ from trackerLab.kinematics.supermimic.rotations import so3_exp, yaw_mat
 class TerrainPolicy(Policy):
     """Encode each height scan before the existing history decoder."""
 
-    def __init__(self, obs_dim, goal_dim, hist=10, num_joints=29, scan_dim=187):
+    def __init__(self, obs_dim, goal_dim, hist=10, num_joints=29, scan_dim=187,
+                 action_limit=None):
         self.scan_dim = scan_dim
         proprio_dim = obs_dim - scan_dim
-        super().__init__(proprio_dim + 32, goal_dim, hist=hist, num_joints=num_joints)
+        super().__init__(proprio_dim + 32, goal_dim, hist=hist, num_joints=num_joints,
+                         action_limit=action_limit)
         self.num_joints, self.obs_dim = num_joints, obs_dim
         self.obs_norm = RunningNorm(obs_dim)
         self.scan_encoder = mlp(scan_dim, [64], 32, act=nn.SiLU)
@@ -25,7 +27,10 @@ class TerrainPolicy(Policy):
         scan = run_mlp(self.scan_encoder, normalized[..., -self.scan_dim:])
         history = torch.cat((normalized[..., :-self.scan_dim], scan), -1).flatten(-2)
         latent = torch.tanh(run_mlp(self.enc, self.goal_norm(goal)))
-        return run_mlp(self.dec, torch.cat((latent, history), -1))
+        action = run_mlp(self.dec, torch.cat((latent, history), -1))
+        if self.action_limit is not None:
+            action = self.action_limit * torch.tanh(action / self.action_limit)
+        return action
 
 
 class TerrainWorldModel(WorldModel):

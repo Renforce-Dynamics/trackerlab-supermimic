@@ -64,6 +64,7 @@ def render(directory, level=5, fps=25):
     scale = task.height / .76
     camera.distance, camera.elevation, camera.azimuth = 3.5 * scale, -19, 130
     dt = float(trajectory["control_dt"])
+    flat_command_task = task.profile in ("velocity", "stealth")
     stride = round(1 / (fps * dt))
     if not math.isclose(stride * dt, 1 / fps, abs_tol=1e-8):
         raise ValueError("Video cadence does not match recorded control time")
@@ -119,8 +120,16 @@ def render(directory, level=5, fps=25):
             outcome = str(outcomes[level]) if index >= last else "running"
             color = "#197a51" if outcome == "success" else "#b33344" if outcome == "fall" else "#42545b"
             progress = float(trajectory["qpos"][index, level, 0])
+            if flat_command_task:
+                commands = trajectory.get("command_sequence")
+                current = (commands[min(index, len(commands) - 1), level]
+                           if commands is not None else trajectory["commands"][level])
+                status_line = (f"t={index * dt:.2f}s  |  vx={current[1]:.2f} "
+                               f"vy={current[2]:.2f} wz={current[3]:.2f}  |  {outcome}")
+            else:
+                status_line = f"t={index * dt:.2f}s  |  x={progress:.2f}/{terrain.goal_x:.2f} m  |  {outcome}"
             draw.text((18, height - 45),
-                      f"t={index * dt:.2f}s  |  x={progress:.2f}/{terrain.goal_x:.2f} m  |  {outcome}",
+                      status_line,
                       font=font(19), fill=color)
             draw.text((18, height - 21), "1x playback  |  MuJoCo-Warp physics  |  fixed attempt; no outcome filtering",
                       font=font(14), fill="#42545b")
@@ -131,7 +140,10 @@ def render(directory, level=5, fps=25):
             encoder.stdin.write(np.asarray(frame).tobytes())
             if frame_number == max(1, math.ceil(last / stride) // 2):
                 thumbnail = frame.copy()
-        if changing_frames < 2:
+        commands = trajectory.get("command_sequence")
+        stop_command = (flat_command_task and commands is not None
+                        and np.abs(commands[:, level, 1:4]).max() < 1e-6)
+        if changing_frames < 2 and not stop_command:
             raise AssertionError("Rendered policy has no visible motion")
         if thumbnail is None:
             thumbnail = frame
@@ -174,10 +186,11 @@ def render(directory, level=5, fps=25):
         "fps": fps, "frames": total_frames, "duration_seconds": total_frames / fps,
         "difficulty": level + 1, "attempt_outcome": str(outcomes[level]),
         "attempt_seconds": last * dt, "all_difficulty_outcomes": outcomes.tolist(),
-        "selection": "First episode of environment IDs 0..5; highest difficulty displayed; no outcome filtering",
+        "selection": f"First episode of environment ID {level}; no outcome filtering",
         "perception": "187 analytic heightfield samples; visual inset uses the noise-free scan",
         "terminal_display": "Pre-reset terminal state held for one second and explicitly labelled",
         "decode_and_pixel_motion_checks": "passed",
+        "static_stop_command": bool(stop_command),
     }
     (directory / "demo.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     print(json.dumps(result), flush=True)

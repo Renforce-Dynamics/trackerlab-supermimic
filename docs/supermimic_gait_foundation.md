@@ -1,5 +1,10 @@
 # SuperMimic Gait Foundation
 
+This trajectory-tracking route is retired for new locomotion campaigns as of
+November 4, 2026. Use [command locomotion with AMP](supermimic_command_style.md)
+for runtime velocity/skill commands without motion-reference inputs.
+The remaining text records the former experiment.
+
 The former eighteen-task terrain policy set is retired from new runs. G1,
 Go2, A3, T1, Bumi and Pi+ first train a flat-ground walking foundation with
 SuperMimic's full-body motion-tracking, world-model imagination and GAE critic.

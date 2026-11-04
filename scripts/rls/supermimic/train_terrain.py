@@ -1,4 +1,4 @@
-"""Train SuperMimic's world-model, imagined actor and critic on terrain tasks."""
+"""Train command-driven SuperMimic locomotion with an adversarial motion prior."""
 
 from __future__ import annotations
 
@@ -30,7 +30,8 @@ from warp_runtime.restore_optimizer_steps import restore_eager_adam_step_counter
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--task", required=True)
-    parser.add_argument("--task_profile", choices=("stairs", "mountain", "parkour"))
+    parser.add_argument("--task_profile", choices=("stairs", "mountain", "parkour",
+                                                   "velocity", "stealth"))
     parser.add_argument("--config")
     parser.add_argument("--run-dir", type=Path, required=True)
     parser.add_argument("--num-envs", type=int, default=8096)
@@ -60,10 +61,23 @@ def parse_args(argv=None):
     parser.add_argument("--warm-start", type=Path)
     parser.add_argument("--gait-warm-start", type=Path)
     parser.add_argument("--gait-quality", type=Path)
+    parser.add_argument("--amp-motion-config", type=Path)
+    parser.add_argument("--amp-weight", type=float, default=.5)
+    parser.add_argument("--amp-batch", type=int, default=1024)
+    parser.add_argument("--amp-updates", type=int, default=1)
+    parser.add_argument("--style-feature-mode", choices=("full", "proprioceptive"),
+                        default="proprioceptive")
+    parser.add_argument("--reference-reset-probability", type=float, default=.7)
+    parser.add_argument("--clearance-ratio", type=float, default=1.)
+    parser.add_argument("--action-limit", type=float, default=20.)
+    parser.add_argument("--jump-height", type=float, default=0.)
+    parser.add_argument("--jump-probability", type=float, default=.15)
     parser.add_argument("--solver-iterations", type=int, default=50)
     parser.add_argument("--max-episode-steps", type=int, default=1000)
     parser.add_argument("--describe", action="store_true")
     parser.add_argument("--compile", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--compile-critic", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--fused-optimizers", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--profile", action="store_true")
     apply_config(parser, argv)
     return parser.parse_args(argv)
@@ -74,6 +88,28 @@ def validate_resume_objective(checkpoint, gamma):
         raise ValueError("Changed terrain objective: use --warm-start in a new run directory")
     if checkpoint["arguments"]["gamma"] != gamma:
         raise ValueError("Resume discount factor differs; use --warm-start for a new objective")
+
+
+def validate_style_references(config_path, robot):
+    """Verify immutable campaign pools, or the audited gait pool used in probes."""
+    config_path = Path(config_path).resolve()
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    root = (config_path.parent / config["root"]).resolve()
+    manifest_path = root / "manifest.json"
+    if manifest_path.is_file():
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if manifest.get("schema") == "style-campaign-pool-v1":
+            from prepare_style_campaign import verify_pool
+            verified = verify_pool(root, robot, manifest["style"])
+            if config_path != root / "train.json":
+                raise ValueError("Training requires the pool's train.json, not held-out references")
+            return {"kind": "immutable-style-pool", "style": verified["style"],
+                    "manifest": str(manifest_path), "recipe_sha256": verified["recipe_sha256"]}
+    if (root / "gait_audit.json").is_file():
+        from prepare_gait_references import verify_audit
+        audit = verify_audit(config_path, robot)
+        return {"kind": "audited-gait-style-pool", "status": audit["status"]}
+    raise ValueError("Style references require an immutable style pool or a passed gait audit")
 
 
 def load_terrain_initialization(actor, world, checkpoint, robot):
@@ -218,6 +254,14 @@ def migrate_terrain_checkpoint(checkpoint, model_indices,
 
 
 def main():
+    from trackerLab.algorithms.supermimic.amp_style import AMPStyle
+    from trackerLab.kinematics.supermimic.robot import RobotKinematics
+    from trackerLab.motion_buffer.motion_lib.supermimic import MotionLib
+    from trackerLab.tracker_env.mdp.supermimic_command import (
+        COMMAND_VERSION, SCENARIO_DIM, CommandMDP, advance_command,
+    )
+    from trackerLab.tracker_env.supermimic.command import CommandSim
+
     args = parse_args()
     task = get_task(args.task)
     if args.task_profile and args.task_profile != task.profile:
@@ -236,21 +280,30 @@ def main():
         raise SystemExit("Invalid discount, GAE lambda or learning rate")
     if args.describe:
         print(json.dumps({
-            "task": task.describe(), "algorithm": "supermimic-world-model-imagination-critic",
+            "task": task.describe(), "algorithm": "supermimic-command-amp",
             "iterations": args.iterations, "perception_rays": 187,
+            "runtime_motion_reference": False, "style_reference_training_only": True,
         }, indent=2))
         return
-    if not args.gait_warm_start and not args.resume and not args.warm_start:
-        raise SystemExit("Terrain training is locked until a gait quality report passes")
-    if args.warm_start:
-        raise SystemExit("Legacy terrain warm starts are retired; use --gait-warm-start")
+    if args.gait_warm_start or args.gait_quality:
+        raise SystemExit("Tracking foundations are retired for this command/style objective")
+    if args.amp_motion_config is None or not args.amp_motion_config.is_file():
+        raise SystemExit("Command locomotion requires an existing --amp-motion-config")
+    if args.amp_weight <= 0 or min(args.amp_batch, args.amp_updates) < 1:
+        raise SystemExit("Every command task requires a positive AMP weight and update count")
+    if (not 0 <= args.reference_reset_probability <= 1
+            or not 0 <= args.jump_probability <= 1 or args.jump_height < 0):
+        raise SystemExit("Invalid reference reset or jump-command parameters")
+    if not 0 < args.action_limit <= 20:
+        raise SystemExit("Action limit must be positive and at most 20")
+    if not .5 <= args.clearance_ratio <= 1.2:
+        raise SystemExit("Clearance ratio must lie between .5 and 1.2")
+    reference_receipt = validate_style_references(args.amp_motion_config, task.robot)
     if not torch.cuda.is_available():
         raise RuntimeError("Terrain training requires CUDA")
     run = args.run_dir.resolve()
-    if (args.resume and (args.warm_start or args.gait_warm_start)
-            or args.warm_start and args.gait_warm_start
-            or bool(args.gait_warm_start) != bool(args.gait_quality)):
-        raise SystemExit("Choose resume, terrain warm start, or a gait checkpoint plus quality report")
+    if args.resume and args.warm_start:
+        raise SystemExit("Choose resume or a command/style warm start")
     if (run / "last.pt").exists() and not args.resume:
         raise FileExistsError("Use an empty run directory or pass --resume")
     run.mkdir(parents=True, exist_ok=True)
@@ -268,18 +321,43 @@ def main():
     qlo = torch.tensor(cpu_model.jnt_range[:, 0], dtype=torch.float32)[joint_ids].to(args.device)
     qhi = torch.tensor(cpu_model.jnt_range[:, 1], dtype=torch.float32)[joint_ids].to(args.device)
     default_q = torch.tensor(spec.default_q, device=args.device)
-    mdp = TerrainMDP(field, default_q, qlo, qhi, gamma=args.gamma)
-    env = TerrainSim(task, mdp, args.num_envs, args.device, args.seed,
-                     args.solver_iterations, args.max_episode_steps)
+    mdp = CommandMDP(field, default_q, qlo, qhi, gamma=args.gamma,
+                     profile=task.profile, clearance_ratio=args.clearance_ratio,
+                     action_limit=args.action_limit)
+    mdp.set_style_weight(args.amp_weight)
+    env = CommandSim(task, mdp, args.num_envs, args.device, args.seed,
+                     args.solver_iterations, args.max_episode_steps,
+                     jump_height=args.jump_height, jump_probability=args.jump_probability,
+                     action_limit=args.action_limit)
     actor = TerrainPolicy(mdp.obs_dim, mdp.goal_dim, hist=args.hist,
-                          num_joints=spec.num_joints).to(args.device)
+                          num_joints=spec.num_joints, action_limit=args.action_limit).to(args.device)
     world = TerrainWorldModel(field, spec.num_joints).to(args.device)
     critic_dim = spec.state_dim + spec.context_dim + mdp.goal_dim + len(field.model_offsets)
     critic = Critic(critic_dim).to(args.device)
-    opt_wm = torch.optim.Adam(world.parameters(), lr=args.lr)
-    opt_pi = torch.optim.Adam(actor.parameters(), lr=args.lr, betas=(.9, .95))
-    opt_v = torch.optim.Adam(critic.parameters(), lr=args.lr)
-    buffer = ReplayBuffer(args.buffer_steps, args.num_envs, args.device, spec.num_joints, scenario_dim=2)
+    opt_wm = torch.optim.Adam(world.parameters(), lr=args.lr, fused=args.fused_optimizers)
+    opt_pi = torch.optim.Adam(actor.parameters(), lr=args.lr, betas=(.9, .95),
+                              fused=args.fused_optimizers)
+    opt_v = torch.optim.Adam(critic.parameters(), lr=args.lr, fused=args.fused_optimizers)
+    kin = RobotKinematics(args.device, spec)
+    motion = MotionLib.from_config(str(args.amp_motion_config.resolve()), kin, args.device)
+    style = AMPStyle(kin, motion, robot_height, ground_sampler=field.sample,
+                     feature_mode=args.style_feature_mode).to(args.device)
+    grounded = None
+    if args.reference_reset_probability:
+        import numpy as np
+        from trackerLab.kinematics.supermimic.rotations import mat_to_quat
+        from prepare_style_references import physical_floor_distances
+        values = torch.cat((motion.root_p, mat_to_quat(motion.root_R)[:, [1, 2, 3, 0]],
+                            motion.q), -1).cpu().numpy()
+        distances = physical_floor_distances(values, task.robot)
+        grounded = torch.as_tensor(
+            np.isfinite(distances) & (distances >= -.005 * field.scale)
+            & (distances <= .04 * field.scale), device=args.device)
+    env.set_reference_resets(motion, probability=args.reference_reset_probability,
+                             grounded_mask=grounded)
+    env.reset()
+    buffer = ReplayBuffer(args.buffer_steps, args.num_envs, args.device, spec.num_joints,
+                          scenario_dim=SCENARIO_DIM)
     obs_hist = torch.zeros(args.num_envs, args.hist, mdp.obs_dim, device=args.device)
     start_it = 0
     initialization = None
@@ -287,9 +365,13 @@ def main():
         ck = torch.load(args.resume.resolve(), map_location=args.device, weights_only=False)
         if ck["task"] != args.task:
             raise ValueError("Resume checkpoint task differs")
-        if ck.get("training_stage") != "terrain-after-qualified-gait":
-            raise ValueError("Legacy terrain runs are retired; start from a qualified gait checkpoint")
-        validate_resume_objective(ck, args.gamma)
+        if (ck.get("training_stage") != "command-style"
+                or ck.get("objective_version") != COMMAND_VERSION):
+            raise ValueError("Resume requires the same command/style objective")
+        for name in ("gamma", "hist", "amp_weight", "clearance_ratio",
+                     "style_feature_mode", "jump_height", "jump_probability", "action_limit"):
+            if ck["arguments"].get(name) != getattr(args, name):
+                raise ValueError(f"Resume {name} differs from the saved objective")
         actor.load_state_dict(ck["actor"])
         migrated = migrate_terrain_checkpoint(
             ck, field.model_indices,
@@ -301,26 +383,55 @@ def main():
         opt_pi.load_state_dict(ck["opt_pi"])
         opt_wm.load_state_dict(ck["opt_wm"])
         opt_v.load_state_dict(ck["opt_v"])
+        style.restore(ck["amp_style"])
         for optimizer in (opt_wm, opt_pi, opt_v):
-            restore_eager_adam_step_counters(optimizer)
+            for group in optimizer.param_groups:
+                group["fused"] = args.fused_optimizers
+            if args.fused_optimizers:
+                for parameter, state in optimizer.state.items():
+                    if "step" in state:
+                        state["step"] = state["step"].to(parameter.device)
+            else:
+                restore_eager_adam_step_counters(optimizer)
         if migrated:
             print("Migrated full-scan terrain context to sparse model/critic context; "
                   "projected optimizer moments were preserved.", flush=True)
         start_it = ck["iteration"]
     elif args.warm_start:
         ck = torch.load(args.warm_start.resolve(), map_location=args.device, weights_only=False)
-        initialization = load_terrain_initialization(actor, world, ck, task.robot)
-    elif args.gait_warm_start:
-        ck = torch.load(args.gait_warm_start.resolve(), map_location=args.device, weights_only=False)
-        quality = json.loads(args.gait_quality.resolve().read_text(encoding="utf-8"))
-        initialization = load_gait_foundation(actor, world, ck, quality, task.robot)
+        if (ck.get("training_stage") != "command-style" or ck.get("robot") != task.robot
+                or ck.get("objective_version") != COMMAND_VERSION):
+            raise ValueError("Warm start needs a matching robot command/style checkpoint")
+        if ck["arguments"].get("action_limit", 4.) != args.action_limit:
+            raise ValueError("Warm-start action limit differs from the actor's control contract")
+        actor.load_state_dict(ck["actor"])
+        world.load_state_dict(ck["world"])
+        restore_style = ck.get("amp_style", {}).get("expert_hash") == style.expert_hash
+        if restore_style:
+            style.restore(ck["amp_style"])
+        initialization = {"source_task": ck["task"], "source_iteration": ck["iteration"],
+                          "actor_world_transferred": True, "critic_reset": True,
+                          "actor_world_critic_optimizers_reset": True,
+                          "style_optimizer_restored": restore_style,
+                          "runtime_motion_reference": False}
     if start_it >= args.iterations:
         raise ValueError("Requested iterations must exceed resumed checkpoint iteration")
+    amp_updates_total = style.checkpoint()["updates"]
     with (run / "run_config.json").open("w", encoding="utf-8") as stream:
         json.dump({"arguments": vars(args) | {"run_dir": str(run)},
-                   "objective_version": OBJECTIVE_VERSION, "initialization": initialization,
+                   "objective_version": COMMAND_VERSION, "initialization": initialization,
                    "success_terminal_value": mdp.success_reward,
-                   "task": task.describe(), "algorithm": "SuperMimic model-based imagination",
+                   "task": task.describe(), "algorithm": "SuperMimic command + AMP style",
+                   "runtime_motion_reference": False,
+                   "training_reference_resets": env.contract.get("reference_resets"),
+                   "style_reference_validation": reference_receipt,
+                   "style": {"motion_config": str(args.amp_motion_config.resolve()),
+                             "training_only": True, "weight": args.amp_weight,
+                             "feature_mode": args.style_feature_mode,
+                             "discriminator_data": "real simulator transitions and expert clips"},
+                   "jump_commands": {"height_m": args.jump_height,
+                                     "probability": args.jump_probability,
+                                     "duration_seconds": .8},
                    "simulator_contract": contract, "robot": spec.name,
                    "num_joints": spec.num_joints, "obs_dim": mdp.obs_dim,
                    "goal_dim": mdp.goal_dim, "critic_dim": critic_dim,
@@ -345,21 +456,33 @@ def main():
     def critic_input(state, xi, c):
         return mdp.critic_features(state, xi, c)
 
+    def value_estimate(inputs):
+        upper = mdp.max_step_reward / (1 - args.gamma) + mdp.success_reward
+        return critic(inputs).clamp(max=upper)
+
     def imag_step(state, history, xi, xi_n, c):
         action = actor(history, mdp.goal(state, c))
         next_state = world.step(state, action, xi_n)
-        observation = mdp.add_noise(mdp.obs(next_state, action, xi, c))
-        return next_state, action, torch.cat((history[:, 1:], observation[:, None]), 1)
+        next_c = advance_command(c)
+        observation = mdp.add_noise(mdp.obs(next_state, action, xi, next_c))
+        return next_state, action, torch.cat((history[:, 1:], observation[:, None]), 1), next_c
 
     def reward_term(state, action, previous, c):
         return mdp.imagined_reward(state, action, previous, c)
 
+    style_reward_fn = style.reward_from_features
+    style_frame_fn = style.frame_features
+    from warp_runtime.critic_runtime import make_critic_minibatch_loss
+    critic_loss_fn = make_critic_minibatch_loss(
+        critic, compile_enabled=args.compile and args.compile_critic)
     if args.compile:
         wm_window = torch.compile(wm_window, mode="reduce-overhead")
         imag_step = torch.compile(imag_step, mode="reduce-overhead")
         reward_term = torch.compile(reward_term)
         critic_input = torch.compile(critic_input)
         collect_actor = torch.compile(actor, mode="reduce-overhead")
+        style_reward_fn = torch.compile(style_reward_fn)
+        style_frame_fn = torch.compile(style_frame_fn)
     else:
         collect_actor = actor
 
@@ -386,6 +509,7 @@ def main():
             outcomes["falls"] += transition["episode_fall"].sum()
             outcomes["timeouts"] += transition["episode_timeout"].sum()
             s0, s1 = unflatten_state(transition["s"]), unflatten_state(transition["s1"])
+            style.observe(s0, s1, valid=~transition["done"])
             world.in_norm.update(world.inputs(s0, transition["a"], normalize_xi(transition["xi"])))
             world.out_norm.update(world.targets(s0, s1))
             world.update_terrain_norm(s0)
@@ -432,28 +556,37 @@ def main():
             obs_hist_local = mdp.add_noise(mdp.obs(
                 history_states, hist["a_prev"], hist["xi"], hist["c"]))
         actor_hist = obs_hist_local
-        old_wm, old_critic = [p.requires_grad for p in world.parameters()], [p.requires_grad for p in critic.parameters()]
-        for parameter in (*world.parameters(), *critic.parameters()):
+        frozen = (*world.parameters(), *critic.parameters(), *style.parameters())
+        old_flags = [p.requires_grad for p in frozen]
+        for parameter in frozen:
             parameter.requires_grad_(False)
         initial = state
-        rows, actions, previous = [], [], []
+        initial_c = c
+        rows, actions, previous, commands = [], [], [], []
         for _ in range(args.horizon):
             previous.append(a_prev)
-            state, a_prev, actor_hist = imag_step(state, actor_hist, xi, xi_n, c)
+            state, a_prev, actor_hist, c = imag_step(state, actor_hist, xi, xi_n, c)
             rows.append(state)
             actions.append(a_prev)
+            commands.append(c)
         states = tuple(torch.stack([row[index] for row in rows]) for index in range(6))
-        flat_c = c.unsqueeze(0).expand(args.horizon, -1, -1).flatten(0, 1)
+        flat_c = torch.stack(commands).flatten(0, 1)
         reward, done = reward_term(tuple(value.flatten(0, 1) for value in states),
                                    torch.stack(actions).flatten(0, 1),
                                    torch.stack(previous).flatten(0, 1), flat_c)
+        style_states = tuple(torch.cat((initial[i].unsqueeze(0), states[i]), 0)
+                             for i in range(6))
+        style_frames = style_frame_fn(style_states)
+        style_pairs = torch.cat((style_frames[:-1], style_frames[1:]), -1).flatten(0, 1)
+        style_reward = style_reward_fn(style_pairs)
+        reward = reward + args.amp_weight * .02 * style_reward
         reward, done = reward.view(args.horizon, -1), done.view(args.horizon, -1)
         alive = torch.cumprod(1 - done, 0)
         alive_prev = torch.cat((torch.ones_like(alive[:1]), alive[:-1]), 0)
         gamma = args.gamma ** torch.arange(args.horizon, device=args.device).float()[:, None]
         objective = (gamma * alive_prev * reward).sum(0)
         critic_x = critic_input(state, xi, c)
-        objective = objective + args.gamma ** args.horizon * alive[-1] * critic(critic_x)
+        objective = objective + args.gamma ** args.horizon * alive[-1] * value_estimate(critic_x)
         pi_loss = -objective.mean()
         if args.profile:
             torch.cuda.synchronize()
@@ -466,20 +599,19 @@ def main():
         pi_grad = torch.nn.utils.clip_grad_norm_(actor.parameters(), 1., error_if_nonfinite=True)
         torch.nn.utils.clip_grad_value_(actor.parameters(), .1)
         opt_pi.step()
-        for parameter, flag in zip(world.parameters(), old_wm):
-            parameter.requires_grad_(flag)
-        for parameter, flag in zip(critic.parameters(), old_critic):
+        for parameter, flag in zip(frozen, old_flags):
             parameter.requires_grad_(flag)
         with torch.no_grad():
             state_seq = tuple(torch.cat((initial[i].unsqueeze(0), states[i].detach()), 0)
                               for i in range(6))
             critic_states = tuple(v.flatten(0, 1) for v in state_seq)
             xi_seq = xi.unsqueeze(0).expand(args.horizon + 1, -1, -1)
+            command_seq = torch.cat((initial_c.unsqueeze(0), torch.stack(commands)), 0)
             critic_inputs = critic_input(critic_states, xi_seq.flatten(0, 1),
-                                         c.unsqueeze(0).expand(args.horizon + 1, -1, -1).flatten(0, 1))
+                                         command_seq.flatten(0, 1))
             critic_inputs = critic_inputs.view(args.horizon + 1, args.pi_batch, -1)
             critic.norm.update(critic_inputs)
-            values = critic(critic_inputs)
+            values = value_estimate(critic_inputs)
             target, targets = values[-1], []
             for index in range(args.horizon - 1, -1, -1):
                 target = reward[index] + args.gamma * (1 - done[index]) * (
@@ -493,7 +625,7 @@ def main():
             permutation = torch.randperm(n, device=args.device)
             for j in range(args.critic_minibatches):
                 indices = permutation[j * mb:(j + 1) * mb if j + 1 < args.critic_minibatches else n]
-                v_loss = (critic(inputs[indices]) - target[indices]).square().mean()
+                v_loss = critic_loss_fn(inputs, target, indices)
                 opt_v.zero_grad(set_to_none=True)
                 v_loss.backward()
                 torch.nn.utils.clip_grad_norm_(critic.parameters(), 1., error_if_nonfinite=True)
@@ -504,7 +636,7 @@ def main():
                   f"backward={profile_backward - profile_forward:.3f}s "
                   f"critic={time.monotonic() - profile_backward:.3f}s", flush=True)
         return tuple(value.detach().clone() for value in
-                     (pi_loss, v_loss, pi_grad, reward.mean()))
+                     (pi_loss, v_loss, pi_grad, reward.mean(), style_reward.mean()))
 
     log_path = run / "train_log.csv"
     collect(max(args.warmup_steps, args.wm_window))
@@ -514,7 +646,9 @@ def main():
             writer.writerow(("iteration", "updates_in_interval", "actor_critic_active",
                              "elapsed_seconds", "iterations_per_second",
                              "wm_loss", "actor_loss", "critic_loss", "actor_grad_norm",
-                             "imagined_reward", "episodes", "successes", "falls", "timeouts",
+                             "imagined_reward", "amp_reward", "amp_loss",
+                             "amp_expert_score", "amp_policy_score",
+                             "episodes", "successes", "falls", "timeouts",
                              "success_fraction", "fall_fraction", "terrain_level_mean",
                              "peak_allocated_gib"))
         step_credit = 0.
@@ -537,11 +671,20 @@ def main():
             wm_loss = torch.zeros((), device=args.device)
             for _ in range(args.wm_batches):
                 wm_loss = wm_update()
+            # Fit the prior alongside the actor, after world-model warmup,
+            # so the discriminator does not saturate on the initial controller.
+            amp_metrics = style.update(batch_size=args.amp_batch, updates=(
+                args.amp_updates if iteration >= args.wm_only_iters else 0))
+            amp_updates_total += amp_metrics["updates"]
+            amp_loss = torch.as_tensor(amp_metrics["loss"], device=args.device).detach()
             if iteration >= args.wm_only_iters:
-                pi_loss, v_loss, grad, imag_reward = policy_update()
+                pi_loss, v_loss, grad, imag_reward, amp_reward = policy_update()
             else:
-                pi_loss = v_loss = grad = imag_reward = torch.zeros((), device=args.device)
-            aggregates.append((wm_loss, pi_loss, v_loss, grad, imag_reward))
+                pi_loss = v_loss = grad = imag_reward = amp_reward = torch.zeros((), device=args.device)
+            expert_score = torch.as_tensor(amp_metrics["expert_score"], device=args.device)
+            policy_score = torch.as_tensor(amp_metrics["policy_score"], device=args.device)
+            aggregates.append((wm_loss, pi_loss, v_loss, grad, imag_reward, amp_reward, amp_loss,
+                               expert_score, policy_score))
             final = iteration + 1 == args.iterations
             if (iteration + 1) % args.log_every == 0 or final:
                 torch.cuda.synchronize()
@@ -564,6 +707,7 @@ def main():
                 stream.flush()
                 print(f"iteration={iteration + 1} speed={ips:.3f} it/s wm={means[0]:.5f} "
                       f"actor={means[1]:.5f} critic={means[2]:.5f} "
+                      f"amp={means[5]:.3f} disc={means[7]:.3f}/{means[8]:.3f} "
                       f"level={env.levels.float().mean().item():.2f}", flush=True)
                 aggregates, outcome_window, last_log = [], [], time.monotonic()
             if probe_started_at is not None and iteration + 1 - probe_first_index >= args.speed_probe_updates:
@@ -584,6 +728,7 @@ def main():
                     "actor_optimizer_updates": iteration + 1 - probe_first_index,
                     "critic_optimizer_updates": (iteration + 1 - probe_first_index)
                         * args.critic_epochs * args.critic_minibatches,
+                    "amp_optimizer_updates": (iteration + 1 - probe_first_index) * args.amp_updates,
                     "peak_allocated_gib": torch.cuda.max_memory_allocated() / 2**30,
                     "peak_reserved_gib": torch.cuda.max_memory_reserved() / 2**30,
                     "tele_historical_reference_iterations_per_second": 2.47115,
@@ -596,13 +741,15 @@ def main():
             keep = (iteration + 1) % args.keep_every == 0
             if (iteration + 1) % args.ckpt_every == 0 or keep or final or stop_requested:
                 checkpoint = {"task": args.task, "iteration": iteration + 1,
-                              "training_stage": "terrain-after-qualified-gait",
-                              "objective_version": OBJECTIVE_VERSION,
+                              "training_stage": "command-style",
+                              "objective_version": COMMAND_VERSION,
                               "robot": task.robot,
                               "actor": actor.state_dict(), "world": world.state_dict(),
                               "critic": critic.state_dict(), "opt_wm": opt_wm.state_dict(),
                               "opt_pi": opt_pi.state_dict(), "opt_v": opt_v.state_dict(),
-                              "arguments": vars(args) | {"run_dir": str(run)}}
+                              "amp_style": style.checkpoint(),
+                              "arguments": vars(args) | {"run_dir": str(run),
+                                  "amp_motion_config": str(args.amp_motion_config.resolve())}}
                 torch.save(checkpoint, run / "last.pt.tmp")
                 os.replace(run / "last.pt.tmp", run / "last.pt")
                 if keep:
@@ -625,6 +772,7 @@ def main():
             "world_model_optimizer_updates": measured_updates * args.wm_batches,
             "actor_optimizer_updates": measured_updates,
             "critic_optimizer_updates": measured_updates * args.critic_epochs * args.critic_minibatches,
+            "amp_optimizer_updates": measured_updates * args.amp_updates,
             "peak_allocated_gib": torch.cuda.max_memory_allocated() / 2**30,
             "peak_reserved_gib": torch.cuda.max_memory_reserved() / 2**30,
             "tele_historical_reference_iterations_per_second": 2.47115,
@@ -632,7 +780,7 @@ def main():
         (run / "training_speed_summary.json").write_text(
             json.dumps(probe_summary, indent=2) + "\n", encoding="utf-8")
     summary = {"task": args.task, "completed_iterations": iteration + 1,
-               "objective_version": OBJECTIVE_VERSION,
+               "objective_version": COMMAND_VERSION,
                "requested_iterations": args.iterations,
                "phase": "completed" if iteration + 1 >= args.iterations else "stopped",
                "optimizer_updates": {
@@ -640,6 +788,7 @@ def main():
                    "actor": max(0, iteration + 1 - args.wm_only_iters),
                    "critic": max(0, iteration + 1 - args.wm_only_iters) *
                              args.critic_epochs * args.critic_minibatches,
+                   "amp": amp_updates_total,
                },
                "elapsed_seconds": time.monotonic() - measured_start,
                "checkpoint": str(run / "last.pt")}

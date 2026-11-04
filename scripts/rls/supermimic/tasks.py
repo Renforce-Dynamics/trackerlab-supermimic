@@ -14,14 +14,14 @@ from trackerTask.supermimic.registry import TASK_REGISTRY, get_task
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("list", "show", "prepare", "smoke", "train", "supervise",
-                                            "gait-supervise"))
+                                            "gait-supervise", "supervise-style"))
     parser.add_argument("--task")
     args, extra = parser.parse_known_args()
     if args.command == "list":
         for entry in TASK_REGISTRY.values():
             print(f"{entry.id:28s} robot={entry.robot:3s} runtime={entry.runtime_task}")
         return
-    if not args.task:
+    if not args.task and args.command != "supervise-style":
         parser.error("--task is required")
     if args.command == "gait-supervise":
         from trackerTask.supermimic.gait import ROBOTS
@@ -37,22 +37,47 @@ def main():
         ]
         subprocess.run(command, check=True, cwd=REPO)
         return
+    if args.command == "supervise-style":
+        command = [
+            sys.executable, str(Path(__file__).with_name("supervise_style.py")),
+            "--run-dir", str(REPO / "logs/supermimic-command-style-v1"),
+            "--style-map", str(REPO / "data/style-references-v2/style-map.json"), *extra,
+        ]
+        subprocess.run(command, check=True, cwd=REPO)
+        return
     entry = get_task(args.task)
     if args.command == "show":
         print(json.dumps(entry.describe(), indent=2))
         return
-    if entry.runtime_task == "terrain":
+    if entry.runtime_task in ("terrain", "command"):
         if args.command == "prepare":
-            print("Terrain tasks use the pinned robot assets; motion clips are not required.")
+            print(f"{entry.profile} task uses robot models and audited motion-style references.")
             return
         folder = Path(__file__).resolve().parent
         if args.command == "supervise":
-            run_dir = REPO / "logs" / "terrain-campaign" / entry.robot / entry.profile
-            command = [sys.executable, str(folder / "supervise_terrain.py"),
-                       "--tasks", entry.id, "--run-dir", str(run_dir), *extra]
+            command = [sys.executable, str(folder / "supervise_style.py"),
+                       "--run-dir", str(REPO / "logs/supermimic-command-style-v1"),
+                       "--style-map", str(REPO / "data/style-references-v2/style-map.json"),
+                       "--tasks", entry.id, *extra]
         else:
             command = [sys.executable, str(folder / "train_terrain.py"),
-                       "--task", entry.id, "--config", str(REPO / entry.preset), *extra]
+                       "--task", entry.id, *extra]
+            if "--amp-motion-config" not in extra:
+                from supervise_style import resolve_styles
+                style = ("stealth" if entry.profile == "stealth" else
+                         "parkour" if entry.profile in ("stairs", "mountain", "parkour") else "walk")
+                mapping = REPO / "data/style-references-v2/style-map.json"
+                if not mapping.is_file():
+                    parser.error("Prepare a style-map or supply --amp-motion-config")
+                config = resolve_styles(mapping).get(entry.robot, {}).get(style)
+                if config is None:
+                    parser.error(f"No prepared {style} pool for {entry.robot}")
+                command.extend(("--amp-motion-config", str(config)))
+            if entry.profile == "stealth" and "--clearance-ratio" not in extra:
+                command.extend(("--clearance-ratio", ".8"))
+            if args.command == "train" and "--run-dir" not in extra:
+                command.extend(("--run-dir", str(REPO / "logs/command-style" /
+                                                  entry.robot / entry.profile)))
         if args.command == "smoke":
             command += ["--num-envs", "16", "--iterations", "4", "--wm-only-iters", "1",
                         "--wm-batches", "1", "--wm-batch", "8", "--pi-batch", "8",

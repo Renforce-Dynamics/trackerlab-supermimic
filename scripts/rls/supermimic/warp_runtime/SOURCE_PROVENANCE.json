@@ -159,9 +159,11 @@
     },
     "warp_env.py": {
       "source_sha256": "dd7a874b3782d92c60cdfa467cba055f3ada270cca5d794d9e70b4a2ffba37cd",
-      "integrated_sha256": "dd7a874b3782d92c60cdfa467cba055f3ada270cca5d794d9e70b4a2ffba37cd",
-      "integrated_sha256_lf": "dd7a874b3782d92c60cdfa467cba055f3ada270cca5d794d9e70b4a2ffba37cd",
-      "integration_changes": []
+      "integrated_sha256": "01c610102f97f4b5351b20af6c86ed6ca19af07846f74dfd78ecd44eae906e78",
+      "integrated_sha256_lf": "01c610102f97f4b5351b20af6c86ed6ca19af07846f74dfd78ecd44eae906e78",
+      "integration_changes": [
+        "Allow a supplied model factory for multi-robot gait foundations; default G1 model preparation remains selected when omitted."
+      ]
     },
     "warp_task_cfg.py": {
       "source_sha256": "8e0a0854341677b6b34b383cf3e9d6d1e31da34d25051cbac549c74e4b6a040e",

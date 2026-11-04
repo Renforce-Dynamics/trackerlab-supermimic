@@ -103,11 +103,10 @@ A3 采用 29 个运动关节，头部两关节固定；T1 为 23 关节模型。
 
 ## 地形任务
 
-楼梯、山地和跑酷任务覆盖 G1、Go2、A3、T1、Bumi 与 Pi+，每个组合
-配置 187 点地形高度扫描，并用 MuJoCo-Warp 射线进行物理采样校验。
-任务沿用 SuperMimic 世界模型、
-想象策略和 GAE critic 更新流程。
-[任务与训练队列说明](docs/supermimic_terrain.md)。
+六款机器人的步态基础训练与质量验收完成后，才开放楼梯、山地和跑酷练习。
+步态先通过 SuperMimic 全身运动跟踪、足端跟踪和支撑期足滑验收；
+进阶策略从本机的合格步态权重初始化。
+[步态与进阶训练流程](docs/supermimic_gait_foundation.md)。
 
 环境要求为 Linux、Python 3.11 和可运行 Isaac Sim 5.1 的 NVIDIA GPU。
 具体安装步骤见 [安装文档](docs/installation.md)。

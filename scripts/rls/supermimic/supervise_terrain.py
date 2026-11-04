@@ -73,6 +73,7 @@ def main():
     parser.add_argument("--validation-seeds", type=int, nargs="+", default=[43, 44, 45])
     parser.add_argument("--warm-start-min-success", type=float, default=.5)
     parser.add_argument("--initial-checkpoints", type=Path)
+    parser.add_argument("--gait-foundations", type=Path)
     parser.add_argument("--prefer-initial-checkpoints", action="store_true")
     parser.add_argument("--wait-for-lock", action="store_true")
     parser.add_argument("--plan", action="store_true")
@@ -88,6 +89,23 @@ def main():
         parser.error("Use at least two unique validation seeds distinct from training")
     if not 0 <= args.warm_start_min_success <= 1:
         parser.error("Warm-start threshold must be between zero and one")
+    gait_foundations = {}
+    if args.gait_foundations:
+        gait_foundations = json.loads(args.gait_foundations.read_text(encoding="utf-8"))
+        if set(gait_foundations) != {"g1", "go2", "a3", "t1", "bumi", "pi_plus"}:
+            parser.error("Terrain admission requires a qualified gait foundation for every robot")
+        for robot, foundation in gait_foundations.items():
+            checkpoint = Path(foundation["checkpoint"])
+            quality = Path(foundation["quality"])
+            if not checkpoint.is_file() or not quality.is_file():
+                parser.error(f"Missing gait checkpoint or quality report for {robot}")
+            report = json.loads(quality.read_text(encoding="utf-8"))
+            if (not report.get("quality_passed")
+                    or not report.get("held_out_tests")
+                    or not all(row.get("quality_passed") for row in report["held_out_tests"])):
+                parser.error(f"Gait foundation has not passed held-out quality for {robot}")
+    elif not args.plan:
+        parser.error("Terrain runs require --gait-foundations from the gait quality queue")
     initial_checkpoints = {}
     if args.initial_checkpoints:
         initial_checkpoints = json.loads(args.initial_checkpoints.read_text(encoding="utf-8"))
@@ -246,10 +264,15 @@ def main():
             if checkpoint.exists():
                 command.extend(("--resume", str(checkpoint)))
             else:
-                source = warm_start_source(task, initial_checkpoints, previous_by_robot,
-                                           args.prefer_initial_checkpoints)
-                if source is not None:
+                if task.robot in previous_by_robot:
+                    source = previous_by_robot[task.robot][1]
                     command.extend(("--warm-start", str(source)))
+                elif task.robot in gait_foundations:
+                    foundation = gait_foundations[task.robot]
+                    command.extend(("--gait-warm-start", foundation["checkpoint"],
+                                    "--gait-quality", foundation["quality"]))
+                elif task.id in initial_checkpoints:
+                    raise ValueError("Initial terrain task has no qualified gait foundation")
             job.update(phase="training", run_dir=str(run), started_at=now(), command=command)
             status["active_job"] = job
             record()

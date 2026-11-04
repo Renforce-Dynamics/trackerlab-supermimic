@@ -13,7 +13,8 @@ from trackerTask.supermimic.registry import TASK_REGISTRY, get_task
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("list", "show", "prepare", "smoke", "train", "supervise"))
+    parser.add_argument("command", choices=("list", "show", "prepare", "smoke", "train", "supervise",
+                                            "gait-supervise"))
     parser.add_argument("--task")
     args, extra = parser.parse_known_args()
     if args.command == "list":
@@ -22,6 +23,15 @@ def main():
         return
     if not args.task:
         parser.error("--task is required")
+    if args.command == "gait-supervise":
+        command = [
+            sys.executable, str(Path(__file__).with_name("supervise_gait.py")),
+            "--references", str(REPO / "logs/gait-foundation-v1/references.json"),
+            "--run-dir", str(REPO / "logs/gait-foundation-v1/runs"),
+            "--robots", args.task, *extra,
+        ]
+        subprocess.run(command, check=True, cwd=REPO)
+        return
     entry = get_task(args.task)
     if args.command == "show":
         print(json.dumps(entry.describe(), indent=2))
@@ -47,6 +57,18 @@ def main():
                         "--run-dir", str(REPO / "logs" / "terrain-smoke" / entry.robot / entry.profile)]
         elif args.command == "train" and "--run-dir" not in extra:
             command += ["--run-dir", str(REPO / "logs" / "terrain" / entry.robot / entry.profile)]
+        subprocess.run(command, check=True, cwd=REPO)
+        return
+    if entry.runtime_task == "gait-foundation":
+        if args.command not in ("train", "smoke"):
+            parser.error("Use train or smoke for a gait foundation")
+        references = REPO / "logs/gait-foundation-v1/references" / entry.robot
+        command = [
+            sys.executable, str(Path(__file__).with_name("train_gait.py")),
+            "--task", entry.robot, "--motion_config", str(references / "train.json"),
+            "--log_dir", str(REPO / "logs/gait-foundation-v1/runs" / entry.robot / "single-run"),
+            *extra,
+        ]
         subprocess.run(command, check=True, cwd=REPO)
         return
     script = {"prepare": "prepare_resources", "smoke": "smoke_test"}.get(args.command, args.command)

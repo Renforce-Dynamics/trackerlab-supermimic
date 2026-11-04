@@ -9,7 +9,7 @@ import numpy as np
 from trackerTask.supermimic.terrain import robot_parameters
 
 
-def build_model(robot, terrain, solver_iterations=50, *, render_size=None):
+def build_model(robot, terrain, solver_iterations=50, *, render_size=None, ground_plane=False):
     import mujoco
 
     spec, height, motors = robot_parameters(robot)
@@ -50,9 +50,11 @@ def build_model(robot, terrain, solver_iterations=50, *, render_size=None):
         "name": "supermimic_terrain", "nrow": str(terrain.heights.shape[0]),
         "ncol": str(terrain.heights.shape[1]), "size": " ".join(map(str, terrain.size)),
     })
+    ground = ({"type": "plane", "size": "0 0 .1", "pos": "0 0 0"} if ground_plane
+              else {"type": "hfield", "hfield": "supermimic_terrain",
+                    "pos": " ".join(map(str, terrain.position))})
     ET.SubElement(world, "geom", {
-        "name": "supermimic_ground", "type": "hfield", "hfield": "supermimic_terrain",
-        "pos": " ".join(map(str, terrain.position)), "group": "5",
+        "name": "supermimic_ground", **ground, "group": "5",
         "rgba": ".32 .43 .33 1", "contype": "1", "conaffinity": "2",
         "friction": "1 .005 .0001", "condim": "3", "priority": "1",
         "solref": ".04 1", "solimp": ".9 .95 .001 .5 2",
@@ -143,5 +145,6 @@ def build_model(robot, terrain, solver_iterations=50, *, render_size=None):
             "shape": list(terrain.heights.shape), "size": terrain.size,
             "position": terrain.position, "centers": terrain.centers, "goal_x": terrain.goal_x,
         },
+        "ground_plane": ground_plane,
     }
     return model, spec, height, qpos_ids, qvel_ids, root_id, com_id, actuator_ids, contract

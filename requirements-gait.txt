@@ -1,0 +1,4 @@
+-r requirements-warp.txt
+scipy==1.15.3
+mink==1.4.0
+daqp==0.11.0

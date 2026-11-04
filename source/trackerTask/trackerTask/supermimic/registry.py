@@ -68,6 +68,13 @@ _ENTRIES = (
                f"scripts/rls/supermimic/configs/terrain_{profile}.json", "procedural heightfield", profile)
       for robot in ("g1", "go2", "a3", "t1", "bumi", "pi_plus")
       for profile in ("stairs", "mountain", "parkour")),
+    *(TaskEntry(f"gait/{robot}", robot, "gait-foundation",
+               (_QUADRUPED + ".go2.env_cfg:SuperMimicGo2TaskCfg" if robot == "go2" else
+                _HUMANOID + f".{robot}.env_cfg:SuperMimic{robot.title().replace('_', '')}TaskCfg"),
+               "scripts/rls/supermimic/configs/gait_foundation.json",
+               "audited robot-specific locomotion references",
+               "foundation")
+      for robot in ("g1", "go2", "a3", "t1", "bumi", "pi_plus")),
 )
 TASK_REGISTRY = {entry.id: entry for entry in _ENTRIES}
 ALIASES = {"g1": "tracking/g1", "go2": "tracking/go2", "a3": "tracking/a3",

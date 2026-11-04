@@ -10,20 +10,23 @@ from pathlib import Path
 import time
 
 
-def train(args, app_launcher, run_start):
+def train(args, app_launcher, run_start, *, simulation_api=None, task_cfg=None, mdp_cls=None):
     import torch
     import torch.nn as nn
 
     from trackerTask.supermimic.robots import get_robot, get_task_cfg
     from trackerLab.algorithms.supermimic.buffer import ReplayBuffer
-    from trackerLab.tracker_env.supermimic.env import TrackingSim, launch_simulation, make_sim
+    if simulation_api is None:
+        from trackerLab.tracker_env.supermimic.env import TrackingSim, launch_simulation, make_sim
+    else:
+        TrackingSim, launch_simulation, make_sim = simulation_api
     from trackerLab.kinematics.supermimic.robot import RobotKinematics
     from trackerLab.tracker_env.mdp.supermimic import MAX_STEP_REWARD, MDP, REWARD_TERMS, RewardCfg, invariant_features, normalize_xi, unflatten_state
     from trackerLab.motion_buffer.motion_lib.supermimic import MotionLib
     import trackerLab.algorithms.supermimic.networks as networks
     from trackerLab.algorithms.supermimic.networks import Critic, Policy, WorldModel
     spec = get_robot(args.task)
-    task_cfg = get_task_cfg(args.task)
+    task_cfg = task_cfg or get_task_cfg(args.task)
     task_cfg.num_envs = args.num_envs
     task_cfg.env_spacing = args.env_spacing
     task_cfg.observation_mode = args.obs_mode
@@ -39,8 +42,8 @@ def train(args, app_launcher, run_start):
     task_cfg.friction_range = tuple(args.friction_range)
     task_cfg.joint_offset_range = args.joint_offset_range
     task_cfg.torso_com_offset_range = tuple(args.com_offset_range)
-    torch.backends.cuda.matmul.allow_tf32 = True
-    torch.backends.cudnn.allow_tf32 = True
+    torch.backends.cuda.matmul.allow_tf32 = getattr(args, "allow_tf32", True)
+    torch.backends.cudnn.allow_tf32 = getattr(args, "allow_tf32", True)
     torch.manual_seed(args.seed)
     networks.AMP_DTYPE = torch.bfloat16 if args.amp == "bf16" else None
     dev = args.device
@@ -59,8 +62,8 @@ def train(args, app_launcher, run_start):
                    "num_frames": motion.num_frames, "control_dt": task_cfg.control_dt,
                    "provenance": motion.provenance,
                    "motion_config": args.motion_config, "motion_dir": args.motion_dir}, stream, indent=2)
-    mdp = MDP(kin, motion, torch.tensor(spec.default_q, device=dev),
-              cfg=RewardCfg(**task_cfg.reward_overrides), obs_mode=args.obs_mode)
+    mdp = (mdp_cls or MDP)(kin, motion, torch.tensor(spec.default_q, device=dev),
+                          cfg=RewardCfg(**task_cfg.reward_overrides), obs_mode=args.obs_mode)
     with open(Path(args.log_dir, "reward_config.json"), "w") as reward_file:
         json.dump({
             "task": spec.name,
@@ -106,6 +109,10 @@ def train(args, app_launcher, run_start):
                 raise ValueError(f"{key} must match the resumed checkpoint")
         wm.load_state_dict(ck["wm"]), pi.load_state_dict(ck["pi"]), critic.load_state_dict(ck["critic"])
         opt_wm.load_state_dict(ck["opt_wm"]), opt_pi.load_state_dict(ck["opt_pi"]), opt_v.load_state_dict(ck["opt_v"])
+        if getattr(args, "gait_foundation_version", None) is not None:
+            from restore_optimizer_steps import restore_eager_adam_step_counters
+            for optimizer in (opt_wm, opt_pi, opt_v):
+                restore_eager_adam_step_counters(optimizer)
         start_it, wall_offset, sim_steps = ck["iteration"], ck["wall_time"], ck["sim_steps"]
         pi_skipped_updates = ck.get("pi_skipped_updates", 0)
     if start_it >= args.iterations:
@@ -314,6 +321,9 @@ def train(args, app_launcher, run_start):
             gamma=args.gamma,
             task_cfg=task_cfg,
         )
+        if hasattr(env, "contract"):
+            (Path(args.log_dir) / "simulator_contract.json").write_text(
+                json.dumps(env.contract, indent=2) + "\n", encoding="utf-8")
         buffer = ReplayBuffer(args.buffer_steps, args.num_envs, dev, num_joints=spec.num_joints)
         obs_hist = torch.zeros(args.num_envs, Hh, mdp.obs_dim, device=dev)
 
@@ -431,7 +441,8 @@ def train(args, app_launcher, run_start):
                 last = os.path.join(args.log_dir, "last.pt")
                 torch.save(ck, last + ".tmp")
                 os.replace(last + ".tmp", last)
-                small = {k: ck[k] for k in ("pi", "wm", "iteration", "wall_time", "sim_steps", "args", "reward_cfg", "saved_at")}
+                small = (ck if getattr(args, "keep_optimizer_checkpoints", False)
+                         else {k: ck[k] for k in ("pi", "wm", "iteration", "wall_time", "sim_steps", "args", "reward_cfg", "saved_at")})
                 path = os.path.join(args.log_dir, f"ckpt_{it + 1:06d}.pt")
                 torch.save(small, path + ".tmp")
                 os.replace(path + ".tmp", path)

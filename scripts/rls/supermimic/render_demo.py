@@ -87,6 +87,7 @@ def main():
     args = parser.parse_args()
     archive = np.load(args.trajectory)
     trajectory = {name: archive[name] for name in archive.files}
+    policy_simulator = str(trajectory.get("simulator", "IsaacLab / PhysX"))
     spec = get_robot(str(trajectory.get("task", "g1")))
     evaluation = json.loads(args.evaluation.read_text())
     provenance = evaluation.get("protocol", {}).get("data_provenance", {})
@@ -98,6 +99,7 @@ def main():
         "go2": ("Go2 Kine2Go retarget" if provenance.get("dataset") == "MIMUW-Robotics/kine2go"
                 else "Go2 reference motion"),
     }[spec.name]
+    reference_label = str(trajectory.get("reference_label", reference_label))
     iteration = args.iteration if args.iteration is not None else int(trajectory["iteration"])
     if evaluation.get("iteration", iteration) != iteration:
         raise ValueError("Trajectory and evaluation checkpoint iterations differ")
@@ -181,7 +183,7 @@ def main():
                 ), (pane_width, top))
                 draw = ImageDraw.Draw(frame)
                 draw.text((18, 10), f"TrackerLab SuperMimic | iteration {iteration} | {clip}", font=font(23), fill="#193337")
-                draw.text((18, 46), "POLICY: recorded PhysX rollout", font=font(19), fill="#08786f")
+                draw.text((18, 46), f"POLICY: recorded {policy_simulator} rollout", font=font(19), fill="#08786f")
                 draw.text((pane_width + 18, 46), f"REFERENCE: {reference_label}", font=font(19), fill="#4b5094")
                 if failed and step > last_alive:
                     draw.rectangle((18, top + 16, pane_width - 18, top + 62), fill="#a92d3b")
@@ -225,7 +227,7 @@ def main():
     metadata = {
         "iteration": iteration,
         "source_trajectory": str(args.trajectory),
-        "policy_simulator": "IsaacLab / PhysX",
+        "policy_simulator": policy_simulator,
         "renderer": "MuJoCo EGL; pose replay only",
         "cameras": "independently centered; numerical root error retains world-coordinate difference",
         "fps": args.fps,

@@ -58,6 +58,8 @@ def parse_args(argv=None):
     parser.add_argument("--speed-probe-updates", type=int, default=1000)
     parser.add_argument("--resume", type=Path)
     parser.add_argument("--warm-start", type=Path)
+    parser.add_argument("--gait-warm-start", type=Path)
+    parser.add_argument("--gait-quality", type=Path)
     parser.add_argument("--solver-iterations", type=int, default=50)
     parser.add_argument("--max-episode-steps", type=int, default=1000)
     parser.add_argument("--describe", action="store_true")
@@ -76,6 +78,8 @@ def validate_resume_objective(checkpoint, gamma):
 
 def load_terrain_initialization(actor, world, checkpoint, robot):
     """New task objectives reuse dynamics and policy, with fresh value and optimizers."""
+    if checkpoint.get("training_stage") != "terrain-after-qualified-gait":
+        raise ValueError("Terrain initialization requires the qualified gait foundation")
     if checkpoint.get("robot") != robot:
         raise ValueError("Warm-start checkpoint belongs to a different robot")
     migrate_terrain_checkpoint(
@@ -87,6 +91,75 @@ def load_terrain_initialization(actor, world, checkpoint, robot):
     return {"source_task": checkpoint["task"], "source_iteration": checkpoint["iteration"],
             "source_objective_version": checkpoint.get("objective_version", 1),
             "critic_reset": True, "optimizers_reset": True, "task_start_iteration": 0}
+
+
+def load_gait_foundation(actor, world, checkpoint, quality, robot):
+    gait_args = checkpoint.get("args", {})
+    if gait_args.get("task") != robot:
+        raise ValueError("Gait checkpoint belongs to a different robot")
+    if gait_args.get("gait_foundation_version") != 1:
+        raise ValueError("A matching SuperMimic gait checkpoint is required")
+    if (not quality.get("quality_passed")
+            or len(quality.get("held_out_tests", [])) < 2
+            or not quality.get("selection", {}).get("quality_passed")
+            or not all(row.get("quality_passed") for row in quality.get("held_out_tests", []))):
+        raise ValueError("Gait foundation failed the independent physical quality gate")
+    source = checkpoint["pi"]
+    target = actor.state_dict()
+    joints = actor.num_joints
+    source_obs_dim = 3 * joints + 12
+    target_proprio_dim = actor.obs_dim - actor.scan_dim
+    if source["obs_norm.mean"].numel() != source_obs_dim:
+        raise ValueError("Gait observation schema differs from relative_orientation")
+    if actor.hist != gait_args["hist"]:
+        raise ValueError("Gait and terrain observation history lengths differ")
+
+    source_indices = list(range(3 * joints + 6)) + list(range(3 * joints + 6, source_obs_dim))
+    target_indices = list(range(3 * joints + 6)) + list(range(3 * joints + 9, target_proprio_dim))
+    if len(source_indices) != len(target_indices):
+        raise ValueError("Gait and terrain proprioceptive layouts differ")
+    source_first, target_first = source["dec.0.weight"], target["dec.0.weight"].clone()
+    latent_dim = 32
+    source_slot, target_slot = source_obs_dim, target_proprio_dim + 32
+    if source_first.shape[1] != latent_dim + actor.hist * source_slot:
+        raise ValueError("Unexpected gait decoder input layout")
+    for step in range(actor.hist):
+        for source_feature, target_feature in zip(source_indices, target_indices):
+            target_first[:, latent_dim + step * target_slot + target_feature] = (
+                source_first[:, latent_dim + step * source_slot + source_feature])
+    target["dec.0.weight"] = target_first
+    for name, value in source.items():
+        if name.startswith("dec.") and name != "dec.0.weight":
+            if name not in target or target[name].shape != value.shape:
+                raise ValueError(f"Incompatible gait decoder tensor: {name}")
+            target[name] = value
+    for source_feature, target_feature in zip(source_indices, target_indices):
+        target["obs_norm.mean"][target_feature] = source["obs_norm.mean"][source_feature]
+        target["obs_norm.var"][target_feature] = source["obs_norm.var"][source_feature]
+    target["obs_norm.count"] = source["obs_norm.count"]
+    actor.load_state_dict(target)
+
+    world_state = world.state_dict()
+    source_world = checkpoint["wm"]
+    common = {name: value for name, value in source_world.items() if name in world_state}
+    required = {"net." + name for name in world.net.state_dict()}
+    if not required.issubset(common):
+        raise ValueError("Gait world-model layers differ from terrain dynamics")
+    missing, unexpected = world.load_state_dict(common, strict=False)
+    if unexpected or any(not (name.startswith("terrain_norm.") or name.startswith("terrain_adapter."))
+                         for name in missing):
+        raise ValueError("Gait dynamics warm start did not map to terrain layers")
+    return {
+        "stage": "terrain-after-qualified-gait",
+        "source_robot": robot,
+        "source_iteration": checkpoint["iteration"],
+        "gait_quality_passed": True,
+        "transferred": ["world-model dynamics", "decoder proprioceptive columns",
+                        "decoder output layers", "matching observation statistics"],
+        "new_for_terrain": ["goal encoder", "height-scan encoder", "terrain adapter",
+                            "terrain normalizer", "critic", "optimizers"],
+        "critic_reset": True, "optimizers_reset": True, "task_start_iteration": 0,
+    }
 
 
 def migrate_terrain_checkpoint(checkpoint, model_indices,
@@ -163,11 +236,17 @@ def main():
             "iterations": args.iterations, "perception_rays": 187,
         }, indent=2))
         return
+    if not args.gait_warm_start and not args.resume and not args.warm_start:
+        raise SystemExit("Terrain training is locked until a gait quality report passes")
+    if args.warm_start:
+        raise SystemExit("Legacy terrain warm starts are retired; use --gait-warm-start")
     if not torch.cuda.is_available():
         raise RuntimeError("Terrain training requires CUDA")
     run = args.run_dir.resolve()
-    if args.resume and args.warm_start:
-        raise SystemExit("--resume and --warm-start are mutually exclusive")
+    if (args.resume and (args.warm_start or args.gait_warm_start)
+            or args.warm_start and args.gait_warm_start
+            or bool(args.gait_warm_start) != bool(args.gait_quality)):
+        raise SystemExit("Choose resume, terrain warm start, or a gait checkpoint plus quality report")
     if (run / "last.pt").exists() and not args.resume:
         raise FileExistsError("Use an empty run directory or pass --resume")
     run.mkdir(parents=True, exist_ok=True)
@@ -204,6 +283,8 @@ def main():
         ck = torch.load(args.resume.resolve(), map_location=args.device, weights_only=False)
         if ck["task"] != args.task:
             raise ValueError("Resume checkpoint task differs")
+        if ck.get("training_stage") != "terrain-after-qualified-gait":
+            raise ValueError("Legacy terrain runs are retired; start from a qualified gait checkpoint")
         validate_resume_objective(ck, args.gamma)
         actor.load_state_dict(ck["actor"])
         migrated = migrate_terrain_checkpoint(
@@ -225,6 +306,10 @@ def main():
     elif args.warm_start:
         ck = torch.load(args.warm_start.resolve(), map_location=args.device, weights_only=False)
         initialization = load_terrain_initialization(actor, world, ck, task.robot)
+    elif args.gait_warm_start:
+        ck = torch.load(args.gait_warm_start.resolve(), map_location=args.device, weights_only=False)
+        quality = json.loads(args.gait_quality.resolve().read_text(encoding="utf-8"))
+        initialization = load_gait_foundation(actor, world, ck, quality, task.robot)
     if start_it >= args.iterations:
         raise ValueError("Requested iterations must exceed resumed checkpoint iteration")
     with (run / "run_config.json").open("w", encoding="utf-8") as stream:
@@ -507,6 +592,7 @@ def main():
             keep = (iteration + 1) % args.keep_every == 0
             if (iteration + 1) % args.ckpt_every == 0 or keep or final or stop_requested:
                 checkpoint = {"task": args.task, "iteration": iteration + 1,
+                              "training_stage": "terrain-after-qualified-gait",
                               "objective_version": OBJECTIVE_VERSION,
                               "robot": task.robot,
                               "actor": actor.state_dict(), "world": world.state_dict(),

@@ -294,7 +294,8 @@ class SuperMimicTerrainTests(unittest.TestCase):
         actor, world = Mock(), Mock()
         world.field.model_indices = torch.arange(54)
         world.named_parameters.return_value = ()
-        ck = {"task": "locomotion/g1/stairs", "robot": "g1", "iteration": 10000,
+        ck = {"task": "locomotion/g1/stairs", "robot": "g1", "training_stage": "terrain-after-qualified-gait",
+              "iteration": 10000,
               "actor": {"policy": "weights"}, "world": {"terrain_norm.mean": torch.zeros(54)},
               "critic": {"obsolete_value": "must not load"}}
         receipt = load_terrain_initialization(actor, world, ck, "g1")

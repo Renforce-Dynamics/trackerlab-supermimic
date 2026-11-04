@@ -159,11 +159,12 @@ class MDP:
         return o + (2 * torch.rand_like(o) - 1) * self.obs_noise
 
     # ---------------- reward / termination ----------------
-    def reward(self, S, f, a, a_prev, terms: bool = False):
+    def reward(self, S, f, a, a_prev, terms: bool = False, *, body_state=None):
         """Per-step reward (already multiplied by dt) comparing S with reference frame f."""
         c, m = self.cfg, self.motion
         p, R, v, w, q, qd = S
-        bp, bR, bv, bw = self.kin.forward(p, R, v, w, q, qd)
+        bp, bR, bv, bw = (self.kin.forward(p, R, v, w, q, qd)
+                          if body_state is None else body_state)
         rp, rR = m.root_p[f], m.root_R[f]
         # reference bodies re-anchored to the robot's root (xy + yaw), as in BeyondMimic
         dR = yaw_mat(R @ rR.transpose(-1, -2))

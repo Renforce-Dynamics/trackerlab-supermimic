@@ -1,0 +1,8 @@
+{
+  "task": "gait-foundation",
+  "task_profile": "foundation",
+  "num_envs": 8096,
+  "iterations": 10000,
+  "max_rounds": 3,
+  "runtime": "scripts/rls/supermimic/supervise_gait.py"
+}

@@ -183,7 +183,8 @@ class TrackingSim:
 
     def __init__(self, sim_cfg, num_envs, motion, mdp, gamma=.99,
                  eval_mode=False, task_cfg=None, env_spacing=None,
-                 friction_range=None, joint_offset_range=None, com_offset_range=None):
+                 friction_range=None, joint_offset_range=None, com_offset_range=None,
+                 model_factory=None):
         import mujoco_warp as mw
         import warp as wp
 
@@ -223,7 +224,8 @@ class TrackingSim:
         self.done_eval = torch.zeros(num_envs, dtype=torch.bool, device=self.device)
         self.failed_eval = torch.zeros_like(self.done_eval)
         self._reset_mask = torch.zeros(num_envs, dtype=torch.bool, device=self.device)
-        self._model, self.contract, _, qpos_ids, qvel_ids, actuator_ids, self._com_id = prepare_model(
+        factory = model_factory or prepare_model
+        self._model, self.contract, _, qpos_ids, qvel_ids, actuator_ids, self._com_id = factory(
             self.spec, self.task_cfg)
         self._qpos_ids = torch.tensor(qpos_ids, device=self.device)
         self._qvel_ids = torch.tensor(qvel_ids, device=self.device)

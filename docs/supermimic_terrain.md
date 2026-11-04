@@ -1,5 +1,10 @@
 # SuperMimic Terrain Tasks
 
+This terrain campaign is retained for audit and historical review. New
+locomotion runs use the gait-first, physical-quality-gated plan in
+[SuperMimic Gait Foundation](supermimic_gait_foundation.md); the existing
+terrain-specific low-success queue is retired.
+
 The registry adds 18 downstream objectives: stairs, mountain and parkour for
 G1, Go2, A3, T1, Bumi and Pi+. Each task uses the repository's SuperMimic
 world-model fitting, differentiable imagined policy optimization and GAE

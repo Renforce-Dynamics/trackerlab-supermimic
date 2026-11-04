@@ -16,6 +16,7 @@ class TerrainPolicy(Policy):
         self.scan_dim = scan_dim
         proprio_dim = obs_dim - scan_dim
         super().__init__(proprio_dim + 32, goal_dim, hist=hist, num_joints=num_joints)
+        self.num_joints, self.obs_dim = num_joints, obs_dim
         self.obs_norm = RunningNorm(obs_dim)
         self.scan_encoder = mlp(scan_dim, [64], 32, act=nn.SiLU)
 

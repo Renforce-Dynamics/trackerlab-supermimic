@@ -170,6 +170,8 @@ penetration are screened before reference-based episode starts. A keyboard
 pilot warm start may retain the matching actor and posture discriminator while
 resetting world-model/critic state when collision or solver physics changes.
 Foot-slide and narrow-stance weights are strengthened for this G1 pilot preset.
+The keyboard collision preset starts from the robot's default standing state;
+the LAFAN clip remains an AMP expert source and does not seed colliding poses.
 
 LAFAN1's original archive contains:
 

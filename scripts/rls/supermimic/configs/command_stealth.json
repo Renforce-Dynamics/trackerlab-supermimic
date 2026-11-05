@@ -20,7 +20,7 @@
   "foot_slide_weight": 0.04,
   "feet_close_weight": 0.08,
   "self_collisions": true,
-  "reference_reset_probability": 0.9,
+  "reference_reset_probability": 0.0,
   "amp_weight": 0.25,
   "amp_batch": 2048,
   "amp_updates": 2,

@@ -168,7 +168,8 @@ class CommandSim(TerrainSim):
                 for contact in data.contact[:data.ncon]:
                     body1 = robot_bodies[contact.geom1]
                     body2 = robot_bodies[contact.geom2]
-                    if body1 and body2 and body1 != body2:
+                    if (body1 and body2 and body1 != body2
+                            and contact.dist < -1e-3):
                         collision_free[frame] = False
                         break
             contact_free = torch.as_tensor(collision_free, dtype=torch.bool)

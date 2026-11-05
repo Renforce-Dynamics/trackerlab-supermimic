@@ -70,7 +70,9 @@ def command_runtime_options(checkpoint):
 def attach_locomotion_quality(env, kin, field, motors, checkpoint):
     """Use the saved training calibration for both physical rewards and metrics."""
     from trackerLab.algorithms.supermimic.locomotion_quality import LocomotionQuality
-    quality = LocomotionQuality(kin, field, motors)
+    quality = LocomotionQuality(
+        kin, field, motors,
+        foot_slide_weight=checkpoint.get("arguments", {}).get("foot_slide_weight", .008))
     sole_height = torch.as_tensor(
         checkpoint["quality_sole_height"], device=kin.device, dtype=quality.sole_height.dtype)
     if sole_height.shape != quality.sole_height.shape or not bool(torch.isfinite(sole_height).all()):

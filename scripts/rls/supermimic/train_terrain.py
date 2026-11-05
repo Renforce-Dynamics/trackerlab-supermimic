@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import math
 import os
 from pathlib import Path
 import shutil
@@ -317,6 +318,9 @@ def main():
         raise SystemExit("Action limit must be positive and at most 20")
     if not .5 <= args.clearance_ratio <= 1.2:
         raise SystemExit("Clearance ratio must lie between .5 and 1.2")
+    if (isinstance(args.foot_slide_weight, bool)
+            or not math.isfinite(args.foot_slide_weight) or args.foot_slide_weight < 0):
+        raise SystemExit("Foot-slide weight must be finite and nonnegative")
     reference_receipt = validate_style_references(args.amp_motion_config, task.robot)
     if not torch.cuda.is_available():
         raise RuntimeError("Terrain training requires CUDA")
@@ -474,6 +478,7 @@ def main():
                    "style_reference_validation": reference_receipt,
                    "command_envelope": command_envelope,
                    "locomotion_quality": {"foot_support": "geometry estimate, not measured force",
+                                          "foot_slide_weight": quality.foot_slide_weight,
                                           "sole_height": quality.sole_height.cpu().tolist()},
                    "style": {"motion_config": str(args.amp_motion_config.resolve()),
                              "training_only": True, "weight": args.amp_weight,

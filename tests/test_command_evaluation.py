@@ -65,8 +65,12 @@ class CommandEvaluationTests(unittest.TestCase):
         saved_height = torch.tensor([.01, .03])
         with patch.object(LocomotionQuality, "calibrate", side_effect=AssertionError("reference read")):
             quality = attach_locomotion_quality(
-                sim, kin, sim.mdp.field, motors, {"quality_sole_height": saved_height})
+                sim, kin, sim.mdp.field, motors, {
+                    "quality_sole_height": saved_height,
+                    "arguments": {"foot_slide_weight": .04},
+                })
         torch.testing.assert_close(quality.sole_height, saved_height)
+        self.assertEqual(quality.foot_slide_weight, .04)
         self.assertIs(sim.locomotion_reward_fn.__self__, quality)
         saved_height.fill_(.5)
         torch.testing.assert_close(quality.sole_height, torch.tensor([.01, .03]))

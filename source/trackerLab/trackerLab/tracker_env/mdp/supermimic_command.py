@@ -248,3 +248,7 @@ class CommandMDP(TerrainMDP):
             "commanded_progress_mps": commanded_progress, "command_speed_mps": command_speed,
             "physical_clearance_m": clearance,
         }
+
+    def transition_outputs(self, S, action, previous_action, command):
+        reward, terms = self.reward(S, action, previous_action, command, terms=True)
+        return reward, terms, self.command_metrics(S, command), self.termination(S, command)

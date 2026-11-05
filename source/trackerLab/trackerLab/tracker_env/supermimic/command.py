@@ -303,13 +303,13 @@ class CommandSim(TerrainSim):
         self.c.copy_(c1)
         self.ep_step += 1
         self._command_age += 1
-        metrics = self.mdp.command_metrics(S1, c1)
+        output_fn = getattr(self, "command_outputs_fn", self.mdp.transition_outputs)
+        reward, reward_terms, metrics, fallen = output_fn(S1, a, a_prev, c1)
         self._episode_tracking += metrics["command_tracking"]
         self._episode_velocity_error += metrics["velocity_error_mps"]
         self._episode_yaw_error += metrics["yaw_rate_error_rps"]
         self._episode_clearance_error += metrics["clearance_error_m"]
         fraction = self._episode_tracking / self.ep_step
-        fallen = self.mdp.termination(S1, c1)
         timeout = self.ep_step >= self.max_episode_steps
         reached = (S1[0][:, 0] >= self.terrain.goal_x if self.mdp.terrain_navigation
                    else torch.zeros_like(fallen))
@@ -317,7 +317,6 @@ class CommandSim(TerrainSim):
         terminated = fallen | success
         if not self.mdp.terrain_navigation:
             success = timeout & ~fallen & (fraction >= .8) & (self.ep_step >= self.min_success_steps)
-        reward, reward_terms = self.mdp.reward(S1, a, a_prev, c1, terms=True)
         if hasattr(self, "locomotion_reward_fn"):
             penalty = self.locomotion_reward_fn(S0, S1, a, self.xi)
             reward = reward + penalty

@@ -500,6 +500,27 @@ class CommandLocomotionTests(unittest.TestCase):
         state[2][:, :2] = .8 * command[:, 1:3]
         self.assertTrue(mdp.command_metrics(state, command)["command_tracking"].all())
 
+    def test_compiled_transition_outputs_match_physical_reward_metrics_and_failures(self):
+        for profile in ("velocity", "stealth", "stairs"):
+            mdp = make_mdp(profile)
+            state, command = list(make_state(mdp, 3)), make_command(mdp, 3)
+            command[:, 1] = .35
+            state[2][:, 0] = torch.tensor([.35, 0., -.15])
+            state[0][2, 2] = .05
+            action = torch.full((3, mdp.num_joints), .1)
+            previous = torch.zeros_like(action)
+            expected = (mdp.reward(state, action, previous, command, terms=True),
+                        mdp.command_metrics(state, command), mdp.termination(state, command))
+            compiled = torch.compile(mdp.transition_outputs, backend="aot_eager", fullgraph=True)
+            reward, terms, metrics, fallen = compiled(tuple(state), action, previous, command)
+            torch.testing.assert_close((reward, terms), expected[0])
+            torch.testing.assert_close(metrics, expected[1])
+            torch.testing.assert_close(fallen, expected[2])
+        sim = CpuCommandSim()
+        sim.command_outputs_fn = Mock(wraps=sim.mdp.transition_outputs)
+        sim.step(torch.zeros(1, 4))
+        sim.command_outputs_fn.assert_called_once()
+
     def test_flat_field_goal_is_ignored_and_terrain_goal_terminates(self):
         for profile, reached in (("velocity", False), ("stealth", False), ("stairs", True)):
             sim = CpuCommandSim(profile)

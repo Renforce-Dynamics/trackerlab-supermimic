@@ -167,6 +167,26 @@ class SuperMimicTerrainTests(unittest.TestCase):
         points = torch.tensor([[.75, .25], [.25, .75], [.5, .5]])
         torch.testing.assert_close(field.sample(points), torch.tensor([.25, .25, .5]))
 
+    def test_constant_surface_matches_triangle_values_and_state_gradients(self):
+        for profile in ("velocity", "stealth"):
+            terrain = generate(profile, .76, 42)
+            for value in (0., .27):
+                data = replace(terrain, heights=np.full_like(terrain.heights, value))
+                fast = HeightField(data, .76, "cpu")
+                generic = HeightField(data, .76, "cpu")
+                generic.constant_surface = False
+                xyz = torch.tensor([[.2, .5, .83], [32., -32., .92], [33., -33., 1.2]],
+                                   requires_grad=True)
+                state = (xyz, torch.eye(3).expand(3, 3, 3), torch.zeros(3, 3),
+                         torch.zeros(3, 3), torch.zeros(3, 12), torch.zeros(3, 12))
+                a, b = fast.features(state), generic.features(state)
+                torch.testing.assert_close(a, b)
+                torch.testing.assert_close(
+                    torch.autograd.grad(a.square().sum(), xyz, retain_graph=True)[0],
+                    torch.autograd.grad(b.square().sum(), xyz)[0])
+                fast.values.fill_(.13)
+                torch.testing.assert_close(fast.sample(xyz[:, :2]), torch.full((3,), .13))
+
     def test_replay_buffer_keeps_task_scenario_for_windows_and_histories(self):
         buffer = ReplayBuffer(8, 2, "cpu", num_joints=12, scenario_dim=2)
         self.assertEqual(buffer.data["c"].shape, (8, 2, 2))

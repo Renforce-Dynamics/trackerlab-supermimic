@@ -37,6 +37,7 @@ class HeightField:
         self.terrain, self.height, self.scale = terrain, height, height / .76
         self.values = torch.as_tensor(terrain.heights, device=device)
         self.rows, self.cols = self.values.shape
+        self.constant_surface = bool((terrain.heights == terrain.heights[0, 0]).all())
         x, y = torch.meshgrid(torch.linspace(-.3, 1.6, 17, device=device),
                               torch.linspace(-.55, .55, 11, device=device), indexing="ij")
         self.offsets = torch.stack((x.flatten(), y.flatten()), -1) * self.scale
@@ -44,6 +45,10 @@ class HeightField:
         self.model_indices = torch.arange(self.offsets.shape[0], device=device).reshape(17, 11)[::2, ::2].flatten()
 
     def sample(self, xy):
+        if self.constant_surface:
+            # Constant terrain has zero XY derivatives; avoid grid lookup in
+            # every imagined observation while retaining the height tensor.
+            return xy[..., 0] * 0. + self.values[0, 0]
         t = self.terrain
         x = ((xy[..., 0] - t.x_min) / (t.x_max - t.x_min) * (self.cols - 1)).clamp(0, self.cols - 1)
         y = ((xy[..., 1] - t.y_min) / (t.y_max - t.y_min) * (self.rows - 1)).clamp(0, self.rows - 1)

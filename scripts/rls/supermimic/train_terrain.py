@@ -513,6 +513,7 @@ def main():
     style_reward_fn = style.reward_from_features
     style_frame_fn = style.frame_features
     regularization_reward_fn = quality.reward
+    command_outputs_fn = mdp.transition_outputs
     from warp_runtime.critic_runtime import make_critic_minibatch_loss
     critic_loss_fn = make_critic_minibatch_loss(
         critic, compile_enabled=args.compile and args.compile_critic)
@@ -525,9 +526,11 @@ def main():
         style_reward_fn = torch.compile(style_reward_fn)
         style_frame_fn = torch.compile(style_frame_fn)
         regularization_reward_fn = torch.compile(regularization_reward_fn)
+        command_outputs_fn = torch.compile(command_outputs_fn)
     else:
         collect_actor = actor
     env.locomotion_reward_fn = regularization_reward_fn
+    env.command_outputs_fn = command_outputs_fn
 
     @torch.no_grad()
     def collect(steps):

@@ -58,6 +58,21 @@ class LocomotionQualityTests(unittest.TestCase):
             self.assertTrue(bool(torch.isfinite(gradient).all()))
             self.assertGreater(gradient.abs().sum().item(), 0)
 
+    def test_stealth_foot_slide_weight_scales_measured_slip(self):
+        field = HeightField(generate("velocity", .76, 1), .76, "cpu")
+        motors = [(20., 12., 25., .5, .01)] * 2
+        default = LocomotionQuality(TestKinematics(), field, motors)
+        weighted = LocomotionQuality(TestKinematics(), field, motors, foot_slide_weight=.04)
+        previous = self.state()
+        current = (*previous[:2], torch.tensor([[.4, 0., 0.]]), *previous[3:])
+        action, xi = torch.zeros(1, 2), torch.zeros(1, 6)
+        slip = default.measurements(current, previous)["support_foot_slip_scale_m_s"]
+        difference = default.reward(previous, current, action, xi) - weighted.reward(
+            previous, current, action, xi)
+        torch.testing.assert_close(difference, .032 * slip)
+        with self.assertRaises(ValueError):
+            LocomotionQuality(TestKinematics(), field, motors, foot_slide_weight=float("nan"))
+
     def test_reference_envelope_retains_si_units_and_rejects_invalid_ranges(self):
         t = torch.cat((torch.zeros(30), torch.linspace(.2, .6, 50)))
         rotations = torch.eye(3).repeat(80, 1, 1)

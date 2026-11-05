@@ -1,5 +1,7 @@
 """Reference-free foot and actuator regularization for command locomotion."""
 
+import math
+
 import torch
 
 from trackerTask.supermimic.gait import FOOT_BODIES, FOOT_OFFSETS
@@ -7,8 +9,12 @@ from trackerLab.tracker_env.mdp.supermimic_command import CONTROL_DT
 
 
 class LocomotionQuality:
-    def __init__(self, kin, field, motors):
+    def __init__(self, kin, field, motors, *, foot_slide_weight=.008):
+        if (isinstance(foot_slide_weight, bool) or not isinstance(foot_slide_weight, (int, float))
+                or not math.isfinite(foot_slide_weight) or foot_slide_weight < 0):
+            raise ValueError("foot_slide_weight must be finite and nonnegative")
         self.kin, self.field = kin, field
+        self.foot_slide_weight = float(foot_slide_weight)
         spec = kin.robot
         tracked = [kin.body_names[index] for index in kin.tracked_idx]
         self.feet = [tracked.index(name) for name in FOOT_BODIES[spec.name]]
@@ -66,7 +72,7 @@ class LocomotionQuality:
         torque = (self.kp * (target - state[4]) - self.kd * state[5]).clamp(
             -self.effort, self.effort)
         terms = {
-            "foot_slide": -.008 * metrics["support_foot_slip_scale_m_s"],
+            "foot_slide": -self.foot_slide_weight * metrics["support_foot_slip_scale_m_s"],
             "foot_tilt": -.008 * metrics["support_foot_tilt_squared"] if self.biped else
                          torch.zeros_like(metrics["support_foot_tilt_squared"]),
             "feet_close": -.008 * (torch.relu(.1 - metrics["foot_separation_scale_m"]) / .1).square()

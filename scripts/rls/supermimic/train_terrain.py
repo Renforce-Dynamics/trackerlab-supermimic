@@ -71,6 +71,7 @@ def parse_args(argv=None):
     parser.add_argument("--style-feature-mode", choices=("full", "proprioceptive"),
                         default="proprioceptive")
     parser.add_argument("--reference-reset-probability", type=float, default=.7)
+    parser.add_argument("--foot-slide-weight", type=float, default=.008)
     parser.add_argument("--clearance-ratio", type=float, default=1.)
     parser.add_argument("--action-limit", type=float, default=20.)
     parser.add_argument("--jump-height", type=float, default=0.)
@@ -361,7 +362,9 @@ def main():
     motion = MotionLib.from_config(str(args.amp_motion_config.resolve()), kin, args.device)
     from trackerLab.algorithms.supermimic.locomotion_quality import LocomotionQuality
     from command_envelope import fixed_command_envelope, reference_envelope
-    quality = LocomotionQuality(kin, field, contract["motors_effort_velocity_kp_kd_armature"])
+    quality = LocomotionQuality(
+        kin, field, contract["motors_effort_velocity_kp_kd_armature"],
+        foot_slide_weight=args.foot_slide_weight)
     quality.calibrate(motion)
     command_envelope = None
     if args.stealth_command is not None:
@@ -412,7 +415,8 @@ def main():
         validate_resume_command_resampling(ck, args)
         for name in ("gamma", "hist", "amp_weight", "clearance_ratio",
                      "style_feature_mode", "amp_history", "command_range_mode",
-                     "jump_height", "jump_probability", "action_limit", "stealth_command"):
+                     "jump_height", "jump_probability", "action_limit", "stealth_command",
+                     "foot_slide_weight", "reference_reset_probability"):
             if ck["arguments"].get(name) != getattr(args, name):
                 raise ValueError(f"Resume {name} differs from the saved objective")
         actor.load_state_dict(ck["actor"])

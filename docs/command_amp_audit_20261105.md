@@ -88,23 +88,60 @@ with separate recording-level train/test membership.
 
 ## Fixed-Command G1 Diagnostic
 
-The G1 velocity checkpoint completed 2,500 iterations with one 1.0 m/s-class
-expert-derived command held for each episode. Two held-out seeds both survived
-all six difficulty lanes to timeout. Mean projected velocity along the command
-was 0.465 and 0.462 m/s; velocity RMSE was 0.222 and 0.215 m/s, while yaw-rate
-RMSE was 0.720 and 0.717 rad/s. Geometry-based support-foot slip was 0.460 and
-0.456 scale-m/s. Both evaluations had zero task successes, so this checkpoint
-does not qualify for downstream terrain or stealth work. The rendered attempts
-show forward steps with stiff posture and visible foot sliding; they are
-retained for comparison rather than labeled successful.
+The G1 velocity checkpoint completed 2,500 iterations with an expert-derived
+command held for each episode. The forward command interval was
+0.294--0.565 m/s, with smaller lateral and yaw commands. The original two
+held-out evaluations used the former 100--250-step resampling default; they
+must not be described as fixed-command evaluations. Both survived all six
+lanes to timeout. Mean projected velocity along the command was 0.465 and
+0.462 m/s; velocity RMSE was 0.222 and 0.215 m/s, while yaw-rate RMSE was
+0.720 and 0.717 rad/s. Geometry-based support-foot slip was 0.460 and
+0.456 scale-m/s. Both had zero task successes, so this checkpoint does not
+qualify for downstream terrain or stealth work. Its recorded attempts remain
+diagnostic evidence. The evaluator now restores checkpoint command timing.
+
+A CPU audit of the recorded first attempt compared differentiable foot FK
+with MuJoCo Jacobians: maximum position error was 4.72e-7 m and maximum
+velocity error 1.47e-6 m/s. Pose-derived horizontal velocity at near-surface
+foot collision points averaged 0.322 m/s. This supports the observed sliding
+concern; the audit uses geometric proximity, not measured contact force.
 
 The complete update window 541--1540 measured 1.9268 iterations/s, below the
 teleoperation reference 2.47115. This is not a matched-workload result:
-SuperMimic includes two AMP updates per actor update, whereas the referenced
-teleoperation window used 20,000 critic updates per 1,000 outer iterations.
-The AMP combined gradient-penalty path currently repeats discriminator
-forwards; reusing its combined batch forward is a measured-workload-preserving
-optimization candidate, not yet applied or benchmarked.
+Both workloads include 20,000 critic updates per 1,000 outer iterations;
+SuperMimic additionally includes 2,000 AMP updates. The combined
+gradient-penalty forward is now reused for discriminator losses. Constant
+ground sampling and compiled real-transition reward/metric computation also
+remove repeated work without reducing optimizer counts.
+
+A resumed 500-update window (2641--3140) measured 2.3745 iterations/s with
+5,000 world-model, 500 actor, 10,000 critic and 1,000 AMP optimizer updates.
+The fresh G1 campaign's window 541--1540 measured 1.9880 iterations/s.
+These distinct physical/replay states are reported separately. Neither
+measurement establishes the requested 2.5 iterations/s for every robot.
+
+## Stealth References And Queue
+
+The local `style-references-v9-stealth/style-map.json` SHA-256 is
+`91854ad046286999d4edb8da6fe556b8057a4f64bfa823e02c05499d57bc7f59`.
+Each humanoid has 560 training frames: the former 185-frame Aiming2 subject 2
+crop plus 106, 106 and 163 frames from independently retargeted subject 3 and
+5 crops. The Aiming1 holdout remains 400 frames. A fourth candidate window
+was rejected by the low-profile screen. Source BVH hashes and original
+frame ranges remain in the extension origin manifest; preparation receipts
+identify the subsequent G1 crops and per-robot retargets.
+
+The new source candidates are subject 3 [340,460) and [5030,5150), and
+subject 5 [3600,3720) and [6700,6820), at 30 Hz before 50 Hz retargeting.
+All derivative data remain local. The published robot pools contain three
+accepted slower additions, while the fourth source window remains excluded.
+Five updated stealth tasks passed physical/optimizer smoke validation.
+Dataset duration and held-out take diversity remain limited.
+
+The active v5 campaign starts six velocity foundations in the order G1,
+Go2, A3, T1, Bumi, Pi+. Its first target is 10,000 iterations per task.
+Five stealth tasks and 18 terrain tasks wait for their velocity foundation.
+The earlier 2,500-iteration diagnostic is not counted as qualified training.
 
 All six velocity foundations and dependent terrain/stealth jobs retain their
 10,000-update initial target. A numerical pass now waits for a hash-bound

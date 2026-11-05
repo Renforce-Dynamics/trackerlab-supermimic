@@ -127,8 +127,9 @@ hashes and split membership are recorded in generated manifests.
 The current humanoid terrain pools include walking/running, jumping and
 original Obstacles records. Go2 additionally uses FK-verified Kine2Go run,
 turn, strafe and forward-jump clips; forward jump B and run 02 are held out.
-Aiming data currently use one training take crop and one held-out take crop,
-so stealth diversity and command generalization remain limited.
+Aiming data currently use four training clips (560 frames) from subjects
+2, 3 and 5 of take 2 and one held-out take 1 clip (400 frames).
+Stealth diversity and command generalization remain limited.
 
 Default command actions are bounded at magnitude 20 before joint-limit
 clamping, matching the source controller's action range. A magnitude-four

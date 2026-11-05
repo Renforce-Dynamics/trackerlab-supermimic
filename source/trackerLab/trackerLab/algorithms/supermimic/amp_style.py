@@ -77,8 +77,8 @@ class AMPStyle(nn.Module):
         minimum_forward_speed: float = 0.,
     ):
         super().__init__()
-        if feature_mode not in ("full", "proprioceptive"):
-            raise ValueError("feature_mode must be 'full' or 'proprioceptive'")
+        if feature_mode not in ("full", "proprioceptive", "postural"):
+            raise ValueError("feature_mode must be full, proprioceptive or postural")
         self.feature_mode = feature_mode
         self.history_steps = _positive_int(history_steps, "history_steps")
         if self.history_steps < 2:
@@ -164,8 +164,10 @@ class AMPStyle(nn.Module):
             if local_bodies.ndim != 3 or local_bodies.shape[-1] != 3 or local_bodies.shape[-2] == 0:
                 raise ValueError("Kinematics must provide tracked-body positions")
             self.num_tracked_bodies = local_bodies.shape[-2]
-        self.frame_dim = (9 + 2 * self.num_joints if self.feature_mode == "proprioceptive"
-                          else 13 + 2 * self.num_joints + 3 * self.num_tracked_bodies)
+        self.frame_dim = (
+            9 + 2 * self.num_joints if self.feature_mode == "proprioceptive" else
+            4 + 2 * self.num_joints if self.feature_mode == "postural" else
+            13 + 2 * self.num_joints + 3 * self.num_tracked_bodies)
         self.feature_dim = self.history_steps * self.frame_dim
         self.norm = RunningNorm(self.frame_dim, eps=self.MIN_STD).to(device)
         self.hidden = hidden
@@ -240,6 +242,22 @@ class AMPStyle(nn.Module):
                     ["joint_velocity*0.05", self.num_joints],
                     ["root_local_linear_velocity", 3],
                     ["root_local_angular_velocity", 3],
+                ],
+                "robot_height": self.robot_height,
+                "minimum_forward_speed_m_s": self.minimum_forward_speed,
+                "joint_names": list(getattr(self.kin, "joint_names", ())),
+                "default_q": self._default_q.cpu().tolist(),
+            }
+        if self.feature_mode == "postural":
+            return {
+                "version": 1,
+                "feature_mode": "postural",
+                "endpoints": ["S0", "S1"],
+                "frame": [
+                    ["projected_gravity", 3],
+                    ["terrain_relative_height/robot_height", 1],
+                    ["joint_position-default_q", self.num_joints],
+                    ["joint_velocity*0.05", self.num_joints],
                 ],
                 "robot_height": self.robot_height,
                 "minimum_forward_speed_m_s": self.minimum_forward_speed,
@@ -331,6 +349,13 @@ class AMPStyle(nn.Module):
             ground = torch.zeros_like(p[..., 2])
             if not reference and self.ground_sampler is not None:
                 ground = self.ground_sampler(p[..., :2]).to(p).reshape(p.shape[:-1])
+            if self.feature_mode == "postural":
+                return torch.cat((
+                    -R[..., 2, :],
+                    ((p[..., 2] - ground) / self.robot_height).unsqueeze(-1),
+                    q - self._default_q,
+                    qd * 0.05,
+                ), -1)
             return torch.cat((
                 ((p[..., 2] - ground) / self.robot_height).unsqueeze(-1),
                 mat_to_6d(yaw_mat(R).transpose(-1, -2) @ R),
@@ -664,7 +689,7 @@ class AMPStyle(nn.Module):
         if not isinstance(layout, dict):
             raise ValueError("Missing AMP feature layout")
         mode = checkpoint.get("feature_mode", layout.get("feature_mode", "full"))
-        if mode not in ("full", "proprioceptive"):
+        if mode not in ("full", "proprioceptive", "postural"):
             raise ValueError("Invalid AMP feature mode")
         expert_hash = checkpoint.get("expert_hash")
         if (not isinstance(expert_hash, str) or len(expert_hash) != 64
@@ -708,8 +733,10 @@ class AMPStyle(nn.Module):
             if (hasattr(kin, "tracked_idx")
                     and len(kin.tracked_idx) != scorer.num_tracked_bodies):
                 raise ValueError("Scoring tracked-body layout differs")
-        elif frame_dim != 9 + 2 * joints:
+        elif mode == "proprioceptive" and frame_dim != 9 + 2 * joints:
             raise ValueError("Invalid AMP proprioceptive feature dimension")
+        elif mode == "postural" and frame_dim != 4 + 2 * joints:
+            raise ValueError("Invalid AMP postural feature dimension")
         scorer.feature_layout = scorer._feature_layout()
         if history_steps > 2:
             scorer.feature_layout["history_steps"] = history_steps

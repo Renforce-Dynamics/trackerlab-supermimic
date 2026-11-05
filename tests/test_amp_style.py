@@ -134,6 +134,26 @@ class AMPStyleTests(unittest.TestCase):
         self.assertEqual(learner.feature_dim, 2 * (13 + 2 * 3 + 3 * 2))
         self.assertEqual(learner.features(S0, S1).shape, (3, learner.feature_dim))
 
+    def test_postural_features_ignore_root_twist_but_keep_clearance_and_joint_pose(self):
+        learner = self.learner(feature_mode="postural")
+        S0, _ = self.states()
+        changed_twist = (
+            S0[0],
+            S0[1],
+            S0[2] + torch.tensor([[.7, -.4, 0.]]).expand_as(S0[2]),
+            S0[3] + torch.tensor([[0., 0., .8]]).expand_as(S0[3]),
+            S0[4],
+            S0[5],
+        )
+        torch.testing.assert_close(
+            learner.frame_features(S0), learner.frame_features(changed_twist))
+        raised = (S0[0] + torch.tensor([[0., 0., .1]]).expand_as(S0[0]), *S0[1:])
+        self.assertFalse(torch.equal(learner.frame_features(S0), learner.frame_features(raised)))
+        self.assertEqual(learner.frame_dim, 4 + 2 * learner.num_joints)
+        scorer = AMPStyle.for_scoring(learner.kin, learner.checkpoint())
+        self.assertEqual(scorer.feature_mode, "postural")
+        self.assertEqual(scorer.frame_dim, learner.frame_dim)
+
     def test_canonical_fk_matches_root_local_world_fk(self):
         learner = self.learner()
         S0, _ = self.states()

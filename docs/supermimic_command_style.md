@@ -156,6 +156,21 @@ The single-clip G1 pilot uses a 0.92 root-clearance ratio and a stronger
 geometry-based support-foot slip penalty; these settings are scoped to that
 pilot preset and do not change other robot profiles.
 
+The G1 keyboard preset samples five explicit modes: forward (40%), left/right
+pivot in place (15% each), and forward arcs to the left/right (15% each). Forward is
+`(vx=.25, vy=0, yaw=0)` in SI units; pivots use zero translation and yaw
+`+/-0.55 rad/s`; arcs preserve `vx=.25 m/s` with yaw `+/-0.45 rad/s`.
+The exported policy receives body-frame `vx`, `vy`, and yaw-rate fields at
+every control step, so a runtime can update them directly while keys are held.
+The G1 pilot's postural AMP features retain gravity, root clearance, joint
+pose, and joint velocity while allowing commanded root translation and yaw to
+vary independently of the single forward expert clip.
+The pilot enables robot self-contact geometry; reset clips with hand/body
+penetration are screened before reference-based episode starts. A keyboard
+pilot warm start may retain the matching actor and posture discriminator while
+resetting world-model/critic state when collision or solver physics changes.
+Foot-slide and narrow-stance weights are strengthened for this G1 pilot preset.
+
 LAFAN1's original archive contains:
 
 ```text

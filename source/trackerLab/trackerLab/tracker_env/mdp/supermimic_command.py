@@ -27,6 +27,13 @@ COMMAND_FIELDS = (
     "lane_center_world_y", "body_vx", "body_vy", "body_wz",
     "target_clearance_m", "jump_height_m", "jump_elapsed_seconds",
 )
+STEALTH_KEYBOARD_MODES = (
+    ("forward", .25, 0., 0., .40),
+    ("turn_left", 0., 0., .55, .15),
+    ("turn_right", 0., 0., -.55, .15),
+    ("forward_left", .25, 0., .45, .15),
+    ("forward_right", .25, 0., -.45, .15),
+)
 GOAL_FIELDS = (
     "body_vx", "body_vy", "body_wz", "target_clearance", "jump_height",
     "jump_pulse", "jump_clock", "lane_error", "remaining_world_x",

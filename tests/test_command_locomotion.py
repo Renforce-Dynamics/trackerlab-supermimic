@@ -85,7 +85,8 @@ class CpuCommandSim(CommandSim):
     """Exercise the production reset/step methods with stationary stub physics."""
 
     def __init__(self, profile="velocity", batch=1, max_episode_steps=1000,
-                 jump_height=0., clearance_ratio=1., action_limit=4.):
+                 jump_height=0., clearance_ratio=1., action_limit=4.,
+                 stealth_keyboard_mode=False):
         self.mdp = make_mdp(profile, clearance_ratio=clearance_ratio)
         self.task = get_task(f"locomotion/g1/{profile}")
         self.robot, self.device, self.num_envs = "g1", "cpu", batch
@@ -93,6 +94,8 @@ class CpuCommandSim(CommandSim):
         self.spec = SimpleNamespace(num_joints=self.mdp.num_joints,
                                     tracked_bodies=FOOT_BODIES[self.robot])
         self.contract = {}
+        self.self_collisions = False
+        self.stealth_keyboard_mode = bool(stealth_keyboard_mode)
         self.terrain = self.mdp.field.terrain
         self.centers = torch.tensor(self.terrain.centers, dtype=torch.float32)
         self.default_q = self.mdp.default_q
@@ -570,6 +573,19 @@ class CommandLocomotionTests(unittest.TestCase):
         self.assertGreater(sim.c[:, 1].std().item(), .04)
         with self.assertRaises(ValueError):
             sim.set_command_ranges([[1., 0.], [0., 0.], [0., 0.]])
+
+    def test_keyboard_stealth_samples_forward_pivot_and_curved_motion(self):
+        from trackerLab.tracker_env.mdp.supermimic_command import STEALTH_KEYBOARD_MODES
+
+        sim = CpuCommandSim("stealth", batch=4096, stealth_keyboard_mode=True)
+        sim.sample_commands()
+        valid = torch.tensor([row[1:4] for row in STEALTH_KEYBOARD_MODES])
+        sampled = sim.c[:, 1:4]
+        matches = (sampled[:, None, :] == valid[None]).all(-1)
+        self.assertTrue(bool(matches.any(-1).all()))
+        selected = matches.float().argmax(-1)
+        for index, _ in enumerate(STEALTH_KEYBOARD_MODES):
+            self.assertGreater(int((selected == index).sum()), 350)
 
     def test_style_weight_replaces_total_positive_continuation_at_terrain_goals(self):
         for gamma in (.9, .99, .999):

@@ -9,9 +9,12 @@ import numpy as np
 from trackerTask.supermimic.terrain import robot_parameters
 
 
-def build_model(robot, terrain, solver_iterations=50, *, render_size=None, ground_plane=False):
+def build_model(robot, terrain, solver_iterations=50, *, render_size=None, ground_plane=False,
+                self_collisions=False):
     import mujoco
 
+    if not isinstance(self_collisions, bool):
+        raise ValueError("self_collisions must be a boolean")
     spec, height, motors = robot_parameters(robot)
     path = Path(spec.mjcf_path).resolve()
     document = ET.parse(path).getroot()
@@ -119,7 +122,8 @@ def build_model(robot, terrain, solver_iterations=50, *, render_size=None, groun
         model.dof_armature[dof_id], model.dof_damping[dof_id], model.dof_frictionloss[dof_id] = motor[4], 0, 0
     physical = (model.geom_contype != 0) | (model.geom_conaffinity != 0)
     robot_geoms = physical & (model.geom_bodyid != 0)
-    model.geom_contype[robot_geoms], model.geom_conaffinity[robot_geoms] = 2, 1
+    model.geom_contype[robot_geoms] = 2
+    model.geom_conaffinity[robot_geoms] = 3 if self_collisions else 1
     model.geom_group[model.geom_bodyid != 0] = 3
     model.opt.timestep = .005
     model.opt.integrator = mujoco.mjtIntegrator.mjINT_IMPLICITFAST
@@ -138,7 +142,7 @@ def build_model(robot, terrain, solver_iterations=50, *, render_size=None, groun
         "action_scale": list(spec.action_scale), "motors_effort_velocity_kp_kd_armature": motors,
         "height": height, "physics_dt": .005, "control_substeps": 4,
         "solver_iterations": solver_iterations, "solver_ls_iterations": 50,
-        "self_collisions": False,
+        "self_collisions": self_collisions,
         "terrain": {
             "profile": terrain.profile, "seed": terrain.seed,
             "height_sha256": hashlib.sha256(terrain.heights.tobytes()).hexdigest(),

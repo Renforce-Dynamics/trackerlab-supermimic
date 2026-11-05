@@ -69,10 +69,13 @@ def parse_args(argv=None):
     parser.add_argument("--amp-history", type=int, default=10)
     parser.add_argument("--command-range-mode", choices=("reference", "full"), default="reference")
     parser.add_argument("--stealth-command", type=float, nargs=3)
-    parser.add_argument("--style-feature-mode", choices=("full", "proprioceptive"),
+    parser.add_argument("--stealth-control-mode", choices=("fixed", "keyboard"), default="fixed")
+    parser.add_argument("--style-feature-mode", choices=("full", "proprioceptive", "postural"),
                         default="proprioceptive")
     parser.add_argument("--reference-reset-probability", type=float, default=.7)
     parser.add_argument("--foot-slide-weight", type=float, default=.008)
+    parser.add_argument("--feet-close-weight", type=float, default=.008)
+    parser.add_argument("--self-collisions", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--clearance-ratio", type=float, default=1.)
     parser.add_argument("--action-limit", type=float, default=20.)
     parser.add_argument("--jump-height", type=float, default=0.)
@@ -100,6 +103,15 @@ def validate_resume_command_resampling(checkpoint, args):
     saved = checkpoint["arguments"].get("command_resample_steps", (100, 250))
     if tuple(saved) != tuple(args.command_resample_steps):
         raise ValueError("Resume command_resample_steps differs from the saved objective")
+
+
+def can_transfer_world_model(source_arguments, target_arguments):
+    return (
+        source_arguments.get("self_collisions", False)
+        == target_arguments.get("self_collisions", False)
+        and source_arguments.get("solver_iterations", 50)
+        == target_arguments.get("solver_iterations", 50)
+    )
 
 
 def validate_style_references(config_path, robot):
@@ -280,6 +292,8 @@ def main():
         raise SystemExit("--task_profile differs from the selected task")
     if args.stealth_command is not None and task.profile != "stealth":
         raise SystemExit("--stealth-command is only valid for a stealth task")
+    if args.stealth_control_mode == "keyboard" and task.profile != "stealth":
+        raise SystemExit("Keyboard command modes are only available for stealth tasks")
     if min(args.num_envs, args.iterations, args.horizon, args.hist, args.wm_batches,
            args.wm_batch, args.pi_batch, args.log_every, args.ckpt_every, args.keep_every,
            args.critic_epochs, args.critic_minibatches, args.speed_probe_updates) < 1:
@@ -321,6 +335,9 @@ def main():
     if (isinstance(args.foot_slide_weight, bool)
             or not math.isfinite(args.foot_slide_weight) or args.foot_slide_weight < 0):
         raise SystemExit("Foot-slide weight must be finite and nonnegative")
+    if (isinstance(args.feet_close_weight, bool)
+            or not math.isfinite(args.feet_close_weight) or args.feet_close_weight < 0):
+        raise SystemExit("Feet-close weight must be finite and nonnegative")
     reference_receipt = validate_style_references(args.amp_motion_config, task.robot)
     if not torch.cuda.is_available():
         raise RuntimeError("Terrain training requires CUDA")
@@ -339,7 +356,8 @@ def main():
     from trackerTask.supermimic.terrain import generate
     field_data = generate(task.profile, robot_height, args.seed)
     field = HeightField(field_data, robot_height, args.device)
-    cpu_model, _, _, _, _, _, _, _, contract = build_model(task.robot, field_data, args.solver_iterations)
+    cpu_model, _, _, _, _, _, _, _, contract = build_model(
+        task.robot, field_data, args.solver_iterations, self_collisions=args.self_collisions)
     joint_ids = torch.tensor([cpu_model.joint(name).id for name in spec.joint_names])
     qlo = torch.tensor(cpu_model.jnt_range[:, 0], dtype=torch.float32)[joint_ids].to(args.device)
     qhi = torch.tensor(cpu_model.jnt_range[:, 1], dtype=torch.float32)[joint_ids].to(args.device)
@@ -352,7 +370,10 @@ def main():
                      args.solver_iterations, args.max_episode_steps,
                      jump_height=args.jump_height, jump_probability=args.jump_probability,
                      action_limit=args.action_limit,
-                     command_resample_steps=tuple(args.command_resample_steps))
+                     command_resample_steps=tuple(args.command_resample_steps),
+                     stealth_keyboard_mode=(task.profile == "stealth"
+                                            and args.stealth_control_mode == "keyboard"),
+                     self_collisions=args.self_collisions)
     actor = TerrainPolicy(mdp.obs_dim, mdp.goal_dim, hist=args.hist,
                           num_joints=spec.num_joints, action_limit=args.action_limit).to(args.device)
     world = TerrainWorldModel(field, spec.num_joints).to(args.device)
@@ -368,10 +389,15 @@ def main():
     from command_envelope import fixed_command_envelope, reference_envelope
     quality = LocomotionQuality(
         kin, field, contract["motors_effort_velocity_kp_kd_armature"],
-        foot_slide_weight=args.foot_slide_weight)
+        foot_slide_weight=args.foot_slide_weight,
+        feet_close_weight=args.feet_close_weight)
     quality.calibrate(motion)
     command_envelope = None
-    if args.stealth_command is not None:
+    if task.profile == "stealth" and args.stealth_control_mode == "keyboard":
+        from command_envelope import keyboard_stealth_envelope
+        command_envelope = keyboard_stealth_envelope()
+        env.set_stealth_keyboard_mode()
+    elif args.stealth_command is not None:
         command_envelope = fixed_command_envelope(args.stealth_command)
         env.set_command_ranges(command_envelope["ranges"])
     elif args.command_range_mode == "reference":
@@ -420,7 +446,8 @@ def main():
         for name in ("gamma", "hist", "amp_weight", "clearance_ratio",
                      "style_feature_mode", "amp_history", "command_range_mode",
                      "jump_height", "jump_probability", "action_limit", "stealth_command",
-                     "foot_slide_weight", "reference_reset_probability"):
+                     "stealth_control_mode", "foot_slide_weight", "feet_close_weight",
+                     "self_collisions", "reference_reset_probability"):
             if ck["arguments"].get(name) != getattr(args, name):
                 raise ValueError(f"Resume {name} differs from the saved objective")
         actor.load_state_dict(ck["actor"])
@@ -456,13 +483,19 @@ def main():
         if ck["arguments"].get("action_limit", 4.) != args.action_limit:
             raise ValueError("Warm-start action limit differs from the actor's control contract")
         actor.load_state_dict(ck["actor"])
-        world.load_state_dict(ck["world"])
+        transfer_world = can_transfer_world_model(ck["arguments"], vars(args))
+        if transfer_world:
+            world.load_state_dict(ck["world"])
         restore_style = ck.get("amp_style", {}).get("expert_hash") == style.expert_hash
         if restore_style:
             style.restore(ck["amp_style"])
         initialization = {"source_task": ck["task"], "source_iteration": ck["iteration"],
-                          "actor_world_transferred": True, "critic_reset": True,
-                          "actor_world_critic_optimizers_reset": True,
+                          "actor_transferred": True,
+                          "world_model_transferred": transfer_world,
+                          "world_model_reset_reason": None if transfer_world else
+                          "self-contact or solver contract differs",
+                          "critic_reset": True, "actor_optimizer_reset": True,
+                          "world_model_optimizer_reset": True, "critic_optimizer_reset": True,
                           "style_optimizer_restored": restore_style,
                           "runtime_motion_reference": False}
     if start_it >= args.iterations:
@@ -479,6 +512,7 @@ def main():
                    "command_envelope": command_envelope,
                    "locomotion_quality": {"foot_support": "geometry estimate, not measured force",
                                           "foot_slide_weight": quality.foot_slide_weight,
+                                          "feet_close_weight": quality.feet_close_weight,
                                           "sole_height": quality.sole_height.cpu().tolist()},
                    "style": {"motion_config": str(args.amp_motion_config.resolve()),
                              "training_only": True, "weight": args.amp_weight,

@@ -19,6 +19,7 @@ configure_paths()
 
 from trackerTask.supermimic.registry import TASK_REGISTRY
 from trackerTask.supermimic.terrain import ROBOTS, PROFILES, TASKS, generate
+from trackerTask.supermimic.mujoco_terrain import build_model
 from trackerLab.algorithms.supermimic.buffer import ReplayBuffer
 from trackerLab.algorithms.supermimic.networks import WorldModel
 from trackerLab.algorithms.supermimic.terrain_networks import TerrainPolicy, TerrainWorldModel
@@ -28,7 +29,8 @@ from trackerLab.tracker_env.mdp.supermimic_terrain import (
     success_terminal_value, terminal_masks, update_terrain_levels,
 )
 from train_terrain import (
-    load_terrain_initialization, migrate_terrain_checkpoint, validate_resume_objective,
+    can_transfer_world_model, load_terrain_initialization, migrate_terrain_checkpoint,
+    validate_resume_objective,
 )
 from queue_low_success_retrain import build_followup_plan
 from evaluate_terrain import FirstEpisodeRecorder
@@ -99,6 +101,14 @@ class SuperMimicTerrainTests(unittest.TestCase):
         self.assertEqual(value["iterations"], 23)
         self.assertEqual(value["task"]["profile"], "stairs")
 
+    def test_world_model_transfer_requires_matching_collision_and_solver_contracts(self):
+        base = {"self_collisions": False, "solver_iterations": 50}
+        self.assertTrue(can_transfer_world_model(base, dict(base)))
+        self.assertFalse(can_transfer_world_model(
+            base, {"self_collisions": True, "solver_iterations": 50}))
+        self.assertFalse(can_transfer_world_model(
+            base, {"self_collisions": False, "solver_iterations": 80}))
+
     def test_seeded_profiles_scale_with_robot_height(self):
         for profile in PROFILES:
             full = generate(profile, .76, 42)
@@ -110,6 +120,19 @@ class SuperMimicTerrainTests(unittest.TestCase):
             self.assertEqual(half.goal_x, full.goal_x * .5)
             self.assertTrue(np.isfinite(full.normalized).all())
             self.assertGreater(float(np.ptp(full.heights)), .05)
+
+    def test_g1_self_collision_mode_keeps_ground_contact_and_enables_robot_pairs(self):
+        terrain = generate("velocity", .76, 42)
+        default, *_ = build_model("g1", terrain)
+        colliding, *_ = build_model("g1", terrain, self_collisions=True)
+        robot = (colliding.geom_bodyid != 0) & (colliding.geom_contype != 0)
+        ground = colliding.geom("supermimic_ground").id
+        self.assertTrue(np.all(colliding.geom_contype[robot] == 2))
+        self.assertTrue(np.all(colliding.geom_conaffinity[robot] == 3))
+        self.assertEqual(int(colliding.geom_contype[ground]), 1)
+        self.assertEqual(int(colliding.geom_conaffinity[ground]), 2)
+        default_robot = (default.geom_bodyid != 0) & (default.geom_contype != 0)
+        self.assertTrue(np.all(default.geom_conaffinity[default_robot] == 1))
 
     def test_heightfield_sampler_and_sensor_observation_have_matching_contract(self):
         data = generate("stairs", .76, 3)

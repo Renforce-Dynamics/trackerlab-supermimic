@@ -64,6 +64,8 @@ def command_runtime_options(checkpoint):
         "jump_probability": arguments.get("jump_probability", .15),
         "action_limit": arguments.get("action_limit", 4.),
         "command_resample_steps": tuple(arguments.get("command_resample_steps", (100, 250))),
+        "stealth_keyboard_mode": arguments.get("stealth_control_mode") == "keyboard",
+        "self_collisions": arguments.get("self_collisions", False),
     }
 
 
@@ -72,7 +74,8 @@ def attach_locomotion_quality(env, kin, field, motors, checkpoint):
     from trackerLab.algorithms.supermimic.locomotion_quality import LocomotionQuality
     quality = LocomotionQuality(
         kin, field, motors,
-        foot_slide_weight=checkpoint.get("arguments", {}).get("foot_slide_weight", .008))
+        foot_slide_weight=checkpoint.get("arguments", {}).get("foot_slide_weight", .008),
+        feet_close_weight=checkpoint.get("arguments", {}).get("feet_close_weight", .008))
     sole_height = torch.as_tensor(
         checkpoint["quality_sole_height"], device=kin.device, dtype=quality.sole_height.dtype)
     if sole_height.shape != quality.sole_height.shape or not bool(torch.isfinite(sole_height).all()):
@@ -145,7 +148,9 @@ def main():
     field_data = generate(task.profile, height, args.seed)
     field = HeightField(field_data, height, device)
     solver_iterations = ck["arguments"].get("solver_iterations", 50)
-    model, *_ = build_model(task.robot, field_data, solver_iterations)
+    model, *_ = build_model(
+        task.robot, field_data, solver_iterations,
+        self_collisions=ck["arguments"].get("self_collisions", False))
     joint_ids = [model.joint(name).id for name in spec.joint_names]
     limits = torch.tensor(model.jnt_range[joint_ids], device=device, dtype=torch.float32)
     if command_mode:
@@ -169,8 +174,11 @@ def main():
     env = simulation(task, mdp, args.num_envs, device, args.seed, solver_iterations,
                      max_episode_steps=ck["arguments"]["max_episode_steps"], **runtime_options)
     if command_mode and ck.get("command_envelope"):
-        from command_envelope import validate_envelope
-        env.set_command_ranges(validate_envelope(ck["command_envelope"])["ranges"])
+        if ck["arguments"].get("stealth_control_mode") == "keyboard":
+            env.set_stealth_keyboard_mode()
+        else:
+            from command_envelope import validate_envelope
+            env.set_command_ranges(validate_envelope(ck["command_envelope"])["ranges"])
     env.curriculum = False
     levels = torch.arange(args.num_envs, device=device) % 6
     env.reset(levels=levels)

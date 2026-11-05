@@ -8,6 +8,7 @@ from trackerLab.kinematics.supermimic.rotations import mat_to_quat, quat_to_mat,
 from trackerLab.tracker_env.mdp.supermimic import flatten_state
 from trackerLab.tracker_env.mdp.supermimic_command import (
     ACTION_LIMIT, COMMAND_FIELDS, COMMAND_VERSION, CONTROL_DT, SCENARIO_DIM,
+    STEALTH_KEYBOARD_MODES,
     advance_command,
 )
 from trackerLab.tracker_env.mdp.supermimic_terrain import (
@@ -24,7 +25,8 @@ class CommandSim(TerrainSim):
                  solver_iterations=50, max_episode_steps=1000,
                  physical_ray_validation=False, *, target_clearance_m=None,
                  jump_height=0., action_limit=ACTION_LIMIT,
-                 command_resample_steps=(100, 250), jump_probability=.15):
+                 command_resample_steps=(100, 250), jump_probability=.15,
+                 stealth_keyboard_mode=False, self_collisions=False):
         if task.profile != mdp.profile:
             raise ValueError("Command task and MDP profiles must match")
         clearance = mdp.target_clearance_m if target_clearance_m is None else target_clearance_m
@@ -38,6 +40,8 @@ class CommandSim(TerrainSim):
             raise ValueError("Action limit must be finite and positive")
         if max_episode_steps < 1:
             raise ValueError("Episode length must be positive")
+        if stealth_keyboard_mode and task.profile != "stealth":
+            raise ValueError("Keyboard command modes require a stealth task")
         if (len(command_resample_steps) != 2
                 or any(type(value) is not int for value in command_resample_steps)
                 or not 100 <= command_resample_steps[0] <= command_resample_steps[1]
@@ -46,10 +50,16 @@ class CommandSim(TerrainSim):
         self.target_clearance_m = float(clearance)
         self.jump_height, self.action_limit = float(jump_height), float(action_limit)
         self.jump_probability = float(jump_probability)
+        self.stealth_keyboard_mode = bool(stealth_keyboard_mode)
+        self.self_collisions = bool(self_collisions)
+        self._stealth_mode_ids = (
+            torch.zeros(num_envs, dtype=torch.long, device=device)
+            if self.stealth_keyboard_mode else None)
         self.min_success_steps = math.ceil(10. / CONTROL_DT)
         self.command_resample_steps = tuple(command_resample_steps)
         super().__init__(task, mdp, num_envs, device, seed, solver_iterations,
-                         max_episode_steps, physical_ray_validation, scenario_dim=SCENARIO_DIM)
+                         max_episode_steps, physical_ray_validation,
+                         scenario_dim=SCENARIO_DIM, self_collisions=self_collisions)
         self.curriculum = mdp.terrain_navigation
         self.contract.update(
             objective="command-driven-locomotion", objective_version=COMMAND_VERSION,
@@ -60,13 +70,18 @@ class CommandSim(TerrainSim):
             runtime_reference_motion=False, terrain_curriculum_levels=6 if self.curriculum else 0,
             contact_constraints={
                 "ground": "finite MuJoCo heightfield",
-                "robot_geom_contype": 2, "robot_geom_conaffinity": 1,
-                "self_collisions": False,
+                "robot_geom_contype": 2,
+                "robot_geom_conaffinity": 3 if self.self_collisions else 1,
+                "self_collisions": self.self_collisions,
                 "actuation": "joint-limited PD targets with source robot effort caps",
                 "root_motion": "MuJoCo-Warp physics only",
                 "foot_contact_classifier": False,
             },
             command_resample_steps=self.command_resample_steps,
+            stealth_keyboard_modes=(
+                [{"name": name, "command": [vx, vy, yaw], "probability": probability}
+                 for name, vx, vy, yaw, probability in STEALTH_KEYBOARD_MODES]
+                if self.stealth_keyboard_mode else None),
             flat_success="survive at least 10 seconds through timeout and track commands on at least 80% of actions",
         )
 
@@ -91,6 +106,16 @@ class CommandSim(TerrainSim):
             value[ids] = 0
         if hasattr(self, "_reference_reset_states"):
             self._apply_reference_resets(ids)
+
+    def set_stealth_keyboard_mode(self):
+        if self.mdp.profile != "stealth":
+            raise ValueError("Keyboard command modes are only available for stealth locomotion")
+        self.stealth_keyboard_mode = True
+        self.contract["stealth_keyboard_modes"] = [
+            {"name": name, "command": [vx, vy, yaw], "probability": probability}
+            for name, vx, vy, yaw, probability in STEALTH_KEYBOARD_MODES
+        ]
+        self.sample_commands()
 
     @torch.no_grad()
     def set_reference_resets(self, motion, probability=.7, grounded_mask=None):
@@ -121,6 +146,41 @@ class CommandSim(TerrainSim):
         tails = ((3,), (3, 3), (3,), (3,), (n,), (n,))
         if frames == 0 or any(value.shape != (frames, *tail) for value, tail in zip(source, tails)):
             raise ValueError("Reference reset states must match frame and robot joint dimensions")
+        if motion is not None and probability and self.self_collisions:
+            import mujoco
+            import numpy as np
+
+            positions = motion.root_p.detach().cpu().numpy()
+            rotations = motion.root_R.detach().cpu().numpy()
+            joints = motion.q.detach().cpu().numpy()
+            if len(positions) != len(rotations) or len(positions) != len(joints):
+                raise ValueError("Reference reset pose arrays have different frame counts")
+            data = mujoco.MjData(self.cpu_model)
+            robot_bodies = self.cpu_model.geom_bodyid
+            quaternion = np.empty(4, dtype=np.float64)
+            collision_free = np.ones(len(positions), dtype=bool)
+            for frame in range(len(positions)):
+                data.qpos[self._root_qpos:self._root_qpos + 3] = positions[frame]
+                mujoco.mju_mat2Quat(quaternion, rotations[frame].reshape(-1))
+                data.qpos[self._root_qpos + 3:self._root_qpos + 7] = quaternion
+                data.qpos[self._qpos_ids_np] = joints[frame]
+                mujoco.mj_forward(self.cpu_model, data)
+                for contact in data.contact[:data.ncon]:
+                    body1 = robot_bodies[contact.geom1]
+                    body2 = robot_bodies[contact.geom2]
+                    if body1 and body2 and body1 != body2:
+                        collision_free[frame] = False
+                        break
+            contact_free = torch.as_tensor(collision_free, dtype=torch.bool)
+            grounded_mask = (
+                contact_free if grounded_mask is None
+                else torch.as_tensor(grounded_mask, dtype=torch.bool).cpu() & contact_free)
+            self.contract["reference_self_collision_filter"] = {
+                "enabled": True,
+                "collision_free_frames": int(collision_free.sum()),
+                "total_frames": int(len(collision_free)),
+            }
+
         supplied_grounding = grounded_mask is not None
         if supplied_grounding:
             grounded_mask = torch.as_tensor(grounded_mask)
@@ -219,7 +279,9 @@ class CommandSim(TerrainSim):
         self.ctrl[ids[:, None], self._actuator_ids] = target
         self.a_prev[ids] = ((target - self.default_q - offsets) / self.action_scale).clamp(
             -self.action_limit, self.action_limit)
-        if hasattr(self, "_command_ranges"):
+        if self.stealth_keyboard_mode:
+            pass
+        elif hasattr(self, "_command_ranges"):
             body_v = (R.transpose(-1, -2) @ v[..., None]).squeeze(-1)
             body_w = (R.transpose(-1, -2) @ w[..., None]).squeeze(-1)
             twist = torch.cat((body_v[:, :2], body_w[:, 2:3]), -1)
@@ -253,7 +315,20 @@ class CommandSim(TerrainSim):
         if not count:
             return
         u = torch.rand(count, 4, device=self.device, dtype=self.c.dtype)
-        if hasattr(self, "_command_ranges"):
+        if self.stealth_keyboard_mode:
+            if not hasattr(self, "_stealth_mode_ids") or self._stealth_mode_ids is None:
+                self._stealth_mode_ids = torch.zeros(
+                    self.num_envs, dtype=torch.long, device=self.device)
+            probabilities = torch.tensor(
+                [row[4] for row in STEALTH_KEYBOARD_MODES],
+                device=self.device, dtype=self.c.dtype)
+            indices = torch.multinomial(probabilities.expand(count, -1), 1).squeeze(-1)
+            mode_commands = torch.tensor(
+                [row[1:4] for row in STEALTH_KEYBOARD_MODES],
+                device=self.device, dtype=self.c.dtype)
+            commands = mode_commands[indices]
+            self._stealth_mode_ids[ids] = indices
+        elif hasattr(self, "_command_ranges"):
             commands = self._command_ranges[:, 0] + u[:, :3] * (
                 self._command_ranges[:, 1] - self._command_ranges[:, 0])
             if self.mdp.terrain_navigation:
@@ -346,6 +421,8 @@ class CommandSim(TerrainSim):
             "ep_ret_norm": torch.where(done, self.ep_return / self.ep_step, zero),
             "term": fallen,
         }
+        if self.stealth_keyboard_mode:
+            transition["stealth_mode_id"] = self._stealth_mode_ids.clone()
         self.a_prev.copy_(a)
         if len(ids):
             if self.curriculum:

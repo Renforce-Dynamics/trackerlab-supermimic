@@ -73,6 +73,26 @@ class LocomotionQualityTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             LocomotionQuality(TestKinematics(), field, motors, foot_slide_weight=float("nan"))
 
+    def test_stealth_feet_spacing_weight_scales_close_foot_penalty(self):
+        field = HeightField(generate("velocity", .76, 1), .76, "cpu")
+        motors = [(20., 12., 25., .5, .01)] * 2
+        class CloseFeetKinematics(TestKinematics):
+            def forward(self, p, R, v, w, q, qd):
+                position, rotation, velocity, angular = super().forward(p, R, v, w, q, qd)
+                position[..., 1] = p[..., None, 1]
+                return position, rotation, velocity, angular
+
+        default = LocomotionQuality(CloseFeetKinematics(), field, motors)
+        weighted = LocomotionQuality(CloseFeetKinematics(), field, motors, feet_close_weight=.04)
+        previous = self.state()
+        close = (torch.tensor([[0., 0., .76]]), torch.eye(3)[None], torch.zeros(1, 3),
+                 torch.zeros(1, 3), torch.zeros(1, 2), torch.zeros(1, 2))
+        action, xi = torch.zeros(1, 2), torch.zeros(1, 6)
+        difference = default.reward(previous, close, action, xi) - weighted.reward(
+            previous, close, action, xi)
+        self.assertGreater(difference.item(), 0.)
+        self.assertEqual(weighted.feet_close_weight, .04)
+
     def test_reference_envelope_retains_si_units_and_rejects_invalid_ranges(self):
         t = torch.cat((torch.zeros(30), torch.linspace(.2, .6, 50)))
         rotations = torch.eye(3).repeat(80, 1, 1)
@@ -104,6 +124,19 @@ class LocomotionQualityTests(unittest.TestCase):
         for command in ((.3, 0.), (.3, 0., 0., 0.), (.3, float("nan"), 0.), (True, 0., 0.)):
             with self.subTest(command=command), self.assertRaises(ValueError):
                 fixed_command_envelope(command)
+
+    def test_keyboard_stealth_envelope_describes_forward_pivot_and_arc_modes(self):
+        from command_envelope import keyboard_stealth_envelope
+
+        envelope = keyboard_stealth_envelope()
+        modes = {row["name"]: row for row in envelope["command_modes"]}
+        self.assertEqual(modes["forward"]["command"], [.25, 0., 0.])
+        self.assertEqual(modes["turn_left"]["command"], [0., 0., .55])
+        self.assertEqual(modes["turn_right"]["command"], [0., 0., -.55])
+        self.assertEqual(modes["forward_left"]["command"], [.25, 0., .45])
+        self.assertEqual(modes["forward_right"]["command"], [.25, 0., -.45])
+        self.assertAlmostEqual(sum(row["probability"] for row in modes.values()), 1.)
+        self.assertEqual(envelope["ranges"], [[0., .25], [0., 0.], [-.55, .55]])
 
     def test_reference_windows_never_cross_clip_boundaries(self):
         velocity = torch.zeros(10, 3)

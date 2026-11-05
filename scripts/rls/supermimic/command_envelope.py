@@ -4,6 +4,8 @@ import math
 
 import torch
 
+from trackerLab.tracker_env.mdp.supermimic_command import STEALTH_KEYBOARD_MODES
+
 
 def fixed_command_envelope(command):
     if (not isinstance(command, (tuple, list)) or len(command) != 3
@@ -28,6 +30,30 @@ def fixed_command_envelope(command):
         "moving_frames": 0,
         "terrain_navigation": False,
         "standing_commands": vx == 0 and vy == 0 and yaw_rate == 0,
+    })
+
+
+def keyboard_stealth_envelope():
+    modes = [
+        {"name": name, "command": [vx, vy, yaw_rate], "probability": probability}
+        for name, vx, vy, yaw_rate, probability in STEALTH_KEYBOARD_MODES
+    ]
+    values = [mode["command"] for mode in modes]
+    ranges = [[min(row[axis] for row in values), max(row[axis] for row in values)]
+              for axis in range(3)]
+    return validate_envelope({
+        "version": 1,
+        "ranges": ranges,
+        "source": "discrete keyboard command modes for low-profile locomotion",
+        "command_modes": modes,
+        "history_steps": 0,
+        "minimum_forward_speed_m_s": 0.,
+        "minimum_moving_frames_per_window": 0,
+        "forward_only": False,
+        "vertical_speed_frame": "body",
+        "moving_frames": 0,
+        "terrain_navigation": False,
+        "standing_commands": False,
     })
 
 

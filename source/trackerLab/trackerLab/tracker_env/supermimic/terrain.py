@@ -17,19 +17,22 @@ from trackerTask.supermimic.robots import get_robot
 class TerrainSim:
     def __init__(self, task, mdp, num_envs=4096, device="cuda:0", seed=42,
                  solver_iterations=50, max_episode_steps=1000,
-                 physical_ray_validation=False, scenario_dim=2):
+                 physical_ray_validation=False, scenario_dim=2, self_collisions=False):
         import mujoco
         import mujoco_warp as mw
         import warp as wp
 
         if num_envs < 1 or not str(device).startswith("cuda") or not torch.cuda.is_available():
             raise ValueError("SuperMimic terrain training requires CUDA and a positive world count")
+        if not isinstance(self_collisions, bool):
+            raise ValueError("self_collisions must be a boolean")
         self.task, self.mdp = task, mdp
         self.robot = task.robot
         self.num_envs, self.device = num_envs, str(torch.device(device))
         self.mw, self.wp, self.max_episode_steps = mw, wp, max_episode_steps
         self.curriculum = True
         self.physical_ray_validation = physical_ray_validation
+        self.self_collisions = self_collisions
         self.spec = get_robot(self.robot)
         self.height = ROBOT_HEIGHTS[self.robot]
         self.scale = self.height / .76
@@ -44,7 +47,9 @@ class TerrainSim:
         self.centers = torch.tensor(self.terrain.centers, device=device, dtype=torch.float32)
         self.default_q = torch.tensor(self.spec.default_q, device=device)
         self.action_scale = torch.tensor(self.spec.action_scale, device=device)
-        model_result = build_model(self.robot, self.terrain, solver_iterations)
+        model_result = build_model(
+            self.robot, self.terrain, solver_iterations,
+            self_collisions=self_collisions)
         (self.cpu_model, _, _, self._qpos_ids_np, self._qvel_ids_np, self.root_id,
          self.com_id, self._actuator_ids_np, self.contract) = model_result
         self._qpos_ids = torch.tensor(self._qpos_ids_np, device=device)

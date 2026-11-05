@@ -9,12 +9,16 @@ from trackerLab.tracker_env.mdp.supermimic_command import CONTROL_DT
 
 
 class LocomotionQuality:
-    def __init__(self, kin, field, motors, *, foot_slide_weight=.008):
-        if (isinstance(foot_slide_weight, bool) or not isinstance(foot_slide_weight, (int, float))
-                or not math.isfinite(foot_slide_weight) or foot_slide_weight < 0):
-            raise ValueError("foot_slide_weight must be finite and nonnegative")
+    def __init__(self, kin, field, motors, *, foot_slide_weight=.008,
+                 feet_close_weight=.008):
+        for name, value in (("foot_slide_weight", foot_slide_weight),
+                            ("feet_close_weight", feet_close_weight)):
+            if (isinstance(value, bool) or not isinstance(value, (int, float))
+                    or not math.isfinite(value) or value < 0):
+                raise ValueError(f"{name} must be finite and nonnegative")
         self.kin, self.field = kin, field
         self.foot_slide_weight = float(foot_slide_weight)
+        self.feet_close_weight = float(feet_close_weight)
         spec = kin.robot
         tracked = [kin.body_names[index] for index in kin.tracked_idx]
         self.feet = [tracked.index(name) for name in FOOT_BODIES[spec.name]]
@@ -75,8 +79,9 @@ class LocomotionQuality:
             "foot_slide": -self.foot_slide_weight * metrics["support_foot_slip_scale_m_s"],
             "foot_tilt": -.008 * metrics["support_foot_tilt_squared"] if self.biped else
                          torch.zeros_like(metrics["support_foot_tilt_squared"]),
-            "feet_close": -.008 * (torch.relu(.1 - metrics["foot_separation_scale_m"]) / .1).square()
-                          if self.biped else torch.zeros_like(metrics["foot_separation_scale_m"]),
+            "feet_close": -self.feet_close_weight * (
+                torch.relu(.1 - metrics["foot_separation_scale_m"]) / .1
+            ).square() if self.biped else torch.zeros_like(metrics["foot_separation_scale_m"]),
             "joint_acceleration": -2.5e-9 * metrics["joint_acceleration_squared"],
             "motor_torque": -3e-9 * torque.square().sum(-1),
             "joint_speed_limit": -.02 * torch.relu(

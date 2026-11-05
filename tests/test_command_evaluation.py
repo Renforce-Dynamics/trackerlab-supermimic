@@ -128,6 +128,27 @@ class CommandEvaluationTests(unittest.TestCase):
                     motion["mean_projected_velocity_along_command_mps"], progress / max(count, 1.))
                 self.assertEqual(motion["samples"], int(count))
 
+    def test_report_summarizes_keyboard_modes_independently(self):
+        modes = [
+            {"name": "forward", "command": [.25, 0., 0.]},
+            {"name": "turn_left", "command": [0., 0., .55]},
+        ]
+        per_mode = {
+            "modes": modes,
+            "values": [torch.tensor([100., 75., 1., .04, 24.]),
+                       torch.tensor([40., 20., 2.25, .16, 0.])],
+        }
+        result = command_evaluation_summary(
+            torch.zeros(3), torch.tensor(140.), torch.tensor([24., 24.]),
+            torch.zeros(2), torch.zeros(5), {"command_modes": modes}, per_mode)
+        rows = result["keyboard_mode_metrics"]
+        self.assertEqual([row["name"] for row in rows], ["forward", "turn_left"])
+        self.assertEqual([row["samples"] for row in rows], [100, 40])
+        self.assertAlmostEqual(rows[0]["tracking_fraction"], .75)
+        self.assertAlmostEqual(rows[1]["tracking_fraction"], .5)
+        self.assertAlmostEqual(rows[0]["mean_projected_velocity_m_s"], .24)
+        self.assertEqual(rows[1]["mean_projected_velocity_m_s"], 0.)
+
     def test_evaluator_aggregates_transition_motion_metrics_with_the_validity_mask(self):
         path = REPO / "scripts/rls/supermimic/evaluate_terrain.py"
         tree = ast.parse(path.read_text(encoding="utf-8"))

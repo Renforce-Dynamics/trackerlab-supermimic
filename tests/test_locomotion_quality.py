@@ -11,7 +11,7 @@ REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "scripts/rls/supermimic"))
 from bootstrap import configure_paths
 configure_paths()
-from command_envelope import reference_envelope, validate_envelope
+from command_envelope import fixed_command_envelope, reference_envelope, validate_envelope
 from trackerLab.algorithms.supermimic.locomotion_quality import LocomotionQuality
 from trackerLab.tracker_env.mdp.supermimic_terrain import HeightField
 from trackerTask.supermimic.terrain import generate
@@ -77,6 +77,18 @@ class LocomotionQualityTests(unittest.TestCase):
         self.assertEqual(envelope["minimum_moving_frames_per_window"], 8)
         with self.assertRaises(ValueError):
             validate_envelope(dict(version=1, ranges=[[1., 0.], [0., 0.], [0., 0.]]))
+
+    def test_fixed_command_envelope_keeps_the_requested_velocity_constant(self):
+        envelope = fixed_command_envelope((.3, 0., 0.))
+        self.assertEqual(envelope["ranges"], [[.3, .3], [0., 0.], [0., 0.]])
+        self.assertEqual(envelope["fixed_command"], {
+            "body_vx_m_s": .3, "body_vy_m_s": 0., "body_yaw_rate_rad_s": 0.,
+        })
+        self.assertFalse(envelope["standing_commands"])
+        self.assertTrue(envelope["forward_only"])
+        for command in ((.3, 0.), (.3, 0., 0., 0.), (.3, float("nan"), 0.), (True, 0., 0.)):
+            with self.subTest(command=command), self.assertRaises(ValueError):
+                fixed_command_envelope(command)
 
     def test_reference_windows_never_cross_clip_boundaries(self):
         velocity = torch.zeros(10, 3)

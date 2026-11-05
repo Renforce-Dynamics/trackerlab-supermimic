@@ -67,6 +67,7 @@ def parse_args(argv=None):
     parser.add_argument("--amp-updates", type=int, default=2)
     parser.add_argument("--amp-history", type=int, default=10)
     parser.add_argument("--command-range-mode", choices=("reference", "full"), default="reference")
+    parser.add_argument("--stealth-command", type=float, nargs=3)
     parser.add_argument("--style-feature-mode", choices=("full", "proprioceptive"),
                         default="proprioceptive")
     parser.add_argument("--reference-reset-probability", type=float, default=.7)
@@ -275,6 +276,8 @@ def main():
     task = get_task(args.task)
     if args.task_profile and args.task_profile != task.profile:
         raise SystemExit("--task_profile differs from the selected task")
+    if args.stealth_command is not None and task.profile != "stealth":
+        raise SystemExit("--stealth-command is only valid for a stealth task")
     if min(args.num_envs, args.iterations, args.horizon, args.hist, args.wm_batches,
            args.wm_batch, args.pi_batch, args.log_every, args.ckpt_every, args.keep_every,
            args.critic_epochs, args.critic_minibatches, args.speed_probe_updates) < 1:
@@ -357,11 +360,14 @@ def main():
     kin = RobotKinematics(args.device, spec)
     motion = MotionLib.from_config(str(args.amp_motion_config.resolve()), kin, args.device)
     from trackerLab.algorithms.supermimic.locomotion_quality import LocomotionQuality
-    from command_envelope import reference_envelope
+    from command_envelope import fixed_command_envelope, reference_envelope
     quality = LocomotionQuality(kin, field, contract["motors_effort_velocity_kp_kd_armature"])
     quality.calibrate(motion)
     command_envelope = None
-    if args.command_range_mode == "reference":
+    if args.stealth_command is not None:
+        command_envelope = fixed_command_envelope(args.stealth_command)
+        env.set_command_ranges(command_envelope["ranges"])
+    elif args.command_range_mode == "reference":
         command_envelope = reference_envelope(
             motion, terrain_navigation=task.profile in ("stairs", "mountain", "parkour"),
             minimum_forward_speed=.08 if task.profile == "stealth" else .15,
@@ -406,7 +412,7 @@ def main():
         validate_resume_command_resampling(ck, args)
         for name in ("gamma", "hist", "amp_weight", "clearance_ratio",
                      "style_feature_mode", "amp_history", "command_range_mode",
-                     "jump_height", "jump_probability", "action_limit"):
+                     "jump_height", "jump_probability", "action_limit", "stealth_command"):
             if ck["arguments"].get(name) != getattr(args, name):
                 raise ValueError(f"Resume {name} differs from the saved objective")
         actor.load_state_dict(ck["actor"])

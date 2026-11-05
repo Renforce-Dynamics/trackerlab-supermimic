@@ -148,6 +148,11 @@ three slower, source-range-pinned Aiming2 windows to each humanoid pool. Each
 window passed the retargeted low-profile screen; the source-direction labels
 are provenance, and physical performance remains subject to policy evaluation.
 
+For a single-reference G1 stealth pilot, `--stealth-command 0.3 0 0` fixes the
+training body-frame command at 0.30 m/s forward, zero lateral speed, and zero
+yaw rate. The command is recorded in the checkpoint and held constant through
+resampling. Use a fresh run directory when changing this command.
+
 LAFAN1's original archive contains:
 
 ```text

@@ -5,6 +5,32 @@ import math
 import torch
 
 
+def fixed_command_envelope(command):
+    if (not isinstance(command, (tuple, list)) or len(command) != 3
+            or any(isinstance(value, bool) or not isinstance(value, (int, float))
+                   or not math.isfinite(value) for value in command)):
+        raise ValueError("A fixed command needs three finite SI values: vx, vy, yaw rate")
+    vx, vy, yaw_rate = (float(value) for value in command)
+    return validate_envelope({
+        "version": 1,
+        "ranges": [[value, value] for value in (vx, vy, yaw_rate)],
+        "source": "fixed body-frame command supplied for this training run",
+        "fixed_command": {
+            "body_vx_m_s": vx,
+            "body_vy_m_s": vy,
+            "body_yaw_rate_rad_s": yaw_rate,
+        },
+        "history_steps": 0,
+        "minimum_forward_speed_m_s": 0.,
+        "minimum_moving_frames_per_window": 0,
+        "forward_only": vx > 0 and vy == 0,
+        "vertical_speed_frame": "body",
+        "moving_frames": 0,
+        "terrain_navigation": False,
+        "standing_commands": vx == 0 and vy == 0 and yaw_rate == 0,
+    })
+
+
 def reference_envelope(motion, *, terrain_navigation=False, minimum_forward_speed=.15,
                        history_steps=10, forward_only=True):
     if type(history_steps) is not int or history_steps < 2:

@@ -86,9 +86,9 @@ def attach_locomotion_quality(env, kin, field, motors, checkpoint):
 
 
 def command_evaluation_summary(command_sum, command_count, motion_sum, style_sum,
-                               quality_sum, command_envelope):
+                               quality_sum, command_envelope, keyboard_mode_sums=None):
     metrics = (command_sum / command_count.clamp_min(1)).sqrt().cpu().tolist()
-    return {
+    result = {
         "runtime_motion_reference": False,
         "command_metrics": dict(zip(
             ("velocity_rmse_scale_m_s", "yaw_rate_rmse_rad_s", "clearance_rmse_scale_m"),
@@ -123,6 +123,20 @@ def command_evaluation_summary(command_sum, command_count, motion_sum, style_sum
             "samples": int(quality_sum[4].item()),
         },
     }
+    if keyboard_mode_sums is not None:
+        result["keyboard_mode_metrics"] = [
+            {
+                "name": mode["name"],
+                "command": mode["command"],
+                "samples": int(values[0].item()),
+                "tracking_fraction": float((values[1] / values[0].clamp_min(1)).item()),
+                "velocity_rmse_m_s": float((values[2] / values[0].clamp_min(1)).sqrt().item()),
+                "yaw_rate_rmse_rad_s": float((values[3] / values[0].clamp_min(1)).sqrt().item()),
+                "mean_projected_velocity_m_s": float((values[4] / values[0].clamp_min(1)).item()),
+            }
+            for mode, values in zip(keyboard_mode_sums["modes"], keyboard_mode_sums["values"])
+        ]
+    return result
 
 
 @torch.no_grad()
@@ -216,6 +230,15 @@ def main():
     command_sum = torch.zeros(3, device=device)
     command_count = torch.zeros((), device=device)
     motion_sum = torch.zeros(2, device=device)
+    keyboard_mode_sums = None
+    if ck["arguments"].get("stealth_control_mode") == "keyboard":
+        modes = ck.get("command_envelope", {}).get("command_modes", [])
+        if len(modes) != 5:
+            raise ValueError("Keyboard mode metadata does not match the five-mode policy contract")
+        keyboard_mode_sums = {
+            "modes": modes,
+            "values": [torch.zeros(5, device=device) for _ in modes],
+        }
     for _ in range(args.steps):
         if command_mode:
             first_frame = style.frame_features(env.state())
@@ -244,6 +267,17 @@ def main():
                 tr["command_metrics"]["command_speed_mps"][valid].sum(),
                 tr["command_metrics"]["commanded_progress_mps"][valid].sum(),
             ))
+            if keyboard_mode_sums is not None:
+                mode_ids = tr["stealth_mode_id"]
+                for mode_index, values in enumerate(keyboard_mode_sums["values"]):
+                    selected = valid & (mode_ids == mode_index)
+                    values += torch.stack((
+                        selected.sum().float(),
+                        tr["command_metrics"]["command_tracking"][selected].float().sum(),
+                        velocity_error[selected].sum(),
+                        yaw_error[selected].sum(),
+                        tr["command_metrics"]["commanded_progress_mps"][selected].sum(),
+                    ))
             style_history = torch.cat((style_history[:, 1:],
                 style.frame_features(unflatten_state(tr["s1"]))[:, None]), 1)
             rate = style.reward_from_features(style.window_features(style_history))
@@ -293,7 +327,8 @@ def main():
               "policy_exploration_noise": False, "observation_noise": True, "lanes": lanes}
     if command_mode:
         result.update(command_evaluation_summary(
-            command_sum, command_count, motion_sum, style_sum, quality_sum, ck.get("command_envelope")))
+            command_sum, command_count, motion_sum, style_sum, quality_sum,
+            ck.get("command_envelope"), keyboard_mode_sums))
     if recorder is not None:
         recorder.save(args.trajectory_output, seed=np.int64(args.seed),
                       task=np.array(task.id), iteration=np.int64(ck["iteration"]),

@@ -7,7 +7,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import numpy as np
 import torch
@@ -20,6 +20,7 @@ configure_paths()
 from trackerTask.supermimic.registry import TASK_REGISTRY
 from trackerTask.supermimic.terrain import ROBOTS, PROFILES, TASKS, generate
 from trackerTask.supermimic.mujoco_terrain import build_model
+from trackerTask.supermimic.robots import get_robot
 from trackerLab.algorithms.supermimic.buffer import ReplayBuffer
 from trackerLab.algorithms.supermimic.networks import WorldModel
 from trackerLab.algorithms.supermimic.terrain_networks import TerrainPolicy, TerrainWorldModel
@@ -121,10 +122,55 @@ class SuperMimicTerrainTests(unittest.TestCase):
             self.assertTrue(np.isfinite(full.normalized).all())
             self.assertGreater(float(np.ptp(full.heights)), .05)
 
+    def test_collision_masks_with_self_contained_model(self):
+        spec = get_robot("g1")
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "robot.xml"
+            path.write_text(
+                '<mujoco><compiler angle="radian"/>'
+                '<worldbody><body name="pelvis" pos="0 0 .76"><freejoint/>'
+                '<geom type="sphere" size=".05" mass="1"/>'
+                '<geom name="visual_only" type="sphere" size=".06" mass="0" '
+                'contype="0" conaffinity="0"/>'
+                '<body name="left_leg" pos="0 .1 0">'
+                '<joint name="left_hip_pitch_joint" range="-1 1"/>'
+                '<geom type="sphere" size=".03" mass=".2"/></body>'
+                '<body name="right_leg" pos="0 -.1 0">'
+                '<joint name="right_hip_pitch_joint" range="-1 1"/>'
+                '<geom type="sphere" size=".03" mass=".2"/></body>'
+                '</body></worldbody></mujoco>',
+                encoding="utf-8",
+            )
+            fixture = replace(
+                spec, mjcf_path=str(path), com_body="pelvis",
+                joint_names=("left_hip_pitch_joint", "right_hip_pitch_joint"),
+                tracked_bodies=("pelvis", "left_leg", "right_leg"),
+                default_q=(0., 0.), action_scale=(.25, .25),
+            )
+            motors = [(20., 12., 25., .5, .01)] * 2
+            with patch(
+                "trackerTask.supermimic.mujoco_terrain.robot_parameters",
+                return_value=(fixture, .76, motors),
+            ):
+                terrain = generate("velocity", .76, 42)
+                default, *_ = build_model("g1", terrain)
+                colliding, *_ = build_model("g1", terrain, self_collisions=True)
+        self.assert_collision_masks(default, colliding)
+        visual = colliding.geom("visual_only").id
+        self.assertEqual(int(colliding.geom_contype[visual]), 0)
+        self.assertEqual(int(colliding.geom_conaffinity[visual]), 0)
+
+    @unittest.skipUnless(
+        Path(get_robot("g1").mjcf_path).is_file(),
+        "G1 assets are unavailable; the self-contained collision-mask test still runs",
+    )
     def test_g1_self_collision_mode_keeps_ground_contact_and_enables_robot_pairs(self):
         terrain = generate("velocity", .76, 42)
         default, *_ = build_model("g1", terrain)
         colliding, *_ = build_model("g1", terrain, self_collisions=True)
+        self.assert_collision_masks(default, colliding)
+
+    def assert_collision_masks(self, default, colliding):
         robot = (colliding.geom_bodyid != 0) & (colliding.geom_contype != 0)
         ground = colliding.geom("supermimic_ground").id
         self.assertTrue(np.all(colliding.geom_contype[robot] == 2))

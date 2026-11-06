@@ -28,6 +28,10 @@ test -x "$python"
 test -f "$initial"
 test -f "$pool/train.json"
 mkdir -p "$run" "$repo/logs"
+if [ -n "$(find "$run" -mindepth 1 -maxdepth 1 -print -quit)" ]; then
+    printf 'Run directory must be empty before a fresh warm start.\n' >&2
+    exit 2
+fi
 exec 9>"$repo/logs/.supermimic-terrain-gpu0.lock"
 flock -n 9
 

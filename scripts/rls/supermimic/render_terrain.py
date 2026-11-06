@@ -109,7 +109,8 @@ def render(directory, level=5, fps=25):
             draw.text((18, 9), f"{task.robot.upper()} / {task.profile.upper()}  |  SuperMimic",
                       font=font(25), fill="#18262b")
             draw.text((18, 42), f"Checkpoint {int(trajectory['iteration']):,}  |  seed {seed}"
-                      f"  |  difficulty {level + 1}/6  |  first attempt", font=font(17), fill="#42545b")
+                      f"  |  {'sample' if flat_command_task else 'difficulty'} {level + 1}/6"
+                      "  |  first attempt", font=font(17), fill="#42545b")
             scan = trajectory["scan"][index, level].reshape(17, 11)
             value = np.clip((.8 - scan / 2) / 1.6, 0, 1)
             rgb = np.stack((30 + 210 * value, 90 + 120 * value, 180 - 130 * value), -1).astype("uint8")
@@ -156,7 +157,8 @@ def render(directory, level=5, fps=25):
             row = Image.new("RGB", (640, 360), "#f2f5f5")
             row.paste(tile, (0, 40))
             label = ImageDraw.Draw(row)
-            label.text((12, 9), f"Difficulty {lane + 1}/6 | {str(outcomes[lane])}"
+            label.text((12, 9), f"{'Sample' if flat_command_task else 'Difficulty'}"
+                       f" {lane + 1}/6 | {str(outcomes[lane])}"
                        f" | snapshot t={index * dt:.2f}s", font=font(18), fill="#243a41")
             sheet.paste(row, ((lane % 2) * 640, (lane // 2) * 360))
         sheet.save(directory / "demo_contact_sheet.png")
@@ -317,9 +319,10 @@ def main():
     parser.add_argument("--overview", action="store_true", help="Concatenate all demos at their recorded 1x speed")
     parser.add_argument("--gallery-only", action="store_true", help="Rebuild the gallery from an existing manifest")
     parser.add_argument("--directory", type=Path, help="Render an existing recording only")
+    parser.add_argument("--lane", type=int, default=5, choices=range(6))
     args = parser.parse_args()
     if args.directory:
-        render(args.directory)
+        render(args.directory, level=args.lane)
         return
     if args.gallery_only:
         root = args.output.resolve()

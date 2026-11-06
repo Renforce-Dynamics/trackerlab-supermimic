@@ -16,6 +16,7 @@ REPO = configure_paths()
 from trackerTask.supermimic.terrain import get_task, generate, robot_parameters
 from trackerTask.supermimic.mujoco_terrain import build_model
 from trackerLab.algorithms.supermimic.terrain_networks import TerrainPolicy
+from trackerLab.algorithms.supermimic.stealth_upper_body import UpperBodyConstraint
 import trackerLab.algorithms.supermimic.networks as networks
 from trackerLab.tracker_env.mdp.supermimic import unflatten_state
 from trackerLab.tracker_env.mdp.supermimic_terrain import OBJECTIVE_VERSION, HeightField, TerrainMDP
@@ -66,10 +67,13 @@ def command_runtime_options(checkpoint):
         "command_resample_steps": tuple(arguments.get("command_resample_steps", (100, 250))),
         "stealth_keyboard_mode": arguments.get("stealth_control_mode") == "keyboard",
         "self_collisions": arguments.get("self_collisions", False),
+        "physical_domain_randomization":
+            arguments.get("physical_domain_randomization", False),
     }
 
 
-def attach_locomotion_quality(env, kin, field, motors, checkpoint):
+def attach_locomotion_quality(env, kin, field, motors, checkpoint,
+                              upper_body_constraint=None):
     """Use the saved training calibration for both physical rewards and metrics."""
     from trackerLab.algorithms.supermimic.locomotion_quality import LocomotionQuality
     quality = LocomotionQuality(
@@ -81,7 +85,14 @@ def attach_locomotion_quality(env, kin, field, motors, checkpoint):
     if sole_height.shape != quality.sole_height.shape or not bool(torch.isfinite(sole_height).all()):
         raise ValueError("Checkpoint sole calibration must contain one finite height per foot")
     quality.sole_height = sole_height.detach().clone()
-    env.locomotion_reward_fn = quality.reward
+    if upper_body_constraint is None:
+        env.locomotion_reward_fn = quality.reward
+    else:
+        def reward(previous_state, state, action, xi):
+            return quality.reward(previous_state, state, action, xi) + (
+                upper_body_constraint.posture_reward(state)
+            )
+        env.locomotion_reward_fn = reward
     return quality
 
 
@@ -202,6 +213,12 @@ def main():
                           if command_mode else None).to(device)
     actor.load_state_dict(ck["actor"])
     actor.eval()
+    upper_body_constraint = None
+    upper_body_config = ck.get("stealth_upper_body_constraint")
+    if upper_body_config is not None:
+        upper_body_constraint = UpperBodyConstraint.from_dict(
+            upper_body_config,
+        ).to(device).eval()
     style = None
     style_sum = torch.zeros(2, device=device)
     if command_mode:
@@ -209,7 +226,9 @@ def main():
         from trackerLab.kinematics.supermimic.robot import RobotKinematics
         kin = RobotKinematics(device, spec)
         style = AMPStyle.for_scoring(kin, ck["amp_style"], ground_sampler=field.sample)
-        quality = attach_locomotion_quality(env, kin, field, motors, ck)
+        quality = attach_locomotion_quality(
+            env, kin, field, motors, ck, upper_body_constraint=upper_body_constraint,
+        )
         quality_sum = torch.zeros(5, device=device)
         style_history = style.frame_features(env.state())[:, None].expand(
             -1, style.history_steps, -1).clone()
@@ -239,6 +258,7 @@ def main():
             "modes": modes,
             "values": [torch.zeros(5, device=device) for _ in modes],
         }
+    upper_body_sums = torch.zeros(3, device=device) if upper_body_constraint else None
     for _ in range(args.steps):
         if command_mode:
             first_frame = style.frame_features(env.state())
@@ -249,6 +269,10 @@ def main():
                               observation[:, None].expand_as(history),
                               torch.cat((history[:, 1:], observation[:, None]), 1))
         action = actor(history, mdp.goal(env.state(), env.c))
+        if upper_body_constraint is not None:
+            n = spec.num_joints
+            previous_action = history[:, -1, 2 * n + 6:3 * n + 6]
+            action = upper_body_constraint(action, previous_action)
         tr = env.step(action)
         if command_mode:
             p, R, v, w, *_ = unflatten_state(tr["s1"])
@@ -292,6 +316,16 @@ def main():
                 if quality.biped else valid.sum() * 0.,
                 valid.sum(),
             ))
+            if upper_body_constraint is not None:
+                state = unflatten_state(tr["s1"])
+                indices = upper_body_constraint.upper_indices
+                pose_error = state[4].index_select(-1, indices) - upper_body_constraint.reference_q
+                arm_speed = state[5].index_select(-1, indices).abs()
+                upper_body_sums += torch.stack((
+                    pose_error[valid].abs().sum(),
+                    arm_speed[valid].sum(),
+                    valid.sum(),
+                ))
         if recorder is not None and recorder.active.any():
             recorder.add(
                 tr["s1"][:6].cpu().numpy(),
@@ -322,6 +356,8 @@ def main():
               "checkpoint_objective_version": ck.get("objective_version", 1),
               "evaluation_objective_version": evaluation_version,
               "trained_iterations": ck["iteration"], "evaluation_seed": args.seed,
+              "physical_domain_randomization":
+                  env.contract.get("physical_domain_randomization"),
               "terrain_seed_held_out": args.seed != ck["arguments"]["seed"],
               "physics_steps": args.steps, "num_envs": args.num_envs,
               "policy_exploration_noise": False, "observation_noise": True, "lanes": lanes}
@@ -329,6 +365,14 @@ def main():
         result.update(command_evaluation_summary(
             command_sum, command_count, motion_sum, style_sum, quality_sum,
             ck.get("command_envelope"), keyboard_mode_sums))
+    if upper_body_sums is not None:
+        count = upper_body_sums[2].clamp_min(1) * len(upper_body_constraint.upper_joint_names)
+        result["upper_body_metrics"] = {
+            "mean_absolute_pose_error_rad": float((upper_body_sums[0] / count).item()),
+            "mean_absolute_joint_speed_rad_s": float((upper_body_sums[1] / count).item()),
+            "tracked_joints": list(upper_body_constraint.upper_joint_names),
+            "static_reference": upper_body_config["reference_q"],
+        }
     if recorder is not None:
         recorder.save(args.trajectory_output, seed=np.int64(args.seed),
                       task=np.array(task.id), iteration=np.int64(ck["iteration"]),

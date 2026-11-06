@@ -19,6 +19,7 @@ from export_command_policy import export
 from trackerLab.algorithms.supermimic import networks
 from trackerLab.algorithms.supermimic.amp_style import AMPStyle
 from trackerLab.algorithms.supermimic.terrain_networks import TerrainPolicy
+from trackerLab.algorithms.supermimic.stealth_upper_body import UpperBodyConstraint
 from trackerLab.motion_buffer.motion_lib.supermimic import MotionLib
 from trackerLab.tracker_env.mdp.supermimic_command import COMMAND_VERSION, GOAL_FIELDS
 from trackerTask.supermimic.robots import get_robot
@@ -184,6 +185,51 @@ class CommandExportTests(unittest.TestCase):
         self.assertFalse(output.exists())
         self.assertEqual(file_digest(source), digest)
         self.assertTrue(bool(torch.isfinite(self.actor.goal_norm.mean).all()))
+
+    def test_g1_export_includes_same_stateless_upper_body_limits(self):
+        spec = get_robot("g1")
+        hist, obs_dim = 2, 3 * spec.num_joints + 196
+        actor = TerrainPolicy(
+            obs_dim, self.goal_dim, hist=hist, num_joints=spec.num_joints,
+            action_limit=20.,
+        ).eval()
+        reference = {
+            name: -.8 if "shoulder_pitch" in name else float(spec.default_q[index])
+            for index, name in enumerate(spec.joint_names)
+            if any(part in name for part in ("shoulder", "elbow", "wrist"))
+        }
+        constraint = UpperBodyConstraint(
+            spec.joint_names, spec.default_q, spec.action_scale, reference,
+        )
+        source, output = self.root / "g1-upper.pt", self.root / "g1-upper"
+        torch.save({
+            "training_stage": "command-style", "objective_version": COMMAND_VERSION,
+            "task": "locomotion/g1/stealth", "robot": "g1", "iteration": 3,
+            "arguments": {"hist": hist, "action_limit": 20.,
+                          "physical_domain_randomization": True},
+            "actor": actor.state_dict(),
+            "stealth_upper_body_constraint": constraint.to_dict(),
+        }, source)
+        export(source, output)
+        exported = torch.jit.load(str(output / "policy.ts")).eval()
+        observations = torch.zeros(5, hist, obs_dim)
+        goals = torch.randn(5, self.goal_dim)
+        n = spec.num_joints
+        with torch.no_grad():
+            for _ in range(100):
+                previous = observations[:, -1, 2 * n + 6:3 * n + 6].clone()
+                raw = actor(observations, goals)
+                expected = constraint(raw, previous)
+                actual = exported(observations, goals)
+                torch.testing.assert_close(actual, expected, atol=1e-5, rtol=1e-5)
+                delta = (actual - previous) * torch.tensor(spec.action_scale)
+                self.assertLessEqual(delta[:, constraint.upper_indices].abs().max().item(),
+                                     .024 + 1e-5)
+                torch.testing.assert_close(actual[:, :15], raw[:, :15], atol=1e-5, rtol=1e-5)
+                observations[:, -1, 2 * n + 6:3 * n + 6] = actual
+        metadata = json.loads((output / "metadata.json").read_text(encoding="utf-8"))
+        self.assertEqual(metadata["stealth_upper_body_constraint"], constraint.to_dict())
+        self.assertTrue(metadata["physical_domain_randomization"])
 
 
 if __name__ == "__main__":

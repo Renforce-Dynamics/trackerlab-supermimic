@@ -4,6 +4,10 @@ from contextlib import contextmanager
 
 import torch
 
+from trackerLab.algorithms.supermimic.command_domain_randomization import (
+    apply_command_domain_scales, command_domain_randomization_contract,
+    command_domain_scales,
+)
 from trackerLab.kinematics.supermimic.rotations import quat_to_mat
 from trackerLab.tracker_env.mdp.supermimic import flatten_state
 from trackerLab.tracker_env.mdp.supermimic_terrain import (
@@ -17,7 +21,8 @@ from trackerTask.supermimic.robots import get_robot
 class TerrainSim:
     def __init__(self, task, mdp, num_envs=4096, device="cuda:0", seed=42,
                  solver_iterations=50, max_episode_steps=1000,
-                 physical_ray_validation=False, scenario_dim=2, self_collisions=False):
+                 physical_ray_validation=False, scenario_dim=2, self_collisions=False,
+                 physical_domain_randomization=False):
         import mujoco
         import mujoco_warp as mw
         import warp as wp
@@ -26,12 +31,15 @@ class TerrainSim:
             raise ValueError("SuperMimic terrain training requires CUDA and a positive world count")
         if not isinstance(self_collisions, bool):
             raise ValueError("self_collisions must be a boolean")
+        if not isinstance(physical_domain_randomization, bool):
+            raise ValueError("physical_domain_randomization must be a boolean")
         self.task, self.mdp = task, mdp
         self.robot = task.robot
         self.num_envs, self.device = num_envs, str(torch.device(device))
         self.mw, self.wp, self.max_episode_steps = mw, wp, max_episode_steps
         self.curriculum = True
         self.physical_ray_validation = physical_ray_validation
+        self.physical_domain_randomization = physical_domain_randomization
         self.self_collisions = self_collisions
         self.spec = get_robot(self.robot)
         self.height = ROBOT_HEIGHTS[self.robot]
@@ -72,9 +80,15 @@ class TerrainSim:
         self._torch_stream = torch.cuda.Stream(device=device)
         self._stream = wp.stream_from_torch(self._torch_stream)
         with self._warp_context():
-            batch = {name: num_envs for name in (
+            batch_names = (
                 "body_ipos", "geom_friction", "body_invweight0", "dof_invweight0",
-                "actuator_acc0", "actuator_gainprm", "actuator_biasprm")}
+                "actuator_acc0", "actuator_gainprm", "actuator_biasprm")
+            if self.physical_domain_randomization:
+                batch_names += (
+                    "body_mass", "body_inertia", "body_subtreemass",
+                    "actuator_forcerange",
+                )
+            batch = {name: num_envs for name in batch_names}
             self.model = mw.put_model(self.cpu_model, batch_sizes=batch)
             self.model.stat.meaninertia = wp.full(
                 num_envs, float(self.cpu_model.stat.meaninertia), dtype=wp.float32, device=device)
@@ -86,6 +100,17 @@ class TerrainSim:
             self.base_body_ipos = self.body_ipos.clone()
             self.geom_friction = wp.to_torch(self.model.geom_friction)
             self.base_geom_friction = self.geom_friction.clone()
+            if self.physical_domain_randomization:
+                self.body_mass = wp.to_torch(self.model.body_mass)
+                self.body_inertia = wp.to_torch(self.model.body_inertia)
+                self.actuator_gainprm = wp.to_torch(self.model.actuator_gainprm)
+                self.actuator_biasprm = wp.to_torch(self.model.actuator_biasprm)
+                self.actuator_forcerange = wp.to_torch(self.model.actuator_forcerange)
+                self.base_body_mass = self.body_mass.clone()
+                self.base_body_inertia = self.body_inertia.clone()
+                self.base_actuator_gainprm = self.actuator_gainprm.clone()
+                self.base_actuator_biasprm = self.actuator_biasprm.clone()
+                self.base_actuator_forcerange = self.actuator_forcerange.clone()
             self._randomize(torch.arange(num_envs, device=device), initialize=True)
             self.mw.set_const(self.model, self.data)
             self._reset_state(torch.arange(num_envs, device=device))
@@ -109,6 +134,8 @@ class TerrainSim:
                         "runtime": "analytic_heightfield_sampler",
                         "physical_rays_validation_only": True},
             algorithm="SuperMimic world-model imagination + GAE critic",
+            physical_domain_randomization=command_domain_randomization_contract(
+                self.physical_domain_randomization),
         )
 
     @contextmanager
@@ -147,13 +174,37 @@ class TerrainSim:
 
     def _randomize(self, ids, initialize=False):
         count = len(ids)
+        fixed_domain_channels = None
+        fixed_com = None
+        if self.physical_domain_randomization and not initialize:
+            fixed_domain_channels = self.xi[ids, 1:5].clone()
+            fixed_com = self.xi[ids, -3:].clone()
         self.xi[ids, 1:-3] = (2 * torch.rand(count, self.spec.num_joints, device=self.device) - 1) * .01
+        if fixed_domain_channels is not None:
+            self.xi[ids, 1:5] = fixed_domain_channels
         self.xi[ids, 0] = .3 + .9 * torch.rand(count, device=self.device)
         self.xi[ids, -3:] = (2 * torch.rand(count, 3, device=self.device) - 1) * (.025 * self.scale)
+        if fixed_com is not None:
+            self.xi[ids, -3:] = fixed_com
         self.geom_friction[ids] = self.base_geom_friction[ids]
         self.geom_friction[ids, :, 0] = self.xi[ids, 0:1]
         self.body_ipos[ids] = self.base_body_ipos[ids]
         self.body_ipos[ids, self.com_id, :3] += self.xi[ids, -3:]
+        if self.physical_domain_randomization and initialize:
+            scales = command_domain_scales(self.xi[ids], self.spec.num_joints)
+            apply_command_domain_scales(
+                ids, self._actuator_ids, scales,
+                body_mass=self.body_mass,
+                body_inertia=self.body_inertia,
+                actuator_gainprm=self.actuator_gainprm,
+                actuator_biasprm=self.actuator_biasprm,
+                actuator_forcerange=self.actuator_forcerange,
+                base_body_mass=self.base_body_mass,
+                base_body_inertia=self.base_body_inertia,
+                base_actuator_gainprm=self.base_actuator_gainprm,
+                base_actuator_biasprm=self.base_actuator_biasprm,
+                base_actuator_forcerange=self.base_actuator_forcerange,
+            )
 
     def _reset_state(self, ids):
         self.mw.reset_data(self.model, self.data, self.wp.from_torch(

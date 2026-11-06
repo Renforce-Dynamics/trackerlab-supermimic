@@ -408,6 +408,7 @@ class StyleTrainingContractTests(unittest.TestCase):
             "style_reward_fn": learner.reward_from_features,
             "style_frame_fn": learner.frame_features,
             "regularization_reward_fn": lambda previous, state, action, xi: action.sum(-1) * 0,
+            "upper_body_constraint": None,
             "mdp": mdp, "advance_command": advance_command,
             "normalize_xi": normalize_xi, "unflatten_state": unflatten_state,
             "sample_starts": lambda _: (data, history),

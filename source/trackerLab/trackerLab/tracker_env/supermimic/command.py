@@ -26,7 +26,8 @@ class CommandSim(TerrainSim):
                  physical_ray_validation=False, *, target_clearance_m=None,
                  jump_height=0., action_limit=ACTION_LIMIT,
                  command_resample_steps=(100, 250), jump_probability=.15,
-                 stealth_keyboard_mode=False, self_collisions=False):
+                 stealth_keyboard_mode=False, self_collisions=False,
+                 physical_domain_randomization=False):
         if task.profile != mdp.profile:
             raise ValueError("Command task and MDP profiles must match")
         clearance = mdp.target_clearance_m if target_clearance_m is None else target_clearance_m
@@ -59,7 +60,8 @@ class CommandSim(TerrainSim):
         self.command_resample_steps = tuple(command_resample_steps)
         super().__init__(task, mdp, num_envs, device, seed, solver_iterations,
                          max_episode_steps, physical_ray_validation,
-                         scenario_dim=SCENARIO_DIM, self_collisions=self_collisions)
+                         scenario_dim=SCENARIO_DIM, self_collisions=self_collisions,
+                         physical_domain_randomization=physical_domain_randomization)
         self.curriculum = mdp.terrain_navigation
         self.contract.update(
             objective="command-driven-locomotion", objective_version=COMMAND_VERSION,

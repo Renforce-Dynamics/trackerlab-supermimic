@@ -6,13 +6,27 @@ import json
 from pathlib import Path
 
 import torch
+from torch import nn
 
 from bootstrap import configure_paths
 configure_paths()
 from trackerLab.algorithms.supermimic.terrain_networks import TerrainPolicy
+from trackerLab.algorithms.supermimic.stealth_upper_body import UpperBodyConstraint
 from trackerLab.algorithms.supermimic import networks
 from trackerLab.tracker_env.mdp.supermimic_command import COMMAND_VERSION, GOAL_FIELDS
 from trackerTask.supermimic.robots import get_robot
+
+
+class ConstrainedCommandPolicy(nn.Module):
+    def __init__(self, policy, constraint, num_joints):
+        super().__init__()
+        self.policy, self.constraint, self.num_joints = policy, constraint, num_joints
+
+    def forward(self, observation_history, goal):
+        action = self.policy(observation_history, goal)
+        n = self.num_joints
+        previous = observation_history[:, -1, 2 * n + 6:3 * n + 6]
+        return self.constraint(action, previous)
 
 
 def export(checkpoint_path, output):
@@ -26,9 +40,14 @@ def export(checkpoint_path, output):
     obs_dim, goal_dim = 3 * n + 196, len(GOAL_FIELDS)
     networks.AMP_DTYPE = None
     action_limit = checkpoint["arguments"].get("action_limit", 4.)
-    policy = TerrainPolicy(obs_dim, goal_dim, hist=hist, num_joints=n,
-                            action_limit=action_limit).eval()
-    policy.load_state_dict(checkpoint["actor"])
+    actor = TerrainPolicy(obs_dim, goal_dim, hist=hist, num_joints=n,
+                          action_limit=action_limit).eval()
+    actor.load_state_dict(checkpoint["actor"])
+    policy = actor
+    upper_body_config = checkpoint.get("stealth_upper_body_constraint")
+    if upper_body_config is not None:
+        constraint = UpperBodyConstraint.from_dict(upper_body_config).eval()
+        policy = ConstrainedCommandPolicy(actor, constraint, n).eval()
     if any(not bool(torch.isfinite(value).all()) for value in policy.state_dict().values()):
         raise FloatingPointError("Actor contains nonfinite values")
     output.mkdir(parents=True, exist_ok=True)
@@ -44,9 +63,14 @@ def export(checkpoint_path, output):
             if not torch.allclose(expected, actual, atol=1e-5, rtol=1e-5):
                 raise AssertionError("Portable actor differs from eager actor")
             errors.append(float((expected - actual).abs().max()))
-    torch.save({"actor": policy.state_dict(), "robot": spec.name, "hist": hist,
-                "obs_dim": obs_dim, "goal_dim": goal_dim, "action_limit": action_limit,
-                "objective_version": COMMAND_VERSION}, output / "actor.pt")
+    actor_payload = {
+        "actor": actor.state_dict(), "robot": spec.name, "hist": hist,
+        "obs_dim": obs_dim, "goal_dim": goal_dim, "action_limit": action_limit,
+        "objective_version": COMMAND_VERSION,
+    }
+    if upper_body_config is not None:
+        actor_payload["stealth_upper_body_constraint"] = upper_body_config
+    torch.save(actor_payload, output / "actor.pt")
     metadata = {
         "task": checkpoint["task"], "robot": spec.name, "iteration": checkpoint["iteration"],
         "source_checkpoint_sha256": hashlib.sha256(checkpoint_path.read_bytes()).hexdigest(),
@@ -71,6 +95,9 @@ def export(checkpoint_path, output):
         "runtime_reference_motion": False, "runtime_discriminator": False,
         "runtime_world_model": False, "normalization_included": True,
         "trained_command_envelope": checkpoint.get("command_envelope"),
+        "stealth_upper_body_constraint": upper_body_config,
+        "physical_domain_randomization":
+            checkpoint["arguments"].get("physical_domain_randomization", False),
         "validation_max_error": errors,
         "deployment_requirement": "Local height map and a body-velocity estimate; simulator truth is used in training.",
     }

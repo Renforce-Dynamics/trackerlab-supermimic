@@ -20,6 +20,9 @@ from trackerTask.supermimic.terrain import get_task, ROBOT_HEIGHTS, robot_parame
 from trackerTask.supermimic.mujoco_terrain import build_model
 from trackerLab.algorithms.supermimic.buffer import ReplayBuffer
 from trackerLab.algorithms.supermimic.networks import Critic
+from trackerLab.algorithms.supermimic.stealth_upper_body import (
+    UpperBodyConstraint, calibrate_upper_body_reference,
+)
 import trackerLab.algorithms.supermimic.networks as networks
 from trackerLab.algorithms.supermimic.terrain_networks import TerrainPolicy, TerrainWorldModel
 from trackerLab.tracker_env.mdp.supermimic import normalize_xi, unflatten_state
@@ -76,6 +79,8 @@ def parse_args(argv=None):
     parser.add_argument("--foot-slide-weight", type=float, default=.008)
     parser.add_argument("--feet-close-weight", type=float, default=.008)
     parser.add_argument("--self-collisions", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--physical-domain-randomization", action="store_true")
+    parser.add_argument("--stealth-upper-body-constraint", action="store_true")
     parser.add_argument("--clearance-ratio", type=float, default=1.)
     parser.add_argument("--action-limit", type=float, default=20.)
     parser.add_argument("--jump-height", type=float, default=0.)
@@ -111,6 +116,8 @@ def can_transfer_world_model(source_arguments, target_arguments):
         == target_arguments.get("self_collisions", False)
         and source_arguments.get("solver_iterations", 50)
         == target_arguments.get("solver_iterations", 50)
+        and source_arguments.get("physical_domain_randomization", False)
+        == target_arguments.get("physical_domain_randomization", False)
     )
 
 
@@ -294,6 +301,8 @@ def main():
         raise SystemExit("--stealth-command is only valid for a stealth task")
     if args.stealth_control_mode == "keyboard" and task.profile != "stealth":
         raise SystemExit("Keyboard command modes are only available for stealth tasks")
+    if args.stealth_upper_body_constraint and (task.robot, task.profile) != ("g1", "stealth"):
+        raise SystemExit("The static upper-body constraint is currently calibrated for G1 stealth")
     if min(args.num_envs, args.iterations, args.horizon, args.hist, args.wm_batches,
            args.wm_batch, args.pi_batch, args.log_every, args.ckpt_every, args.keep_every,
            args.critic_epochs, args.critic_minibatches, args.speed_probe_updates) < 1:
@@ -373,7 +382,8 @@ def main():
                      command_resample_steps=tuple(args.command_resample_steps),
                      stealth_keyboard_mode=(task.profile == "stealth"
                                             and args.stealth_control_mode == "keyboard"),
-                     self_collisions=args.self_collisions)
+                     self_collisions=args.self_collisions,
+                     physical_domain_randomization=args.physical_domain_randomization)
     actor = TerrainPolicy(mdp.obs_dim, mdp.goal_dim, hist=args.hist,
                           num_joints=spec.num_joints, action_limit=args.action_limit).to(args.device)
     world = TerrainWorldModel(field, spec.num_joints).to(args.device)
@@ -385,6 +395,19 @@ def main():
     opt_v = torch.optim.Adam(critic.parameters(), lr=args.lr, fused=args.fused_optimizers)
     kin = RobotKinematics(args.device, spec)
     motion = MotionLib.from_config(str(args.amp_motion_config.resolve()), kin, args.device)
+    upper_body_constraint = None
+    if args.stealth_upper_body_constraint:
+        reference = calibrate_upper_body_reference(
+            motion, spec.joint_names, method="medoid",
+        )
+        upper_body_constraint = UpperBodyConstraint(
+            spec.joint_names, spec.default_q, spec.action_scale, reference,
+            residual_radius_rad=.25, max_joint_rate_rad_s=1.2, control_dt=.02,
+            action_limit=args.action_limit,
+        ).to(args.device)
+    upper_body_config = (
+        upper_body_constraint.to_dict() if upper_body_constraint is not None else None
+    )
     from trackerLab.algorithms.supermimic.locomotion_quality import LocomotionQuality
     from command_envelope import fixed_command_envelope, reference_envelope
     quality = LocomotionQuality(
@@ -450,6 +473,12 @@ def main():
                      "self_collisions", "reference_reset_probability"):
             if ck["arguments"].get(name) != getattr(args, name):
                 raise ValueError(f"Resume {name} differs from the saved objective")
+        if (ck["arguments"].get("physical_domain_randomization", False)
+                != args.physical_domain_randomization):
+            raise ValueError("Changed physical domain requires --warm-start in a new run")
+        saved_upper_body_config = ck.get("stealth_upper_body_constraint")
+        if saved_upper_body_config != upper_body_config:
+            raise ValueError("Resume upper-body constraint differs from the saved objective")
         actor.load_state_dict(ck["actor"])
         migrated = migrate_terrain_checkpoint(
             ck, field.model_indices,
@@ -493,7 +522,7 @@ def main():
                           "actor_transferred": True,
                           "world_model_transferred": transfer_world,
                           "world_model_reset_reason": None if transfer_world else
-                          "self-contact or solver contract differs",
+                          "physical domain, self-contact or solver contract differs",
                           "critic_reset": True, "actor_optimizer_reset": True,
                           "world_model_optimizer_reset": True, "critic_optimizer_reset": True,
                           "style_optimizer_restored": restore_style,
@@ -509,6 +538,7 @@ def main():
                    "runtime_motion_reference": False,
                    "training_reference_resets": env.contract.get("reference_resets"),
                    "style_reference_validation": reference_receipt,
+                   "stealth_upper_body_constraint": upper_body_config,
                    "command_envelope": command_envelope,
                    "locomotion_quality": {"foot_support": "geometry estimate, not measured force",
                                           "foot_slide_weight": quality.foot_slide_weight,
@@ -521,7 +551,7 @@ def main():
                    "jump_commands": {"height_m": args.jump_height,
                                      "probability": args.jump_probability,
                                      "duration_seconds": .8},
-                   "simulator_contract": contract, "robot": spec.name,
+                   "simulator_contract": env.contract, "robot": spec.name,
                    "num_joints": spec.num_joints, "obs_dim": mdp.obs_dim,
                    "goal_dim": mdp.goal_dim, "critic_dim": critic_dim,
                    "perception": {"heightfield_scan_samples": 187,
@@ -551,6 +581,10 @@ def main():
 
     def imag_step(state, history, xi, xi_n, c):
         action = actor(history, mdp.goal(state, c))
+        if upper_body_constraint is not None:
+            n = spec.num_joints
+            previous_action = history[:, -1, 2 * n + 6:3 * n + 6]
+            action = upper_body_constraint(action, previous_action)
         next_state = world.step(state, action, xi_n)
         next_c = advance_command(c)
         observation = mdp.add_noise(mdp.obs(next_state, action, xi, next_c))
@@ -561,7 +595,13 @@ def main():
 
     style_reward_fn = style.reward_from_features
     style_frame_fn = style.frame_features
-    regularization_reward_fn = quality.reward
+    if upper_body_constraint is None:
+        regularization_reward_fn = quality.reward
+    else:
+        def regularization_reward_fn(previous_state, state, action, xi):
+            return quality.reward(previous_state, state, action, xi) + (
+                upper_body_constraint.posture_reward(state)
+            )
     command_outputs_fn = mdp.transition_outputs
     from warp_runtime.critic_runtime import make_critic_minibatch_loss
     critic_loss_fn = make_critic_minibatch_loss(
@@ -600,6 +640,10 @@ def main():
             actor.goal_norm.update(goal)
             action = collect_actor(obs_hist, goal)
             action = action + .1 * torch.randn_like(action)
+            if upper_body_constraint is not None:
+                n = spec.num_joints
+                previous_action = obs_hist[:, -1, 2 * n + 6:3 * n + 6]
+                action = upper_body_constraint(action, previous_action)
             transition = env.step(action)
             buffer.add(transition)
             outcomes["episodes"] += transition["done"].sum()
@@ -857,6 +901,7 @@ def main():
                               "critic": critic.state_dict(), "opt_wm": opt_wm.state_dict(),
                               "opt_pi": opt_pi.state_dict(), "opt_v": opt_v.state_dict(),
                               "amp_style": style.checkpoint(),
+                              "stealth_upper_body_constraint": upper_body_config,
                               "arguments": vars(args) | {"run_dir": str(run),
                                   "amp_motion_config": str(args.amp_motion_config.resolve())}}
                 torch.save(checkpoint, run / "last.pt.tmp")

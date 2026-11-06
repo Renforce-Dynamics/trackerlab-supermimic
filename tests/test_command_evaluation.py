@@ -50,6 +50,7 @@ class CommandEvaluationTests(unittest.TestCase):
                     "command_resample_steps": tuple(interval), "jump_height": .2,
                     "jump_probability": .3, "action_limit": 20.,
                     "stealth_keyboard_mode": False, "self_collisions": False,
+                    "physical_domain_randomization": False,
                 })
                 self.assertIs(arguments["command_resample_steps"], interval)
 
@@ -58,7 +59,14 @@ class CommandEvaluationTests(unittest.TestCase):
             "command_resample_steps": (100, 250), "jump_height": 0.,
             "jump_probability": .15, "action_limit": 4.,
             "stealth_keyboard_mode": False, "self_collisions": False,
+            "physical_domain_randomization": False,
         })
+
+    def test_runtime_options_restore_physical_domain_randomization(self):
+        options = command_runtime_options({
+            "arguments": {"physical_domain_randomization": True},
+        })
+        self.assertTrue(options["physical_domain_randomization"])
 
     def test_evaluation_uses_saved_calibration_and_includes_penalty_in_episode_return(self):
         sim = CpuCommandSim(max_episode_steps=1)

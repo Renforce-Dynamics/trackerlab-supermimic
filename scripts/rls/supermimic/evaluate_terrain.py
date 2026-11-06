@@ -483,6 +483,13 @@ def main():
         upper_body_constraint = UpperBodyConstraint.from_dict(
             upper_body_config,
         ).to(device).eval()
+    rate_limiter_config = ck.get("upper_body_rate_limit")
+    action_constraint = upper_body_constraint
+    if rate_limiter_config is not None:
+        if upper_body_constraint is not None:
+            raise ValueError("Checkpoint cannot combine static arms and a separate arm rate limiter")
+        from trackerLab.algorithms.supermimic.stealth_action_filter import UpperBodyRateLimiter
+        action_constraint = UpperBodyRateLimiter.from_dict(rate_limiter_config).to(device).eval()
     style = None
     style_sum = torch.zeros(2, device=device)
     if command_mode:
@@ -567,11 +574,11 @@ def main():
                               observation[:, None].expand_as(history),
                               torch.cat((history[:, 1:], observation[:, None]), 1))
         action = actor(history, mdp.goal(env.state(), env.c))
-        if upper_body_constraint is not None:
+        if action_constraint is not None:
             n = spec.num_joints
             previous_action = history[:, -1, 2 * n + 6:3 * n + 6]
             older_action = history[:, -2, 2 * n + 6:3 * n + 6]
-            action = upper_body_constraint(
+            action = action_constraint(
                 action, previous_action, older_action, entry_time=env.c[..., 6] + .02)
         tr = env.step(action)
         if command_mode:
@@ -680,6 +687,7 @@ def main():
                   env.contract.get("physical_domain_randomization"),
               "entry_duration_s": ck["arguments"].get("entry_duration_s", 0.),
               "foot_slip_mode": ck["arguments"].get("foot_slip_mode", "legacy"),
+              "upper_body_rate_limit": rate_limiter_config,
               "stealth_control_mode": ck["arguments"].get("stealth_control_mode", "fixed"),
               "fixed_command_mode": args.command_mode,
               "command_mode_layout": args.mode_layout,

@@ -54,6 +54,14 @@ def export(checkpoint_path, output):
         constraint = UpperBodyConstraint.from_dict(upper_body_config).eval()
         policy = ConstrainedCommandPolicy(
             actor, constraint, n, checkpoint["arguments"].get("entry_duration_s", 0.)).eval()
+    rate_limiter_config = checkpoint.get("upper_body_rate_limit")
+    if rate_limiter_config is not None:
+        if upper_body_config is not None:
+            raise ValueError("Checkpoint cannot combine static arms and a separate arm rate limiter")
+        from trackerLab.algorithms.supermimic.stealth_action_filter import UpperBodyRateLimiter
+        constraint = UpperBodyRateLimiter.from_dict(rate_limiter_config).eval()
+        policy = ConstrainedCommandPolicy(
+            actor, constraint, n, checkpoint["arguments"].get("entry_duration_s", 0.)).eval()
     if any(not bool(torch.isfinite(value).all()) for value in policy.state_dict().values()):
         raise FloatingPointError("Actor contains nonfinite values")
     output.mkdir(parents=True, exist_ok=True)
@@ -76,6 +84,8 @@ def export(checkpoint_path, output):
     }
     if upper_body_config is not None:
         actor_payload["stealth_upper_body_constraint"] = upper_body_config
+    if rate_limiter_config is not None:
+        actor_payload["upper_body_rate_limit"] = rate_limiter_config
     if checkpoint["arguments"].get("entry_duration_s", 0.):
         actor_payload["entry_duration_s"] = checkpoint["arguments"]["entry_duration_s"]
     if checkpoint["arguments"].get("stealth_control_mode") == "wasd":
@@ -109,6 +119,7 @@ def export(checkpoint_path, output):
             wasd_keyboard_metadata()
             if checkpoint["arguments"].get("stealth_control_mode") == "wasd" else None),
         "stealth_upper_body_constraint": upper_body_config,
+        "upper_body_rate_limit": rate_limiter_config,
         "physical_domain_randomization":
             checkpoint["arguments"].get("physical_domain_randomization", False),
         "entry_duration_s": checkpoint["arguments"].get("entry_duration_s", 0.),

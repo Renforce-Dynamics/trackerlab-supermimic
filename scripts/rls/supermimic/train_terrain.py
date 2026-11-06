@@ -64,6 +64,9 @@ def parse_args(argv=None):
     parser.add_argument("--speed-probe-updates", type=int, default=1000)
     parser.add_argument("--resume", type=Path)
     parser.add_argument("--warm-start", type=Path)
+    parser.add_argument("--warm-start-reset-arms", action="store_true")
+    parser.add_argument("--warm-start-reset-world", action="store_true")
+    parser.add_argument("--warm-start-normalizer-prior-count", type=float, default=0.)
     parser.add_argument("--gait-warm-start", type=Path)
     parser.add_argument("--gait-quality", type=Path)
     parser.add_argument("--amp-motion-config", type=Path)
@@ -85,6 +88,7 @@ def parse_args(argv=None):
     parser.add_argument("--collision-mask-version", type=int, choices=(1, 2), default=2)
     parser.add_argument("--physical-domain-randomization", action="store_true")
     parser.add_argument("--stealth-upper-body-constraint", action="store_true")
+    parser.add_argument("--upper-body-rate-limit", action="store_true")
     parser.add_argument("--upper-body-reference", type=Path)
     parser.add_argument("--upper-body-residual", type=float, default=.25)
     parser.add_argument("--upper-body-acceleration", type=float, default=0.)
@@ -131,6 +135,38 @@ def can_transfer_world_model(source_arguments, target_arguments):
         and source_arguments.get("physical_domain_randomization", False)
         == target_arguments.get("physical_domain_randomization", False)
     )
+
+
+@torch.no_grad()
+def adapt_warm_start_actor(actor, joint_names, *, reset_arms=False, normalizer_prior_count=0.):
+    """Retain locomotion weights while releasing formerly overridden arm outputs."""
+    if (isinstance(normalizer_prior_count, bool)
+            or not math.isfinite(normalizer_prior_count) or normalizer_prior_count < 0
+            or normalizer_prior_count >= actor.obs_norm.max_count
+            or normalizer_prior_count >= actor.goal_norm.max_count):
+        raise ValueError("Normalizer prior count must be zero or below the freeze threshold")
+    receipt = {"arm_output_rows_reset": [], "normalizer_prior_counts": {}}
+    if reset_arms:
+        indices = [i for i, name in enumerate(joint_names)
+                   if any(part in name.split("_") for part in ("shoulder", "elbow", "wrist"))]
+        if not indices:
+            raise ValueError("Arm output reset requires named upper-body joints")
+        output = actor.dec[-1]
+        if not isinstance(output, torch.nn.Linear) or output.out_features != len(joint_names):
+            raise ValueError("Actor decoder does not end in the named joint outputs")
+        output.weight[indices] = 0.
+        output.bias[indices] = 0.
+        receipt["arm_output_rows_reset"] = [joint_names[i] for i in indices]
+    if normalizer_prior_count:
+        for name in ("obs_norm", "goal_norm"):
+            norm = getattr(actor, name)
+            previous = float(norm.count.item())
+            norm.count.clamp_(max=normalizer_prior_count)
+            receipt["normalizer_prior_counts"][name] = {
+                "previous_count": previous, "retained_count": float(norm.count.item()),
+                "mean_and_variance_preserved": True,
+            }
+    return receipt
 
 
 def noise_padded_actor_history(mdp, observations, history_steps):
@@ -324,6 +360,12 @@ def main():
         raise SystemExit("Keyboard command modes are only available for stealth tasks")
     if args.stealth_upper_body_constraint and (task.robot, task.profile) != ("g1", "stealth"):
         raise SystemExit("The static upper-body constraint is currently calibrated for G1 stealth")
+    if args.upper_body_rate_limit and (
+            (task.robot, task.profile) != ("g1", "stealth") or args.stealth_upper_body_constraint):
+        raise SystemExit("The G1 stealth rate limiter requires learnable upper-body actions")
+    if (args.warm_start_reset_arms or args.warm_start_reset_world
+            or args.warm_start_normalizer_prior_count) and not (args.warm_start or args.resume):
+        raise SystemExit("Warm-start adaptation options require --warm-start or --resume")
     if (args.upper_body_reference or args.upper_body_acceleration or args.upper_body_residual != .25
             ) and not args.stealth_upper_body_constraint:
         raise SystemExit("Upper-body settings require the upper-body constraint")
@@ -461,6 +503,16 @@ def main():
     upper_body_config = (
         upper_body_constraint.to_dict() if upper_body_constraint is not None else None
     )
+    upper_body_rate_limiter = None
+    if args.upper_body_rate_limit:
+        from trackerLab.algorithms.supermimic.stealth_action_filter import UpperBodyRateLimiter
+        upper_body_rate_limiter = UpperBodyRateLimiter(
+            spec.joint_names, spec.action_scale, max_joint_rate_rad_s=1.2,
+            max_joint_acceleration_rad_s2=3., control_dt=.02,
+            action_limit=args.action_limit).to(args.device)
+    rate_limiter_config = (
+        upper_body_rate_limiter.to_dict() if upper_body_rate_limiter is not None else None)
+    action_constraint = upper_body_constraint or upper_body_rate_limiter
     from trackerLab.algorithms.supermimic.locomotion_quality import LocomotionQuality
     from command_envelope import fixed_command_envelope, reference_envelope
     quality = LocomotionQuality(
@@ -540,6 +592,8 @@ def main():
         saved_upper_body_config = ck.get("stealth_upper_body_constraint")
         if saved_upper_body_config != upper_body_config:
             raise ValueError("Resume upper-body constraint differs from the saved objective")
+        if ck.get("upper_body_rate_limit") != rate_limiter_config:
+            raise ValueError("Resume upper-body rate limiter differs from the saved objective")
         actor.load_state_dict(ck["actor"])
         migrated = migrate_terrain_checkpoint(
             ck, field.model_indices,
@@ -565,6 +619,7 @@ def main():
             print("Migrated full-scan terrain context to sparse model/critic context; "
                   "projected optimizer moments were preserved.", flush=True)
         start_it = ck["iteration"]
+        initialization = ck.get("initialization")
     elif args.warm_start:
         ck = torch.load(args.warm_start.resolve(), map_location=args.device, weights_only=False)
         if (ck.get("training_stage") != "command-style" or ck.get("robot") != task.robot
@@ -573,7 +628,11 @@ def main():
         if ck["arguments"].get("action_limit", 4.) != args.action_limit:
             raise ValueError("Warm-start action limit differs from the actor's control contract")
         actor.load_state_dict(ck["actor"])
-        transfer_world = can_transfer_world_model(ck["arguments"], vars(args))
+        actor_adaptation = adapt_warm_start_actor(
+            actor, spec.joint_names, reset_arms=args.warm_start_reset_arms,
+            normalizer_prior_count=args.warm_start_normalizer_prior_count)
+        transfer_world = (not args.warm_start_reset_world
+                          and can_transfer_world_model(ck["arguments"], vars(args)))
         if transfer_world:
             world.load_state_dict(ck["world"])
         restore_style = ck.get("amp_style", {}).get("expert_hash") == style.expert_hash
@@ -583,7 +642,10 @@ def main():
                           "actor_transferred": True,
                           "world_model_transferred": transfer_world,
                           "world_model_reset_reason": None if transfer_world else
-                          "physical domain, self-contact or solver contract differs",
+                          ("explicit fresh dynamics for changed action distribution"
+                           if args.warm_start_reset_world else
+                           "physical domain, self-contact or solver contract differs"),
+                          "actor_adaptation": actor_adaptation,
                           "critic_reset": True, "actor_optimizer_reset": True,
                           "world_model_optimizer_reset": True, "critic_optimizer_reset": True,
                           "style_optimizer_restored": restore_style,
@@ -600,6 +662,7 @@ def main():
                    "training_reference_resets": env.contract.get("reference_resets"),
                    "style_reference_validation": reference_receipt,
                    "stealth_upper_body_constraint": upper_body_config,
+                   "upper_body_rate_limit": rate_limiter_config,
                    "upper_body_reference_receipt": upper_body_reference_receipt,
                    "command_envelope": command_envelope,
                    "locomotion_quality": {"foot_support": "geometry estimate, not measured force",
@@ -644,11 +707,15 @@ def main():
 
     def imag_step(state, history, xi, xi_n, c):
         action = actor(history, mdp.goal(state, c))
-        if upper_body_constraint is not None:
+        try:
+            constraint = action_constraint
+        except NameError:
+            constraint = upper_body_constraint
+        if constraint is not None:
             n = spec.num_joints
             previous_action = history[:, -1, 2 * n + 6:3 * n + 6]
             older_action = history[:, -2, 2 * n + 6:3 * n + 6]
-            action = upper_body_constraint(
+            action = constraint(
                 action, previous_action, older_action, entry_time=c[..., 6] + .02)
         next_state = world.step(state, action, xi_n)
         next_c = mdp.advance_command(c)
@@ -712,11 +779,15 @@ def main():
             actor.goal_norm.update(goal)
             action = collect_actor(obs_hist, goal)
             action = action + .1 * torch.randn_like(action)
-            if upper_body_constraint is not None:
+            try:
+                constraint = action_constraint
+            except NameError:
+                constraint = upper_body_constraint
+            if constraint is not None:
                 n = spec.num_joints
                 previous_action = obs_hist[:, -1, 2 * n + 6:3 * n + 6]
                 older_action = obs_hist[:, -2, 2 * n + 6:3 * n + 6]
-                action = upper_body_constraint(
+                action = constraint(
                     action, previous_action, older_action, entry_time=env.c[..., 6] + .02)
             transition = env.step(action)
             buffer.add(transition)
@@ -984,6 +1055,7 @@ def main():
                 checkpoint = {"task": args.task, "iteration": iteration + 1,
                               "training_stage": "command-style",
                               "objective_version": COMMAND_VERSION,
+                              "initialization": initialization,
                               "robot": task.robot,
                               "command_envelope": command_envelope,
                               "quality_sole_height": quality.sole_height,
@@ -992,6 +1064,7 @@ def main():
                               "opt_pi": opt_pi.state_dict(), "opt_v": opt_v.state_dict(),
                               "amp_style": style.checkpoint(),
                               "stealth_upper_body_constraint": upper_body_config,
+                              "upper_body_rate_limit": rate_limiter_config,
                               "upper_body_reference_receipt": upper_body_reference_receipt,
                               "arguments": vars(args) | {"run_dir": str(run),
                                   "amp_motion_config": str(args.amp_motion_config.resolve())}}

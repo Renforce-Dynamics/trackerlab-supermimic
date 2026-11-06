@@ -95,6 +95,45 @@ class CommandExportTests(unittest.TestCase):
                     ])
                     torch.testing.assert_close(actual, individual, atol=1e-5, rtol=1e-5)
 
+    def test_wasd_export_embeds_dynamic_arm_rate_limit_without_motion_input(self):
+        from command_envelope import keyboard_stealth_envelope
+        from trackerLab.algorithms.supermimic.stealth_action_filter import UpperBodyRateLimiter
+        spec = get_robot("g1")
+        n = spec.num_joints
+        actor = TerrainPolicy(3 * n + 196, 12, hist=2, num_joints=n, action_limit=20.).eval()
+        limiter = UpperBodyRateLimiter(
+            spec.joint_names, spec.action_scale, max_joint_rate_rad_s=1.2,
+            max_joint_acceleration_rad_s2=3., control_dt=.02, action_limit=20.).eval()
+        with torch.no_grad():
+            actor.dec[-1].bias.fill_(10.)
+        source, output = self.root / "rate-limit.pt", self.root / "rate-limit"
+        torch.save({
+            "training_stage": "command-style", "objective_version": COMMAND_VERSION,
+            "task": "locomotion/g1/stealth", "robot": "g1", "iteration": 3,
+            "arguments": {"hist": 2, "action_limit": 20., "stealth_control_mode": "wasd"},
+            "actor": actor.state_dict(), "upper_body_rate_limit": limiter.to_dict(),
+            "command_envelope": keyboard_stealth_envelope("wasd"),
+        }, source)
+        metadata = export(source, output)
+        self.assertEqual(metadata["upper_body_rate_limit"], limiter.to_dict())
+        self.assertIsNone(metadata["stealth_upper_body_constraint"])
+        self.assertEqual(len(metadata["keyboard_control"]["command_modes"]), 9)
+        saved = torch.load(output / "actor.pt", weights_only=False)
+        self.assertEqual(saved["upper_body_rate_limit"], limiter.to_dict())
+        scripted = torch.jit.load(str(output / "policy.ts")).eval()
+        history = torch.zeros(3, 2, 3 * n + 196)
+        goal = torch.zeros(3, 12)
+        eager = ConstrainedCommandPolicy(actor, limiter, n)
+        with torch.no_grad():
+            actual = scripted(history, goal)
+            torch.testing.assert_close(actual, eager(history, goal))
+            arm_delta = actual[:, limiter.upper_indices] * limiter.action_scale[limiter.upper_indices]
+            self.assertLessEqual(float(arm_delta.abs().max()), 3. * .02**2 + 1e-7)
+            changed_goal = goal.clone()
+            changed_goal[:, 6] = 1.
+            torch.testing.assert_close(scripted(history, changed_goal)[:, limiter.upper_indices],
+                                       actual[:, limiter.upper_indices])
+
     def test_metadata_declares_actor_only_runtime_and_input_contract(self):
         metadata = json.loads((self.output / "metadata.json").read_text(encoding="utf-8"))
         self.assertEqual(metadata, json.loads(json.dumps(self.metadata)))

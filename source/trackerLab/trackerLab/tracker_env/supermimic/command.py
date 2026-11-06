@@ -358,7 +358,12 @@ class CommandSim(TerrainSim):
                      & (q >= self.qlo).all(-1) & (q <= self.qhi).all(-1)
                      & ((q - self.default_q).abs() <= action_span).all(-1))
             safe &= ((R.transpose(-1, -2) @ R - identity).abs().flatten(1).amax(-1) <= 1e-3)
-            safe &= (torch.linalg.det(torch.nan_to_num(R)) - 1).abs() <= 1e-3
+            rotation = torch.nan_to_num(R)
+            handedness = (
+                torch.cross(rotation[..., :, 0], rotation[..., :, 1], dim=-1)
+                * rotation[..., :, 2]
+            ).sum(-1)
+            safe &= (handedness - 1).abs() <= 1e-3
             if supplied_grounding:
                 safe &= grounded_mask[start:stop]
             elif use_feet:

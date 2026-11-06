@@ -1,6 +1,7 @@
 """CPU checks for checkpoint-calibrated evaluation rewards and motion evidence."""
 
 import ast
+import numpy as np
 from pathlib import Path
 import sys
 from types import SimpleNamespace
@@ -15,7 +16,9 @@ from bootstrap import configure_paths
 configure_paths()
 
 from evaluate_terrain import (
-    attach_locomotion_quality, command_evaluation_summary, command_runtime_options,
+    WASD_RELEASE_REGRESSION, attach_locomotion_quality, command_evaluation_summary,
+    command_runtime_options, command_sequence_plan, evaluation_episode_limit, freeze_recorded_commands,
+    keyboard_episode_sums, keyboard_transition_sums, validate_command_selection,
 )
 from trackerLab.algorithms.supermimic.locomotion_quality import LocomotionQuality
 from trackerLab.tracker_env.mdp.supermimic import unflatten_state
@@ -78,6 +81,11 @@ class CommandEvaluationTests(unittest.TestCase):
         })
         self.assertTrue(options["self_collisions"])
         self.assertEqual(options["collision_mask_version"], 2)
+
+    def test_wasd_runtime_selects_nine_mode_sampling(self):
+        options = command_runtime_options({"arguments": {"stealth_control_mode": "wasd"}})
+        self.assertTrue(options["stealth_keyboard_mode"])
+        self.assertEqual(options["command_mode_set"], "wasd")
 
     def test_evaluation_uses_saved_calibration_and_includes_penalty_in_episode_return(self):
         sim = CpuCommandSim(max_episode_steps=1)
@@ -154,12 +162,19 @@ class CommandEvaluationTests(unittest.TestCase):
         ]
         per_mode = {
             "modes": modes,
-            "values": [torch.tensor([100., 75., 1., .04, 24.]),
-                       torch.tensor([40., 20., 2.25, .16, 0.])],
+            "values": [
+                torch.tensor([100., 75., .1, .02, .01, .12, .03, .2, 24., .69, .04, 90., 1., .04]),
+                torch.tensor([40., 20., 0., 0., .2, .1, .1, 0., 0., .69, .08, 30., 2.25, .16]),
+            ],
         }
+        episodes, per_mode_episodes = keyboard_episode_sums(
+            torch.tensor([0, 0, 1, 1]), torch.tensor([True, True, True, False]),
+            torch.tensor([False, True, False, False]),
+            torch.tensor([True, False, False, False]), 2)
         result = command_evaluation_summary(
             torch.zeros(3), torch.tensor(140.), torch.tensor([24., 24.]),
-            torch.zeros(2), torch.zeros(5), {"command_modes": modes}, per_mode)
+            torch.zeros(2), torch.zeros(5), {"command_modes": modes}, per_mode,
+            per_mode_episodes, episodes, "cycle_environment_id_modulo_mode")
         rows = result["keyboard_mode_metrics"]
         self.assertEqual([row["name"] for row in rows], ["forward", "turn_left"])
         self.assertEqual([row["samples"] for row in rows], [100, 40])
@@ -167,6 +182,160 @@ class CommandEvaluationTests(unittest.TestCase):
         self.assertAlmostEqual(rows[1]["tracking_fraction"], .5)
         self.assertAlmostEqual(rows[0]["mean_projected_velocity_m_s"], .24)
         self.assertEqual(rows[1]["mean_projected_velocity_m_s"], 0.)
+        self.assertAlmostEqual(rows[0]["body_vx_m_s"], .001)
+        self.assertAlmostEqual(rows[1]["body_yaw_rate_rad_s"], .005)
+        self.assertAlmostEqual(rows[0]["mean_planar_drift_m_s"], .0003)
+        self.assertAlmostEqual(rows[0]["mean_clearance_m"], .0069)
+        self.assertAlmostEqual(rows[1]["mean_support_sole_slip_m_s"], .002)
+        self.assertAlmostEqual(rows[0]["supported_fraction"], .9)
+        self.assertAlmostEqual(rows[0]["velocity_rmse_m_s"], .1)
+        self.assertAlmostEqual(rows[1]["yaw_rate_rmse_rad_s"], (.16 / 40) ** .5)
+        self.assertEqual((rows[0]["episodes"], rows[0]["falls"], rows[0]["successes"]),
+                         (2, 1, 1))
+        self.assertEqual((rows[1]["episodes"], rows[1]["falls"], rows[1]["successes"]),
+                         (1, 0, 0))
+        self.assertEqual(result["keyboard_episode_metrics"]["total"], {
+            "episodes": 3, "falls": 1, "successes": 1, "timeouts": 1,
+        })
+
+    def test_keyboard_episode_stats_pool_random_and_sequence_without_mode_attribution(self):
+        done = torch.tensor([True, True, True, False])
+        falls = torch.tensor([False, True, False, False])
+        success = torch.tensor([True, False, False, False])
+        total, by_mode = keyboard_episode_sums(None, done, falls, success, 3)
+        self.assertIsNone(by_mode)
+        modes = [{"name": name, "command": [0., 0., 0.]}
+                 for name in ("forward", "idle", "backward")]
+        transition = {"modes": modes, "values": [torch.zeros(14) for _ in modes]}
+        result = command_evaluation_summary(
+            torch.zeros(3), torch.zeros(()), torch.zeros(2), torch.zeros(2), torch.zeros(5),
+            {"command_modes": modes}, transition, None, total,
+            "random_mode_resampling; episodes pooled without mode attribution")
+        episode_report = result["keyboard_episode_metrics"]
+        self.assertIsNone(episode_report["per_keyboard_mode"])
+        self.assertEqual(episode_report["total"], {
+            "episodes": 3, "falls": 1, "successes": 1, "timeouts": 1,
+        })
+        self.assertTrue(all(row["episodes"] is None for row in result["keyboard_mode_metrics"]))
+        self.assertIn("pooled", episode_report["attribution"])
+
+    def test_wasd_release_sequence_order_duration_and_validation(self):
+        modes = [{"name": name} for name in (
+            "forward", "backward", "turn_left", "turn_right", "forward_left",
+            "forward_right", "backward_left", "backward_right", "idle")]
+        plan = command_sequence_plan(
+            "wasd-release-regression", modes, dt=.02, stage_seconds=3.)
+        self.assertEqual([row["mode"] for row in plan["stages"]],
+                         ["forward", "idle", "backward", "forward_left",
+                          "idle", "backward_right", "idle"])
+        self.assertEqual([row[0] for row in WASD_RELEASE_REGRESSION],
+                         [row["mode"] for row in plan["stages"]])
+        self.assertTrue(all(row["steps"] == 150 for row in plan["stages"]))
+        self.assertEqual(plan["total_steps"], 1050)
+        self.assertIn("key changes preserve the clock", plan["entry_clock_behavior"])
+        self.assertIsNone(command_sequence_plan(None, modes))
+        self.assertEqual(evaluation_episode_limit(1000, plan["total_steps"], plan), 1051)
+        self.assertEqual(evaluation_episode_limit(1200, plan["total_steps"], plan), 1200)
+        self.assertEqual(evaluation_episode_limit(1000, 1500, None), 1000)
+        for value in (False, 0, -1, 1.5):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                evaluation_episode_limit(value, plan["total_steps"], plan)
+        for name, selected_modes, duration, dt in (
+            ("unknown", modes, 3., .02),
+            ("wasd-release-regression", modes[:-1], 3., .02),
+            ("wasd-release-regression", modes, 2.99, .02),
+            ("wasd-release-regression", modes, float("nan"), .02),
+            ("wasd-release-regression", modes, 3., 0.),
+        ):
+            with self.subTest(name=name, duration=duration, dt=dt), self.assertRaises(ValueError):
+                command_sequence_plan(name, selected_modes, dt=dt, stage_seconds=duration)
+
+    def test_evaluation_selection_allows_only_supported_nonconflicting_layouts(self):
+        wasd = ("forward", "idle", "backward", "forward_left", "backward_right")
+        keyboard = ("forward", "turn_left", "turn_right")
+        self.assertIsNone(validate_command_selection(None, "random", None, "wasd", wasd))
+        self.assertIsNone(validate_command_selection(None, "cycle", None, "wasd", wasd))
+        self.assertIsNone(validate_command_selection("idle", "random", None, "wasd", wasd))
+        plan = validate_command_selection(
+            None, "random", "wasd-release-regression", "wasd", wasd)
+        self.assertEqual(plan["total_steps"], 1050)
+        self.assertIsNone(validate_command_selection(None, "random", None, "keyboard", keyboard))
+        self.assertIsNone(validate_command_selection(None, "cycle", None, "keyboard", keyboard))
+        self.assertIsNone(validate_command_selection("forward", "random", None, "keyboard", keyboard))
+        invalid = (
+            ("idle", "cycle", None, "wasd", wasd),
+            ("idle", "random", "wasd-release-regression", "wasd", wasd),
+            (None, "cycle", "wasd-release-regression", "wasd", wasd),
+            (None, "cycle", None, "fixed", ()),
+            ("backward", "random", None, "keyboard", keyboard),
+            (None, "random", "wasd-release-regression", "keyboard", keyboard),
+            (None, "fixed", None, "wasd", wasd),
+        )
+        for selection in invalid:
+            with self.subTest(selection=selection), self.assertRaises(ValueError):
+                validate_command_selection(*selection)
+
+    def test_sequence_mode_changes_preserve_entry_clock_and_stealth_clearance(self):
+        from trackerLab.tracker_env.mdp.supermimic_command import CommandMDP
+
+        sim = CpuCommandSim("stealth", batch=1, clearance_ratio=.92)
+        sim.mdp = CommandMDP(
+            sim.mdp.field, sim.default_q, sim.qlo, sim.qhi, profile="stealth",
+            clearance_ratio=.92, entry_duration_s=4.84, control_mode="wasd")
+        sim.set_wasd_keyboard_mode()
+        sim.set_fixed_keyboard_mode("forward")
+        sim.c[:, 6] = 2.4
+        clearance = sim.c[:, 4].clone()
+        for mode in ("idle", "backward", "forward_left", "idle",
+                     "backward_right", "idle"):
+            clock = sim.c[:, 6].clone()
+            sim.set_fixed_keyboard_mode(mode)
+            torch.testing.assert_close(sim.c[:, 6], clock)
+            torch.testing.assert_close(sim.c[:, 4], clearance)
+            expected = torch.tensor([
+                row[1:4] for row in sim._keyboard_modes() if row[0] == mode])
+            torch.testing.assert_close(sim.c[:, 1:4], expected)
+            self.assertEqual(sim._fixed_keyboard_mode_name, mode)
+
+    def test_first_attempt_command_history_freezes_with_terminal_pose(self):
+        previous = np.array([[.1, 0., 0.], [.2, .1, .4], [-.2, 0., -.4]])
+        current = np.array([[.3, 0., 0.], [0., 0., 0.], [.2, .1, .2]])
+        active = np.array([True, False, True])
+        actual = freeze_recorded_commands(previous, current, active)
+        np.testing.assert_array_equal(actual, np.array([
+            [.3, 0., 0.], [.2, .1, .4], [.2, .1, .2],
+        ]))
+        with self.assertRaisesRegex(ValueError, "align"):
+            freeze_recorded_commands(previous, current[:2], active)
+
+    def test_keyboard_physical_transition_aggregation_includes_drift_clearance_and_slip(self):
+        mode_ids = torch.tensor([0, 0, 1, 2])
+        valid = torch.tensor([True, True, True, False])
+        tracking = torch.tensor([True, False, True, False])
+        velocity = torch.tensor([[.2, .1, 0.], [.4, -.1, 0.], [0., 0., 0.], [9., 9., 0.]])
+        angular = torch.tensor([[0., 0., .1], [0., 0., -.1], [0., 0., .4], [9., 0., 0.]])
+        command = torch.tensor([
+            [0., .25, 0., 0., .7, 0., 0.], [0., .25, 0., 0., .7, 0., 0.],
+            [0., 0., 0., .55, .7, 0., 0.], [0., 0., 0., 0., .7, 0., 0.],
+        ])
+        clearance, slip = torch.tensor([.69, .71, .68, 9.]), torch.tensor([.03, .05, .07, 9.])
+        support = torch.tensor([True, False, True, False])
+        sums = keyboard_transition_sums(
+            mode_ids, valid, tracking, velocity, angular, command,
+            clearance, slip, support, 3)
+        torch.testing.assert_close(sums[0, :2], torch.tensor([2., 1.]))
+        torch.testing.assert_close(sums[0, 2:5], torch.tensor([.6, 0., 0.]))
+        torch.testing.assert_close(sums[0, 8:12], torch.tensor([.6, 1.4, .08, 1.]))
+        torch.testing.assert_close(sums[1, 2:5], torch.tensor([0., 0., .4]))
+        torch.testing.assert_close(sums[1, 6:12], torch.tensor([0., 0., 0., .68, .07, 1.]))
+        torch.testing.assert_close(sums[0, 12:], torch.tensor([.045, .02]))
+        torch.testing.assert_close(sums[1, 12:], torch.tensor([0., .0225]))
+        self.assertEqual(sums[2].sum().item(), 0.)
+        for invalid_ids in (torch.tensor([0, 0, 1, 3]), torch.tensor([-1, 0, 1, 0])):
+            with self.subTest(invalid_ids=invalid_ids), self.assertRaisesRegex(ValueError, "mode ID"):
+                keyboard_transition_sums(
+                    invalid_ids, valid, tracking, velocity, angular, command,
+                    clearance, slip, support, 3)
 
     def test_evaluator_aggregates_transition_motion_metrics_with_the_validity_mask(self):
         path = REPO / "scripts/rls/supermimic/evaluate_terrain.py"

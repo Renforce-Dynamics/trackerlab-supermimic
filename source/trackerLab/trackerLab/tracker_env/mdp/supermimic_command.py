@@ -6,6 +6,7 @@ The jump pulse is a clearance target; only the physics/world model changes S.
 """
 
 import math
+from typing import NamedTuple
 
 import torch
 
@@ -34,6 +35,92 @@ STEALTH_KEYBOARD_MODES = (
     ("forward_left", .25, 0., .45, .15),
     ("forward_right", .25, 0., -.45, .15),
 )
+
+
+class StealthCommandMode(NamedTuple):
+    name: str
+    vx: float
+    vy: float
+    yaw: float
+    probability: float
+
+
+STEALTH_WASD_MODES_VERSION = 1
+STEALTH_WASD_MODES_V1 = (
+    StealthCommandMode("forward", .25, 0., 0., .20),
+    StealthCommandMode("backward", -.20, 0., 0., .15),
+    StealthCommandMode("turn_left", 0., 0., .55, .10),
+    StealthCommandMode("turn_right", 0., 0., -.55, .10),
+    StealthCommandMode("forward_left", .25, 0., .45, .10),
+    StealthCommandMode("forward_right", .25, 0., -.45, .10),
+    StealthCommandMode("backward_left", -.20, 0., .45, .075),
+    StealthCommandMode("backward_right", -.20, 0., -.45, .075),
+    StealthCommandMode("idle", 0., 0., 0., .10),
+)
+STEALTH_WASD_MODES = STEALTH_WASD_MODES_V1
+STEALTH_WASD_KEYS_V1 = (
+    ("w",), ("s",), ("a",), ("d",), ("w", "a"), ("w", "d"),
+    ("s", "a"), ("s", "d"), (),
+)
+WASD_CONTROL_VERSION = 1
+WASD_VELOCITY_TOLERANCE = .15
+WASD_STATIONARY_VELOCITY_TOLERANCE = .10
+WASD_YAW_TOLERANCE = .20
+
+
+def stealth_keyboard_modes(control_mode="keyboard"):
+    """Return the checkpoint-selected immutable five- or nine-mode table."""
+    if control_mode in ("keyboard", "legacy"):
+        return STEALTH_KEYBOARD_MODES
+    if control_mode == "wasd":
+        return STEALTH_WASD_MODES
+    raise ValueError("Keyboard mode set must be 'keyboard', 'legacy' or 'wasd'")
+
+
+def wasd_keys_to_twist(keys=()):
+    """Return SI body (vx, vy, yaw rate); keys are an iterable of W/A/S/D.
+
+    Opposing translation keys and opposing yaw keys cancel independently.
+    Positive yaw always turns left in the body frame, including reverse arcs.
+    An empty iterable selects idle. Letter case and repeated keys are ignored.
+    """
+    if isinstance(keys, str):
+        keys = tuple(keys)
+    try:
+        keys = tuple(keys)
+    except TypeError as error:
+        raise ValueError("keys must contain only W, A, S and D") from error
+    if any(not isinstance(key, str) or key.lower() not in ("w", "a", "s", "d") for key in keys):
+        raise ValueError("keys must contain only W, A, S and D")
+    pressed = {key.lower() for key in keys}
+    for first, second in (("w", "s"), ("a", "d")):
+        if first in pressed and second in pressed:
+            pressed.difference_update((first, second))
+    for combination, mode in zip(STEALTH_WASD_KEYS_V1, STEALTH_WASD_MODES_V1):
+        if pressed == set(combination):
+            return (mode.vx, mode.vy, mode.yaw)
+    raise ValueError("Unrecognized WASD key combination")
+
+
+def wasd_keyboard_metadata():
+    """Portable command table shared by sampling, envelopes, exports and UI."""
+    return {
+        "command_mode_set": "wasd", "version": STEALTH_WASD_MODES_VERSION,
+        "command_modes": [
+            {"name": row.name, "command": [row.vx, row.vy, row.yaw],
+             "probability": row.probability, "keys": list(keys)}
+            for row, keys in zip(STEALTH_WASD_MODES_V1, STEALTH_WASD_KEYS_V1)
+        ],
+        "frame": "body", "units": ["m/s", "m/s", "rad/s"],
+        "positive_yaw": "left, including backward arcs",
+        "opposing_keys_cancel": [["w", "s"], ["a", "d"]],
+        "idle_semantics": "key release selects zero body translation and yaw while "
+                          "retaining stealth crouched clearance, arm targets and entry clock",
+        "entry_clock_reset": "skill activation or physical reset only; key release never resets it",
+        "standing_policy": "external FSM, not the idle keyboard mode",
+    }
+
+
 GOAL_FIELDS = (
     "body_vx", "body_vy", "body_wz", "target_clearance", "jump_height",
     "jump_pulse", "jump_clock", "lane_error", "remaining_world_x",
@@ -103,7 +190,7 @@ class CommandMDP(TerrainMDP):
 
     def __init__(self, field, default_q, qlo, qhi, gamma=.99, profile=None,
                  clearance_ratio=1.0, *, target_clearance_m=None, jump_height=0.,
-                 action_limit=ACTION_LIMIT, entry_duration_s=0.):
+                 action_limit=ACTION_LIMIT, entry_duration_s=0., control_mode="legacy"):
         profile = field.terrain.profile if profile is None else profile
         if profile not in (*PROFILES, *COMMAND_PROFILES) or profile != field.terrain.profile:
             raise ValueError("Command profile must match the heightfield profile")
@@ -119,8 +206,14 @@ class CommandMDP(TerrainMDP):
         if (not math.isfinite(entry_duration_s) or entry_duration_s < 0
                 or (entry_duration_s and (profile != "stealth" or jump_height))):
             raise ValueError("Entry duration must be nonnegative and requires nonjumping stealth")
+        if control_mode not in ("legacy", "wasd"):
+            raise ValueError("control_mode must be 'legacy' or 'wasd'")
+        if control_mode == "wasd" and profile != "stealth":
+            raise ValueError("WASD tracking requires a stealth profile")
         super().__init__(field, default_q, qlo, qhi, gamma)
         self.profile = profile
+        self.control_mode = control_mode
+        self.control_mode_version = WASD_CONTROL_VERSION if control_mode == "wasd" else 0
         self.terrain_navigation = profile in PROFILES
         self.gamma = float(gamma)
         self.target_clearance_m = float(clearance)
@@ -198,16 +291,31 @@ class CommandMDP(TerrainMDP):
             heading = -.003 * (1 - R[..., 0, 0])
         else:
             progress, lane, heading = zero, zero, zero
+        velocity_reward = .04 * torch.exp(-ev / .25)
+        yaw_reward = .04 * torch.exp(-ew / .25)
+        dont_wait = (-.01 * (c[..., 1] / scale > .15).to(ev.dtype)
+                     * torch.sigmoid((.1 - v_body[..., 0] / scale) / .03))
+        if self.control_mode == "wasd":
+            speed = torch.linalg.vector_norm(c[..., 1:3], dim=-1) / scale
+            tolerance = torch.where(
+                speed > .1, WASD_VELOCITY_TOLERANCE, WASD_STATIONARY_VELOCITY_TOLERANCE)
+            velocity_reward = .04 * torch.exp(-ev / tolerance.square())
+            yaw_reward = .04 * torch.exp(-ew / WASD_YAW_TOLERANCE**2)
+            # Existing waiting penalty, projected along either commanded direction.
+            # No extra positive progress bonus; COMMAND_MAX_STEP_REWARD stays valid.
+            projected = ((v_body[..., :2] / scale) * (c[..., 1:3] / scale)).sum(-1)
+            projected = projected / speed.clamp_min(.01)
+            dont_wait = (-.01 * (speed > .15).to(ev.dtype)
+                         * torch.sigmoid((.1 - projected) / .03))
         values = (
-            .04 * torch.exp(-ev / .25), .04 * torch.exp(-ew / .25),
+            velocity_reward, yaw_reward,
             torch.full_like(ev, .06), -.06 * (1 - R[..., 2, 2]),
             -.004 * ((clearance - target_clearance(c)) / (.2 * self.field.height)).square(),
             -.0006 * (q - self.default_q).square().mean(-1),
             -.0008 * (a - a_prev).square().mean(-1), -.00002 * qd.square().mean(-1),
             -.04 * (torch.relu(q - self.soft_hi) + torch.relu(self.soft_lo - q)).sum(-1),
             progress, lane, heading,
-            -.01 * (c[..., 1] / scale > .15).to(ev.dtype)
-            * torch.sigmoid((.1 - v_body[..., 0] / scale) / .03),
+            dont_wait,
         )
         reward = sum(values)
         return (reward, dict(zip(TERMS, values))) if terms else reward
@@ -275,7 +383,13 @@ class CommandMDP(TerrainMDP):
         yaw_error = (w_body[..., 2] - c[..., 3]).abs()
         clearance = self._clearance(S)
         clearance_error = (clearance - target_clearance(c)).abs()
-        tracking = ((velocity_error <= .25 * self.field.scale) & (yaw_error <= .25)
+        velocity_tolerance = torch.full_like(command_speed, .25 * self.field.scale)
+        yaw_tolerance = .25
+        if self.control_mode == "wasd":
+            velocity_tolerance = self.field.scale * torch.where(
+                moving_command, WASD_VELOCITY_TOLERANCE, WASD_STATIONARY_VELOCITY_TOLERANCE)
+            yaw_tolerance = WASD_YAW_TOLERANCE
+        tracking = ((velocity_error <= velocity_tolerance) & (yaw_error <= yaw_tolerance)
                     & (clearance_error <= .12 * self.field.height)
                     & (S[1][..., 2, 2] >= .7) & ~self.termination(S, requested)
                     & (~moving_command | (commanded_progress >= .5 * command_speed)))

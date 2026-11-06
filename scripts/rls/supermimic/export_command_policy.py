@@ -13,7 +13,9 @@ configure_paths()
 from trackerLab.algorithms.supermimic.terrain_networks import TerrainPolicy
 from trackerLab.algorithms.supermimic.stealth_upper_body import UpperBodyConstraint
 from trackerLab.algorithms.supermimic import networks
-from trackerLab.tracker_env.mdp.supermimic_command import COMMAND_VERSION, GOAL_FIELDS
+from trackerLab.tracker_env.mdp.supermimic_command import (
+    COMMAND_VERSION, GOAL_FIELDS, wasd_keyboard_metadata,
+)
 from trackerTask.supermimic.robots import get_robot
 
 
@@ -76,6 +78,8 @@ def export(checkpoint_path, output):
         actor_payload["stealth_upper_body_constraint"] = upper_body_config
     if checkpoint["arguments"].get("entry_duration_s", 0.):
         actor_payload["entry_duration_s"] = checkpoint["arguments"]["entry_duration_s"]
+    if checkpoint["arguments"].get("stealth_control_mode") == "wasd":
+        actor_payload["stealth_control_mode"] = "wasd"
     torch.save(actor_payload, output / "actor.pt")
     metadata = {
         "task": checkpoint["task"], "robot": spec.name, "iteration": checkpoint["iteration"],
@@ -101,6 +105,9 @@ def export(checkpoint_path, output):
         "runtime_reference_motion": False, "runtime_discriminator": False,
         "runtime_world_model": False, "normalization_included": True,
         "trained_command_envelope": checkpoint.get("command_envelope"),
+        "keyboard_control": (
+            wasd_keyboard_metadata()
+            if checkpoint["arguments"].get("stealth_control_mode") == "wasd" else None),
         "stealth_upper_body_constraint": upper_body_config,
         "physical_domain_randomization":
             checkpoint["arguments"].get("physical_domain_randomization", False),

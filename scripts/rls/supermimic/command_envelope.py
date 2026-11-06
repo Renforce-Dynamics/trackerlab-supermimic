@@ -4,7 +4,7 @@ import math
 
 import torch
 
-from trackerLab.tracker_env.mdp.supermimic_command import STEALTH_KEYBOARD_MODES
+from trackerLab.tracker_env.mdp.supermimic_command import stealth_keyboard_modes, wasd_keyboard_metadata
 
 
 def fixed_command_envelope(command):
@@ -33,15 +33,15 @@ def fixed_command_envelope(command):
     })
 
 
-def keyboard_stealth_envelope():
+def keyboard_stealth_envelope(control_mode="keyboard"):
     modes = [
         {"name": name, "command": [vx, vy, yaw_rate], "probability": probability}
-        for name, vx, vy, yaw_rate, probability in STEALTH_KEYBOARD_MODES
+        for name, vx, vy, yaw_rate, probability in stealth_keyboard_modes(control_mode)
     ]
     values = [mode["command"] for mode in modes]
     ranges = [[min(row[axis] for row in values), max(row[axis] for row in values)]
               for axis in range(3)]
-    return validate_envelope({
+    envelope = {
         "version": 1,
         "ranges": ranges,
         "source": "discrete keyboard command modes for low-profile locomotion",
@@ -54,7 +54,12 @@ def keyboard_stealth_envelope():
         "moving_frames": 0,
         "terrain_navigation": False,
         "standing_commands": False,
-    })
+    }
+    if control_mode == "wasd":
+        envelope["keyboard"] = wasd_keyboard_metadata()
+        envelope["stationary_commands"] = True
+        envelope["stationary_posture"] = "stealth"
+    return validate_envelope(envelope)
 
 
 def reference_envelope(motion, *, terrain_navigation=False, minimum_forward_speed=.15,

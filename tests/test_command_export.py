@@ -347,6 +347,33 @@ class CommandExportTests(unittest.TestCase):
         self.assertEqual(metadata["entry_duration_s"], 0.)
         self.assertIsNone(metadata["arm_entry_profile"])
 
+    def test_wasd_export_declares_keys_backward_and_idle_without_changing_actor_inputs(self):
+        from command_envelope import keyboard_stealth_envelope
+        from trackerLab.tracker_env.mdp.supermimic_command import (
+            wasd_keyboard_metadata, wasd_keys_to_twist,
+        )
+        source, output = self.root / "wasd.pt", self.root / "wasd"
+        spec = get_robot("g1")
+        obs_dim = 3 * spec.num_joints + 196
+        actor = TerrainPolicy(obs_dim, self.goal_dim, hist=self.hist,
+                              num_joints=spec.num_joints, action_limit=4.).eval()
+        checkpoint = {
+            **self.checkpoint,
+            "robot": "g1", "task": "locomotion/g1/stealth", "actor": actor.state_dict(),
+            "arguments": {**self.checkpoint["arguments"], "stealth_control_mode": "wasd"},
+            "command_envelope": keyboard_stealth_envelope("wasd"),
+        }
+        torch.save(checkpoint, source)
+        metadata = export(source, output)
+        self.assertEqual(metadata["keyboard_control"], wasd_keyboard_metadata())
+        self.assertEqual(len(metadata["trained_command_envelope"]["command_modes"]), 9)
+        for mode in metadata["keyboard_control"]["command_modes"]:
+            self.assertEqual(list(wasd_keys_to_twist(mode["keys"])), mode["command"])
+        self.assertIs(metadata["runtime_reference_motion"], False)
+        self.assertEqual(metadata["inputs"]["observation_history"], ["batch", 2, 283])
+        saved = torch.load(output / "actor.pt", map_location="cpu", weights_only=True)
+        self.assertEqual(saved["stealth_control_mode"], "wasd")
+
 
 if __name__ == "__main__":
     unittest.main()

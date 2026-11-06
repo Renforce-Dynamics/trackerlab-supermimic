@@ -43,10 +43,26 @@ def render(directory, level=5, fps=25):
     task = get_task(str(trajectory["task"]))
     if task.id != evaluation["task"] or int(trajectory["iteration"]) != evaluation["trained_iterations"]:
         raise ValueError("Evaluation and recorded trajectory differ")
-    if not 0 <= level < 6 or fps not in (10, 25, 50):
-        raise ValueError("Use a difficulty in 0..5 and a divisor of the 50 Hz control rate")
+    lane_count = trajectory["qpos"].shape[1]
+    recorded_env_ids = trajectory.get("recorded_env_ids", np.arange(lane_count))
+    if (recorded_env_ids.shape != (lane_count,)
+            or len(np.unique(recorded_env_ids)) != lane_count
+            or not 0 <= level < lane_count or fps not in (10, 25, 50)):
+        raise ValueError("Lane must name a recorded environment and FPS must divide 50 Hz")
     if not np.isfinite(trajectory["qpos"]).all() or not np.isfinite(trajectory["scan"]).all():
         raise ValueError("Recorded poses or scans contain nonfinite values")
+    environment_id = int(recorded_env_ids[level])
+    sequence = evaluation.get("command_sequence")
+
+    def recorded_mode(lane):
+        if evaluation.get("fixed_command_mode"):
+            return evaluation["fixed_command_mode"]
+        modes = evaluation.get("keyboard_mode_metrics", [])
+        if evaluation.get("command_mode_layout") == "cycle" and modes:
+            return modes[int(recorded_env_ids[lane]) % len(modes)]["name"]
+        return None
+
+    mode = recorded_mode(level)
     width, height, top, bottom = 1280, 720, 70, 52
     scene_height = height - top - bottom
     seed = int(trajectory["seed"])
@@ -108,9 +124,12 @@ def render(directory, level=5, fps=25):
             draw = ImageDraw.Draw(frame)
             draw.text((18, 9), f"{task.robot.upper()} / {task.profile.upper()}  |  SuperMimic",
                       font=font(25), fill="#18262b")
+            sample_label = (f"environment {environment_id}"
+                            + (f"  |  {mode}" if mode else
+                               f"  |  {sequence['name']}" if sequence else ""))
             draw.text((18, 42), f"Checkpoint {int(trajectory['iteration']):,}  |  seed {seed}"
-                      f"  |  {'sample' if flat_command_task else 'difficulty'} {level + 1}/6"
-                      "  |  first attempt", font=font(17), fill="#42545b")
+                      f"  |  {sample_label}  |  first attempt",
+                      font=font(17), fill="#42545b")
             scan = trajectory["scan"][index, level].reshape(17, 11)
             value = np.clip((.8 - scan / 2) / 1.6, 0, 1)
             rgb = np.stack((30 + 210 * value, 90 + 120 * value, 180 - 130 * value), -1).astype("uint8")
@@ -149,18 +168,25 @@ def render(directory, level=5, fps=25):
         if thumbnail is None:
             thumbnail = frame
         thumbnail.save(directory / "demo.png")
-        sheet = Image.new("RGB", (1280, 1080), "#f2f5f5")
-        for lane in range(6):
+        columns = 2
+        rows = math.ceil(lane_count / columns)
+        sheet = Image.new("RGB", (640 * columns, 360 * rows), "#f2f5f5")
+        for lane in range(lane_count):
             end = int(terminal[lane]) if terminal[lane] >= 0 else len(trajectory["qpos"]) - 1
             index = min(round(4 / dt), end)
             tile = image_for(index, lane).resize((640, 299), Image.Resampling.LANCZOS)
             row = Image.new("RGB", (640, 360), "#f2f5f5")
             row.paste(tile, (0, 40))
             label = ImageDraw.Draw(row)
-            label.text((12, 9), f"{'Sample' if flat_command_task else 'Difficulty'}"
-                       f" {lane + 1}/6 | {str(outcomes[lane])}"
+            lane_mode = recorded_mode(lane)
+            lane_label = f"Environment {int(recorded_env_ids[lane])}"
+            if lane_mode:
+                lane_label += f"  |  {lane_mode}"
+            elif sequence:
+                lane_label += f"  |  {sequence['name']}"
+            label.text((12, 9), f"{lane_label} | {str(outcomes[lane])}"
                        f" | snapshot t={index * dt:.2f}s", font=font(18), fill="#243a41")
-            sheet.paste(row, ((lane % 2) * 640, (lane // 2) * 360))
+            sheet.paste(row, ((lane % columns) * 640, (lane // columns) * 360))
         sheet.save(directory / "demo_contact_sheet.png")
     finally:
         try:
@@ -186,9 +212,11 @@ def render(directory, level=5, fps=25):
         "terrain_seed": seed, "terrain_seed_held_out": evaluation["terrain_seed_held_out"],
         "physics": "MuJoCo-Warp", "renderer": "MuJoCo EGL pose replay of recorded physical states",
         "fps": fps, "frames": total_frames, "duration_seconds": total_frames / fps,
-        "difficulty": level + 1, "attempt_outcome": str(outcomes[level]),
+        "difficulty": level + 1, "environment_id": environment_id,
+        "command_mode": mode, "command_sequence": sequence,
+        "attempt_outcome": str(outcomes[level]),
         "attempt_seconds": last * dt, "all_difficulty_outcomes": outcomes.tolist(),
-        "selection": f"First episode of environment ID {level}; no outcome filtering",
+        "selection": f"First episode of environment ID {environment_id}; no outcome filtering",
         "perception": "187 analytic heightfield samples; visual inset uses the noise-free scan",
         "terminal_display": "Pre-reset terminal state held for one second and explicitly labelled",
         "decode_and_pixel_motion_checks": "passed",
@@ -319,7 +347,7 @@ def main():
     parser.add_argument("--overview", action="store_true", help="Concatenate all demos at their recorded 1x speed")
     parser.add_argument("--gallery-only", action="store_true", help="Rebuild the gallery from an existing manifest")
     parser.add_argument("--directory", type=Path, help="Render an existing recording only")
-    parser.add_argument("--lane", type=int, default=5, choices=range(6))
+    parser.add_argument("--lane", type=int, default=5)
     args = parser.parse_args()
     if args.directory:
         render(args.directory, level=args.lane)

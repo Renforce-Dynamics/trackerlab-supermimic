@@ -8,7 +8,7 @@ from trackerLab.kinematics.supermimic.rotations import mat_to_quat, quat_to_mat,
 from trackerLab.tracker_env.mdp.supermimic import flatten_state
 from trackerLab.tracker_env.mdp.supermimic_command import (
     ACTION_LIMIT, COMMAND_FIELDS, COMMAND_VERSION, CONTROL_DT, SCENARIO_DIM,
-    STEALTH_KEYBOARD_MODES,
+    stealth_keyboard_modes, wasd_keyboard_metadata,
     advance_command,
 )
 from trackerLab.tracker_env.mdp.supermimic_terrain import (
@@ -28,7 +28,8 @@ class CommandSim(TerrainSim):
                  command_resample_steps=(100, 250), jump_probability=.15,
                  stealth_keyboard_mode=False, self_collisions=False,
                  physical_domain_randomization=False, grounded_start=False,
-                 standing_joint_noise=0., collision_mask_version=2):
+                 standing_joint_noise=0., collision_mask_version=2,
+                 command_mode_set="keyboard"):
         if task.profile != mdp.profile:
             raise ValueError("Command task and MDP profiles must match")
         clearance = mdp.target_clearance_m if target_clearance_m is None else target_clearance_m
@@ -44,6 +45,10 @@ class CommandSim(TerrainSim):
             raise ValueError("Episode length must be positive")
         if stealth_keyboard_mode and task.profile != "stealth":
             raise ValueError("Keyboard command modes require a stealth task")
+        if command_mode_set not in ("keyboard", "wasd"):
+            raise ValueError("command_mode_set must be 'keyboard' or 'wasd'")
+        if command_mode_set == "wasd" and task.profile != "stealth":
+            raise ValueError("WASD command modes require a stealth task")
         if grounded_start and (task.robot, task.profile) != ("g1", "stealth"):
             raise ValueError("Grounded entry currently requires G1 stealth")
         if (not math.isfinite(standing_joint_noise) or not 0 <= standing_joint_noise <= .05
@@ -59,7 +64,8 @@ class CommandSim(TerrainSim):
         self.target_clearance_m = float(clearance)
         self.jump_height, self.action_limit = float(jump_height), float(action_limit)
         self.jump_probability = float(jump_probability)
-        self.stealth_keyboard_mode = bool(stealth_keyboard_mode)
+        self.command_mode_set = command_mode_set
+        self.stealth_keyboard_mode = bool(stealth_keyboard_mode or command_mode_set == "wasd")
         self.self_collisions = bool(self_collisions)
         self.grounded_start = bool(grounded_start)
         self.standing_joint_noise = float(standing_joint_noise)
@@ -94,13 +100,17 @@ class CommandSim(TerrainSim):
             command_resample_steps=self.command_resample_steps,
             stealth_keyboard_modes=(
                 [{"name": name, "command": [vx, vy, yaw], "probability": probability}
-                 for name, vx, vy, yaw, probability in STEALTH_KEYBOARD_MODES]
+                 for name, vx, vy, yaw, probability in self._keyboard_modes()]
                 if self.stealth_keyboard_mode else None),
             flat_success="survive at least 10 seconds through timeout and track commands on at least 80% of actions",
             entry_duration_s=mdp.entry_duration_s,
             grounded_start=self.grounded_start,
             standing_joint_noise_rad=self.standing_joint_noise,
+            command_mode_set=self.command_mode_set,
+            control_mode=mdp.control_mode, control_mode_version=mdp.control_mode_version,
         )
+        if self.command_mode_set == "wasd":
+            self.contract["wasd_keyboard"] = wasd_keyboard_metadata()
 
     def _reset_state(self, ids):
         # The parent invokes this override during construction, before reset().
@@ -166,14 +176,82 @@ class CommandSim(TerrainSim):
         self.qpos[ids, self._root_qpos + 2] += adjustment
 
     def set_stealth_keyboard_mode(self):
+        """Select the unchanged five-mode command sampler; rewards are MDP-owned."""
+        self._set_keyboard_mode("keyboard")
+
+    def set_wasd_keyboard_mode(self):
+        """Select nine-mode WASD sampling; configure mdp.control_mode separately."""
+        self._set_keyboard_mode("wasd")
+
+    def _keyboard_modes(self):
+        # CPU fixtures and old callers may predate the explicit mode-set selector.
+        return stealth_keyboard_modes(getattr(self, "command_mode_set", "keyboard"))
+
+    def _set_keyboard_mode(self, mode_set):
         if self.mdp.profile != "stealth":
             raise ValueError("Keyboard command modes are only available for stealth locomotion")
+        fixed = getattr(self, "_fixed_keyboard_mode_name", None)
+        if fixed is not None and fixed not in [row[0] for row in stealth_keyboard_modes(mode_set)]:
+            raise ValueError("Clear the fixed keyboard mode before switching to a table without it")
+        self.command_mode_set = mode_set
         self.stealth_keyboard_mode = True
+        self.contract["command_mode_set"] = mode_set
         self.contract["stealth_keyboard_modes"] = [
             {"name": name, "command": [vx, vy, yaw], "probability": probability}
-            for name, vx, vy, yaw, probability in STEALTH_KEYBOARD_MODES
+            for name, vx, vy, yaw, probability in self._keyboard_modes()
         ]
-        self.sample_commands()
+        if mode_set == "wasd":
+            self.contract["wasd_keyboard"] = wasd_keyboard_metadata()
+        else:
+            self.contract.pop("wasd_keyboard", None)
+        if getattr(self, "_keyboard_evaluation_cycle", False):
+            self.set_keyboard_evaluation_cycle(True)
+        else:
+            self.sample_commands()
+
+    def set_fixed_keyboard_mode(self, name: str | None):
+        """Force one existing mode across resampling and resets; None clears it."""
+        if name is not None:
+            if not isinstance(name, str) or name not in [row[0] for row in self._keyboard_modes()]:
+                raise ValueError("Fixed keyboard mode must name a mode in the selected table")
+            if not self.stealth_keyboard_mode:
+                raise ValueError("Enable a keyboard mode set before fixing a command")
+            if getattr(self, "_keyboard_evaluation_cycle", False):
+                raise ValueError("Fixed keyboard mode and evaluation cycle are mutually exclusive")
+        self._fixed_keyboard_mode_name = name
+        if name is None:
+            self.contract.pop("fixed_keyboard_mode", None)
+        else:
+            self.contract["fixed_keyboard_mode"] = name
+        if self.stealth_keyboard_mode:
+            self.sample_commands()
+
+    def set_keyboard_evaluation_cycle(self, enabled=True):
+        """Assign env ID modulo mode count, retaining assignments across resets.
+
+        This evaluation layout is mutually exclusive with a fixed single mode.
+        Disabling it restores the selected table's probability distribution.
+        """
+        if not isinstance(enabled, bool):
+            raise ValueError("enabled must be a boolean")
+        if enabled:
+            if not self.stealth_keyboard_mode:
+                raise ValueError("Enable a keyboard mode set before enabling the evaluation cycle")
+            if getattr(self, "_fixed_keyboard_mode_name", None) is not None:
+                raise ValueError("Fixed keyboard mode and evaluation cycle are mutually exclusive")
+        self._keyboard_evaluation_cycle = enabled
+        if enabled:
+            modes = self._keyboard_modes()
+            self.contract["keyboard_evaluation_layout"] = {
+                "version": 1, "layout": "cycle",
+                "assignment": "environment_id % mode_count",
+                "mode_count": len(modes), "mode_names": [mode[0] for mode in modes],
+                "preserved_across_resets": True,
+            }
+        else:
+            self.contract.pop("keyboard_evaluation_layout", None)
+        if self.stealth_keyboard_mode:
+            self.sample_commands()
 
     @torch.no_grad()
     def set_reference_resets(self, motion, probability=.7, grounded_mask=None):
@@ -382,11 +460,18 @@ class CommandSim(TerrainSim):
                 self._stealth_mode_ids = torch.zeros(
                     self.num_envs, dtype=torch.long, device=self.device)
             probabilities = torch.tensor(
-                [row[4] for row in STEALTH_KEYBOARD_MODES],
+                [row[4] for row in self._keyboard_modes()],
                 device=self.device, dtype=self.c.dtype)
-            indices = torch.multinomial(probabilities.expand(count, -1), 1).squeeze(-1)
+            fixed = getattr(self, "_fixed_keyboard_mode_name", None)
+            if getattr(self, "_keyboard_evaluation_cycle", False):
+                indices = ids.remainder(len(self._keyboard_modes()))
+            elif fixed is None:
+                indices = torch.multinomial(probabilities.expand(count, -1), 1).squeeze(-1)
+            else:
+                fixed_index = [row[0] for row in self._keyboard_modes()].index(fixed)
+                indices = torch.full((count,), fixed_index, device=self.device, dtype=torch.long)
             mode_commands = torch.tensor(
-                [row[1:4] for row in STEALTH_KEYBOARD_MODES],
+                [row[1:4] for row in self._keyboard_modes()],
                 device=self.device, dtype=self.c.dtype)
             commands = mode_commands[indices]
             self._stealth_mode_ids[ids] = indices

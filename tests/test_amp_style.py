@@ -355,6 +355,32 @@ class AMPStyleTests(unittest.TestCase):
         self.assert_tree_equal(norm_before, learner.norm.state_dict())
         self.assertTrue(learner.optimizer.state)
 
+    def test_device_metric_reporting_preserves_discriminator_and_optimizer_updates(self):
+        learner = self.learner(gradient_penalty_scope="both")
+        S0, S1 = self.states()
+        S1[4].add_(.4)
+        learner.observe(S0, S1)
+        device_reporting = copy.deepcopy(learner)
+        torch.manual_seed(912)
+        expected = learner.update(batch_size=8, updates=2)
+        torch.manual_seed(912)
+        actual = device_reporting.update(batch_size=8, updates=2, tensor_metrics=True)
+        for name in ("loss", "expert_score", "policy_score", "gradient_penalty"):
+            self.assertIsInstance(actual[name], torch.Tensor)
+            self.assertFalse(actual[name].requires_grad)
+            self.assertIsNone(actual[name].grad_fn)
+            self.assertEqual(actual[name].device, device_reporting._replay.device)
+            self.assertEqual(actual[name].item(), expected[name])
+        self.assertEqual(actual["updates"], expected["updates"])
+        self.assert_tree_equal(learner.discriminator.state_dict(),
+                               device_reporting.discriminator.state_dict())
+        self.assert_tree_equal(learner.optimizer.state_dict(),
+                               device_reporting.optimizer.state_dict())
+        empty = self.learner().update(batch_size=8, updates=0, tensor_metrics=True)
+        self.assertEqual(empty["updates"], 0)
+        self.assertTrue(all(isinstance(empty[name], torch.Tensor) and empty[name].item() == 0.
+                            for name in ("loss", "expert_score", "policy_score", "gradient_penalty")))
+
     def test_frozen_discriminator_preserves_reward_to_joint_and_action_gradients(self):
         learner = self.learner()
         S0, S1 = self.states()

@@ -73,7 +73,7 @@ def parse_args(argv=None):
     parser.add_argument("--amp-history", type=int, default=10)
     parser.add_argument("--command-range-mode", choices=("reference", "full"), default="reference")
     parser.add_argument("--stealth-command", type=float, nargs=3)
-    parser.add_argument("--stealth-control-mode", choices=("fixed", "keyboard"), default="fixed")
+    parser.add_argument("--stealth-control-mode", choices=("fixed", "keyboard", "wasd"), default="fixed")
     parser.add_argument("--style-feature-mode", choices=("full", "proprioceptive", "postural",
                                                        "postural_end_effectors"),
                         default="proprioceptive")
@@ -320,7 +320,7 @@ def main():
         raise SystemExit("--task_profile differs from the selected task")
     if args.stealth_command is not None and task.profile != "stealth":
         raise SystemExit("--stealth-command is only valid for a stealth task")
-    if args.stealth_control_mode == "keyboard" and task.profile != "stealth":
+    if args.stealth_control_mode in ("keyboard", "wasd") and task.profile != "stealth":
         raise SystemExit("Keyboard command modes are only available for stealth tasks")
     if args.stealth_upper_body_constraint and (task.robot, task.profile) != ("g1", "stealth"):
         raise SystemExit("The static upper-body constraint is currently calibrated for G1 stealth")
@@ -398,7 +398,8 @@ def main():
     default_q = torch.tensor(spec.default_q, device=args.device)
     mdp = CommandMDP(field, default_q, qlo, qhi, gamma=args.gamma,
                      profile=task.profile, clearance_ratio=args.clearance_ratio,
-                     action_limit=args.action_limit, entry_duration_s=args.entry_duration_s)
+                     action_limit=args.action_limit, entry_duration_s=args.entry_duration_s,
+                     control_mode="wasd" if args.stealth_control_mode == "wasd" else "legacy")
     mdp.set_style_weight(args.amp_weight)
     env = CommandSim(task, mdp, args.num_envs, args.device, args.seed,
                      args.solver_iterations, args.max_episode_steps,
@@ -406,7 +407,8 @@ def main():
                      action_limit=args.action_limit,
                      command_resample_steps=tuple(args.command_resample_steps),
                      stealth_keyboard_mode=(task.profile == "stealth"
-                                            and args.stealth_control_mode == "keyboard"),
+                                            and args.stealth_control_mode in ("keyboard", "wasd")),
+                     command_mode_set="wasd" if args.stealth_control_mode == "wasd" else "keyboard",
                      self_collisions=args.self_collisions,
                      physical_domain_randomization=args.physical_domain_randomization,
                      grounded_start=args.grounded_start,
@@ -467,10 +469,13 @@ def main():
         feet_close_weight=args.feet_close_weight, foot_slip_mode=args.foot_slip_mode)
     quality.calibrate(motion)
     command_envelope = None
-    if task.profile == "stealth" and args.stealth_control_mode == "keyboard":
+    if task.profile == "stealth" and args.stealth_control_mode in ("keyboard", "wasd"):
         from command_envelope import keyboard_stealth_envelope
-        command_envelope = keyboard_stealth_envelope()
-        env.set_stealth_keyboard_mode()
+        command_envelope = keyboard_stealth_envelope(args.stealth_control_mode)
+        if args.stealth_control_mode == "wasd":
+            env.set_wasd_keyboard_mode()
+        else:
+            env.set_stealth_keyboard_mode()
     elif args.stealth_command is not None:
         command_envelope = fixed_command_envelope(args.stealth_command)
         env.set_command_ranges(command_envelope["ranges"])
@@ -697,7 +702,7 @@ def main():
             state = env.state()
             obs = mdp.add_noise(env.observe())
             fresh = env.ep_step == 0
-            first_frame = style.frame_features(state)
+            first_frame = style_frame_fn(state)
             style_hist = torch.where(fresh[:, None, None],
                                      first_frame[:, None].expand_as(style_hist), style_hist)
             obs_hist = torch.where(fresh[:, None, None], obs[:, None].expand_as(obs_hist),
@@ -720,7 +725,7 @@ def main():
             outcomes["falls"] += transition["episode_fall"].sum()
             outcomes["timeouts"] += transition["episode_timeout"].sum()
             s0, s1 = unflatten_state(transition["s"]), unflatten_state(transition["s1"])
-            style_hist = torch.cat((style_hist[:, 1:], style.frame_features(s1)[:, None]), 1)
+            style_hist = torch.cat((style_hist[:, 1:], style_frame_fn(s1)[:, None]), 1)
             style.observe_window(style_hist, valid=(~transition["done"]) & (
                 transition["ep_step"] >= style.history_steps - 2))
             world.in_norm.update(world.inputs(s0, transition["a"], normalize_xi(transition["xi"])))
@@ -909,7 +914,8 @@ def main():
             # Fit the prior alongside the actor, after world-model warmup,
             # so the discriminator does not saturate on the initial controller.
             amp_metrics = style.update(batch_size=args.amp_batch, updates=(
-                args.amp_updates if iteration >= args.wm_only_iters else 0))
+                args.amp_updates if iteration >= args.wm_only_iters else 0),
+                tensor_metrics=True)
             amp_updates_total += amp_metrics["updates"]
             amp_loss = torch.as_tensor(amp_metrics["loss"], device=args.device).detach()
             if iteration >= args.wm_only_iters:

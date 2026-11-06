@@ -604,14 +604,16 @@ class AMPStyle(nn.Module):
         return (features, f0, f0 + self.history_steps - 1) if return_indices else features
 
     @torch.enable_grad()
-    def update(self, batch_size: int = 1024, updates: int = 1) -> dict[str, float | int]:
-        """Fit only cached experts and REAL replay with LSGAN and expert R1 GP."""
+    def update(self, batch_size: int = 1024, updates: int = 1, *,
+               tensor_metrics: bool = False) -> dict[str, float | int | torch.Tensor]:
+        """Fit cached experts/REAL replay; optionally defer metric CPU transfer."""
         self._require_training()
         batch_size = _positive_int(batch_size, "batch_size")
         if isinstance(updates, bool) or not isinstance(updates, Integral) or updates < 0:
             raise ValueError("updates must be a nonnegative integer")
         names = ("loss", "expert_score", "policy_score", "gradient_penalty")
-        metrics = dict.fromkeys(names, 0.0)
+        metrics = ({name: self._replay.new_zeros(()) for name in names}
+                   if tensor_metrics else dict.fromkeys(names, 0.0))
         metrics.update(updates=0, replay_size=self.replay_size)
         if updates == 0 or self.replay_size == 0:
             return metrics
@@ -655,7 +657,8 @@ class AMPStyle(nn.Module):
             sums += torch.stack((loss.detach(), expert_score.detach().mean(),
                                  policy_score.detach().mean(), penalty.detach()))
             self._updates += 1
-        metrics.update(zip(names, (sums / updates).cpu().tolist()))
+        means = sums / updates
+        metrics.update(zip(names, means.unbind() if tensor_metrics else means.cpu().tolist()))
         metrics["updates"] = int(updates)
         return metrics
 

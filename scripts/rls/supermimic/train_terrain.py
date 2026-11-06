@@ -54,6 +54,7 @@ def parse_args(argv=None):
     parser.add_argument("--critic-epochs", type=int, default=5)
     parser.add_argument("--critic-minibatches", type=int, default=4)
     parser.add_argument("--lr", type=float, default=2e-4)
+    parser.add_argument("--actor-lr", type=float)
     parser.add_argument("--gamma", type=float, default=.99)
     parser.add_argument("--lam", type=float, default=.95)
     parser.add_argument("--warmup-steps", type=int, default=64)
@@ -379,7 +380,10 @@ def main():
         raise SystemExit("Imagination horizon must fit an episode and WM warmup must be nonnegative")
     if args.pi_batch * args.horizon < args.critic_minibatches:
         raise SystemExit("Each critic minibatch must contain at least one sample")
-    if not 0 < args.gamma < 1 or not 0 <= args.lam <= 1 or args.lr <= 0:
+    if (not 0 < args.gamma < 1 or not 0 <= args.lam <= 1
+            or not math.isfinite(args.lr) or args.lr <= 0
+            or (args.actor_lr is not None
+                and (not math.isfinite(args.actor_lr) or args.actor_lr <= 0))):
         raise SystemExit("Invalid discount, GAE lambda or learning rate")
     if args.describe:
         print(json.dumps({
@@ -462,7 +466,7 @@ def main():
     critic_dim = spec.state_dim + spec.context_dim + mdp.goal_dim + len(field.model_offsets)
     critic = Critic(critic_dim).to(args.device)
     opt_wm = torch.optim.Adam(world.parameters(), lr=args.lr, fused=args.fused_optimizers)
-    opt_pi = torch.optim.Adam(actor.parameters(), lr=args.lr, betas=(.9, .95),
+    opt_pi = torch.optim.Adam(actor.parameters(), lr=args.actor_lr or args.lr, betas=(.9, .95),
                               fused=args.fused_optimizers)
     opt_v = torch.optim.Adam(critic.parameters(), lr=args.lr, fused=args.fused_optimizers)
     kin = RobotKinematics(args.device, spec)

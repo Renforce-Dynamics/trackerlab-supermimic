@@ -60,6 +60,10 @@ velocity/clearance entry ramp, G1 sole-slip regularization, and command holds
 up to 20 seconds. AMP experts are training-only; the exported policy does not
 load motion files, the discriminator, or the world model at runtime.
 
+Training resets mix 50% grounded standing with 50% eligible expert states.
+Evaluation always starts grounded without reference initialization. The actor
+learning rate is 2e-5 while world-model and critic rates remain 2e-4.
+
 The initial 1,000-iteration adaptation is reviewed before a longer continuation.
 The locomotion actor transfers with its 14 arm decoder output rows reset to
 zero: those rows were hidden by the prior fixed-arm controller and produced

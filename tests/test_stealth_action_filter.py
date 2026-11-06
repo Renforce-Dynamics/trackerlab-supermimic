@@ -57,9 +57,25 @@ class UpperBodyRateLimiterTests(unittest.TestCase):
         previous = torch.zeros_like(raw)
         result = limiter(raw, previous, previous, entry_time=torch.zeros(2))
         delta = (result - previous) * limiter.action_scale
-        expected = torch.tensor([[1.], [-1.]]) * 3. * .02**2
-        torch.testing.assert_close(delta[:, limiter.upper_indices], expected.expand(2, 14))
         self.assertLessEqual(delta[:, limiter.upper_indices].abs().max().item(), .024)
+        self.assertGreater(delta[:, limiter.upper_indices].abs().min().item(), 0.)
+        self.assertLessEqual(delta[:, limiter.upper_indices].abs().max().item(), 3. * .02**2)
+
+    def test_moderate_arm_targets_retain_policy_gradient_over_full_imagined_horizon(self):
+        limiter = self.limiter()
+        raw = torch.zeros(1, 29)
+        raw[:, limiter.upper_indices] = .25
+        raw.requires_grad_()
+        previous = torch.zeros_like(raw)
+        older = torch.zeros_like(raw)
+        total = torch.zeros(())
+        for _ in range(32):
+            current = limiter(raw, previous, older)
+            total = total + current[:, limiter.upper_indices].sum()
+            older, previous = previous, current
+        gradient = torch.autograd.grad(total, raw)[0]
+        self.assertTrue(bool(torch.isfinite(gradient).all()))
+        self.assertGreater(float(gradient[:, limiter.upper_indices].abs().sum()), 1e-3)
 
     def test_repeated_reversals_obey_rate_and_acceleration_with_executed_history(self):
         limiter = self.limiter().double()
@@ -163,6 +179,7 @@ class UpperBodyRateLimiterTests(unittest.TestCase):
         self.assertEqual(set(config), {
             "joint_names", "action_scale", "max_joint_rate_rad_s",
             "max_joint_acceleration_rad_s2", "control_dt", "action_limit",
+            "rate_error_scale_rad",
         })
         restored = UpperBodyRateLimiter.from_dict(config).eval()
         self.assertEqual(restored.to_dict(), config)

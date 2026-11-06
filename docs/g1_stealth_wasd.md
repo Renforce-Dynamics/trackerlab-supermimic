@@ -71,9 +71,11 @@ large untrained targets when released. Leg and waist rows remain unchanged.
 Actor observation and goal means/variances are retained, with their prior
 counts capped at one million to permit adaptation to reverse and idle commands.
 The world model, critic, optimizers, and AMP discriminator start fresh.
-Learned arm targets are limited to 1.2 rad/s and 3 rad/s^2 in physical
-joint-angle units. The same limiter is embedded in physical collection,
-model rollouts, evaluation, and the exported policy; it has no pose reference.
+Learned arm targets are smoothly limited to 1.2 rad/s and 3 rad/s^2 in physical
+joint-angle units. The rate and acceleration maps use bounded arctan responses
+with braking near action limits, retaining actor gradients across the imagined
+horizon. The same limiter is embedded in physical collection, model rollouts,
+evaluation, and the exported policy; it has no pose reference.
 Review each saved milestone using fixed-mode and nine-mode-cycle evaluation.
 The command-switch trajectory exercises forward, release-to-idle, backward,
 forward arcs, and release-to-idle without resetting the entry clock. Render

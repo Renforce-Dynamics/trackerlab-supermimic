@@ -1,5 +1,9 @@
 # G1 Stealth Entry And Geometric Style
 
+The approved continuation reached 10,000 iterations. See
+[continuation results](g1_stealth_entry_results.md) for settings, held-out
+evaluation, speed, export, and remaining command-control limitations.
+
 This opt-in experiment addresses standing entry, hand geometry, and foot
 sliding in the single-clip G1 command policy. It retains the SuperMimic world
 model and differentiable actor updates with a real-simulation AMP discriminator.

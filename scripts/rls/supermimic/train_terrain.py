@@ -707,15 +707,11 @@ def main():
 
     def imag_step(state, history, xi, xi_n, c):
         action = actor(history, mdp.goal(state, c))
-        try:
-            constraint = action_constraint
-        except NameError:
-            constraint = upper_body_constraint
-        if constraint is not None:
+        if action_constraint is not None:
             n = spec.num_joints
             previous_action = history[:, -1, 2 * n + 6:3 * n + 6]
             older_action = history[:, -2, 2 * n + 6:3 * n + 6]
-            action = constraint(
+            action = action_constraint(
                 action, previous_action, older_action, entry_time=c[..., 6] + .02)
         next_state = world.step(state, action, xi_n)
         next_c = mdp.advance_command(c)
@@ -779,15 +775,11 @@ def main():
             actor.goal_norm.update(goal)
             action = collect_actor(obs_hist, goal)
             action = action + .1 * torch.randn_like(action)
-            try:
-                constraint = action_constraint
-            except NameError:
-                constraint = upper_body_constraint
-            if constraint is not None:
+            if action_constraint is not None:
                 n = spec.num_joints
                 previous_action = obs_hist[:, -1, 2 * n + 6:3 * n + 6]
                 older_action = obs_hist[:, -2, 2 * n + 6:3 * n + 6]
-                action = constraint(
+                action = action_constraint(
                     action, previous_action, older_action, entry_time=env.c[..., 6] + .02)
             transition = env.step(action)
             buffer.add(transition)

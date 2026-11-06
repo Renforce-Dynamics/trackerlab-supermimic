@@ -442,6 +442,7 @@ class StealthEntryTests(unittest.TestCase):
         namespace = {
             "torch": torch, "actor": actor, "world": world, "mdp": mdp,
             "spec": SimpleNamespace(num_joints=n), "upper_body_constraint": None,
+            "action_constraint": None,
         }
         tree = ast.parse((REPO / "scripts/rls/supermimic/train_terrain.py").read_text("utf-8"))
         nodes = [node for node in ast.walk(tree)

@@ -179,7 +179,7 @@ class UpperBodyRateLimiterTests(unittest.TestCase):
         self.assertEqual(set(config), {
             "joint_names", "action_scale", "max_joint_rate_rad_s",
             "max_joint_acceleration_rad_s2", "control_dt", "action_limit",
-            "rate_error_scale_rad",
+            "rate_error_scale_rad", "response_version",
         })
         restored = UpperBodyRateLimiter.from_dict(config).eval()
         self.assertEqual(restored.to_dict(), config)
@@ -212,6 +212,30 @@ class UpperBodyRateLimiterTests(unittest.TestCase):
             torch.testing.assert_close(actual, expected)
             torch.testing.assert_close(torch.autograd.grad(actual.sum(), compiled_inputs),
                                        torch.autograd.grad(expected.sum(), inputs))
+
+    def test_legacy_checkpoint_restores_original_filter_and_new_version_retains_gradients(self):
+        legacy_config = self.limiter().to_dict()
+        legacy_config.pop("response_version")
+        legacy_config.pop("rate_error_scale_rad")
+        legacy = UpperBodyRateLimiter.from_dict(legacy_config)
+        self.assertEqual(legacy.response_version, 1)
+        self.assertEqual(legacy.to_dict(), legacy_config)
+        raw = (.25 / legacy.action_scale).expand(1, -1).clone().requires_grad_()
+        zero = torch.zeros_like(raw)
+        result = legacy(raw, zero, zero)
+        arm_step = result[:, legacy.upper_indices] * legacy.action_scale[legacy.upper_indices]
+        torch.testing.assert_close(arm_step, torch.full_like(arm_step, 3. * .02**2))
+        gradient = torch.autograd.grad(result[:, legacy.upper_indices].sum(), raw)[0]
+        torch.testing.assert_close(gradient[:, legacy.upper_indices], torch.zeros(1, 14))
+        scripted = torch.jit.script(legacy)
+        torch.testing.assert_close(scripted(raw, zero, zero), result)
+        current = self.limiter()
+        result = current(raw, zero, zero)
+        gradient = torch.autograd.grad(result[:, current.upper_indices].sum(), raw)[0]
+        self.assertTrue(bool((gradient[:, current.upper_indices] > 0).all()))
+        for invalid in (0, 3, True, "2"):
+            with self.subTest(invalid=invalid), self.assertRaisesRegex(ValueError, "response_version"):
+                self.limiter(response_version=invalid)
 
     def test_invalid_metadata_and_action_shapes_are_rejected(self):
         for invalid in (

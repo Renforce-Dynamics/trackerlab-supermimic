@@ -434,6 +434,7 @@ def main():
             action_limit=ck["arguments"].get("action_limit", 4.),
             entry_duration_s=ck["arguments"].get("entry_duration_s", 0.),
             control_mode="wasd" if ck["arguments"].get("stealth_control_mode") == "wasd" else "legacy",
+            wasd_reward_version=ck["arguments"].get("wasd_reward_version", 1),
         )
         mdp.set_style_weight(ck["arguments"].get("amp_weight", .5))
         simulation = CommandSim
@@ -689,6 +690,7 @@ def main():
               "foot_slip_mode": ck["arguments"].get("foot_slip_mode", "legacy"),
               "upper_body_rate_limit": rate_limiter_config,
               "stealth_control_mode": ck["arguments"].get("stealth_control_mode", "fixed"),
+              "wasd_reward_version": ck["arguments"].get("wasd_reward_version", 1),
               "fixed_command_mode": args.command_mode,
               "command_mode_layout": args.mode_layout,
               "command_sequence": sequence_plan,

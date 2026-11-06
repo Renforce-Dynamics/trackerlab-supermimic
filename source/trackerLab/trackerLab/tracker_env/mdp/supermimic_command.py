@@ -190,7 +190,8 @@ class CommandMDP(TerrainMDP):
 
     def __init__(self, field, default_q, qlo, qhi, gamma=.99, profile=None,
                  clearance_ratio=1.0, *, target_clearance_m=None, jump_height=0.,
-                 action_limit=ACTION_LIMIT, entry_duration_s=0., control_mode="legacy"):
+                 action_limit=ACTION_LIMIT, entry_duration_s=0., control_mode="legacy",
+                 wasd_reward_version=1):
         profile = field.terrain.profile if profile is None else profile
         if profile not in (*PROFILES, *COMMAND_PROFILES) or profile != field.terrain.profile:
             raise ValueError("Command profile must match the heightfield profile")
@@ -210,10 +211,14 @@ class CommandMDP(TerrainMDP):
             raise ValueError("control_mode must be 'legacy' or 'wasd'")
         if control_mode == "wasd" and profile != "stealth":
             raise ValueError("WASD tracking requires a stealth profile")
+        if (type(wasd_reward_version) is not int or wasd_reward_version not in (1, 2)
+                or (wasd_reward_version == 2 and control_mode != "wasd")):
+            raise ValueError("Reward version 2 requires WASD; supported versions are 1 and 2")
         super().__init__(field, default_q, qlo, qhi, gamma)
         self.profile = profile
         self.control_mode = control_mode
         self.control_mode_version = WASD_CONTROL_VERSION if control_mode == "wasd" else 0
+        self.wasd_reward_version = wasd_reward_version
         self.terrain_navigation = profile in PROFILES
         self.gamma = float(gamma)
         self.target_clearance_m = float(clearance)
@@ -297,10 +302,12 @@ class CommandMDP(TerrainMDP):
                      * torch.sigmoid((.1 - v_body[..., 0] / scale) / .03))
         if self.control_mode == "wasd":
             speed = torch.linalg.vector_norm(c[..., 1:3], dim=-1) / scale
+            moving_width = .30 if self.wasd_reward_version == 2 else WASD_VELOCITY_TOLERANCE
+            yaw_width = .40 if self.wasd_reward_version == 2 else WASD_YAW_TOLERANCE
             tolerance = torch.where(
-                speed > .1, WASD_VELOCITY_TOLERANCE, WASD_STATIONARY_VELOCITY_TOLERANCE)
+                speed > .1, moving_width, WASD_STATIONARY_VELOCITY_TOLERANCE)
             velocity_reward = .04 * torch.exp(-ev / tolerance.square())
-            yaw_reward = .04 * torch.exp(-ew / WASD_YAW_TOLERANCE**2)
+            yaw_reward = .04 * torch.exp(-ew / yaw_width**2)
             # Existing waiting penalty, projected along either commanded direction.
             # No extra positive progress bonus; COMMAND_MAX_STEP_REWARD stays valid.
             projected = ((v_body[..., :2] / scale) * (c[..., 1:3] / scale)).sum(-1)

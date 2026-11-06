@@ -78,6 +78,7 @@ def parse_args(argv=None):
     parser.add_argument("--command-range-mode", choices=("reference", "full"), default="reference")
     parser.add_argument("--stealth-command", type=float, nargs=3)
     parser.add_argument("--stealth-control-mode", choices=("fixed", "keyboard", "wasd"), default="fixed")
+    parser.add_argument("--wasd-reward-version", type=int, choices=(1, 2), default=1)
     parser.add_argument("--style-feature-mode", choices=("full", "proprioceptive", "postural",
                                                        "postural_end_effectors"),
                         default="proprioceptive")
@@ -445,7 +446,8 @@ def main():
     mdp = CommandMDP(field, default_q, qlo, qhi, gamma=args.gamma,
                      profile=task.profile, clearance_ratio=args.clearance_ratio,
                      action_limit=args.action_limit, entry_duration_s=args.entry_duration_s,
-                     control_mode="wasd" if args.stealth_control_mode == "wasd" else "legacy")
+                     control_mode="wasd" if args.stealth_control_mode == "wasd" else "legacy",
+                     wasd_reward_version=args.wasd_reward_version)
     mdp.set_style_weight(args.amp_weight)
     env = CommandSim(task, mdp, args.num_envs, args.device, args.seed,
                      args.solver_iterations, args.max_episode_steps,
@@ -590,7 +592,7 @@ def main():
             raise ValueError("Changed physical domain requires --warm-start in a new run")
         for name, default in (("entry_duration_s", 0.), ("grounded_start", False),
                               ("foot_slip_mode", "legacy"), ("standing_joint_noise", 0.),
-                              ("collision_mask_version", 1)):
+                              ("collision_mask_version", 1), ("wasd_reward_version", 1)):
             if ck["arguments"].get(name, default) != getattr(args, name):
                 raise ValueError(f"Resume {name} differs from the saved objective")
         saved_upper_body_config = ck.get("stealth_upper_body_constraint")

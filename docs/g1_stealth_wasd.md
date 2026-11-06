@@ -76,6 +76,9 @@ joint-angle units. The rate and acceleration maps use bounded arctan responses
 with braking near action limits, retaining actor gradients across the imagined
 horizon. The same limiter is embedded in physical collection, model rollouts,
 evaluation, and the exported policy; it has no pose reference.
+Old checkpoints retain limiter version 1 when their metadata omits a response
+version. New models record version 2, so changes to target filtering cannot
+silently alter old evaluations or exports.
 Review each saved milestone using fixed-mode and nine-mode-cycle evaluation.
 The command-switch trajectory exercises forward, release-to-idle, backward,
 forward arcs, and release-to-idle without resetting the entry clock. Render
@@ -93,6 +96,13 @@ bash scripts/rls/supermimic/run_g1_wasd.sh \
 bash scripts/rls/supermimic/run_g1_wasd.sh \
   "$PYTHON" "$RUN" "$POOL" "$INITIAL_CHECKPOINT" 4000 10000 20000
 ```
+
+`command_stealth_wasd_smooth.json` defines the next adaptation. It keeps
+learned arm decoder rows, selects reward version 2, and uses the original
+0.04 sole-slip weight. Moving-velocity and yaw reward widths are 0.30 m/s and
+0.40 rad/s; success tolerances remain 0.15 m/s (0.10 for stationary commands)
+and 0.20 rad/s. Reward maxima are unchanged. Set `WASD_CONFIG` to select this
+preset in the runner, and use a new run directory with a warm start.
 
 The target 2.5 iterations per second is measured after compilation with the
 trainer's completed-update speed probe. The historical tele result used

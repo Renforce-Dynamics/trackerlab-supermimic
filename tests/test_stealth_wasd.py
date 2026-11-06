@@ -30,10 +30,12 @@ from trackerLab.tracker_env.supermimic.terrain import TerrainSim
 from trackerTask.supermimic.terrain import generate, get_task
 
 
-def wasd_mdp(*, control_mode="wasd", profile="stealth", entry_duration_s=0., scale=1.):
+def wasd_mdp(*, control_mode="wasd", profile="stealth", entry_duration_s=0., scale=1.,
+             wasd_reward_version=1):
     field = HeightField(generate(profile, .76 * scale, 42), .76 * scale, "cpu")
     return CommandMDP(field, torch.zeros(4), torch.full((4,), -10.), torch.full((4,), 10.),
-                      profile=profile, control_mode=control_mode, entry_duration_s=entry_duration_s)
+                      profile=profile, control_mode=control_mode, entry_duration_s=entry_duration_s,
+                      wasd_reward_version=wasd_reward_version)
 
 
 def wasd_sim(batch=1, *, entry_duration_s=0., clearance_ratio=.92):
@@ -54,6 +56,33 @@ class StealthWasdTests(unittest.TestCase):
     @classmethod
     def tearDownClass(cls):
         torch.set_num_threads(cls.threads)
+
+    def test_broader_reward_has_starting_gradients_without_relaxing_success_or_maximum(self):
+        old, current = wasd_mdp(), wasd_mdp(wasd_reward_version=2)
+        commands = make_command(current, 2)
+        commands[:, 1:4] = torch.tensor([[.25, 0., 0.], [0., 0., .55]])
+        state = list(make_state(current, 2))
+        state[2] = torch.zeros_like(state[2], requires_grad=True)
+        state[3] = torch.zeros_like(state[3], requires_grad=True)
+        action = torch.zeros(2, 4)
+        old_reward = old.reward(state, action, action, commands)
+        new_reward = current.reward(state, action, action, commands)
+        old_grad = torch.autograd.grad(old_reward.sum(), state[2:4], retain_graph=True)
+        new_grad = torch.autograd.grad(new_reward.sum(), state[2:4])
+        self.assertGreater(new_grad[0][0, 0].item(), .04)
+        self.assertGreater(new_grad[1][1, 2].item(), 20 * old_grad[1][1, 2].item())
+        torch.testing.assert_close(current.command_metrics(state, commands),
+                                   old.command_metrics(state, commands))
+        for mdp in (old, current):
+            exact = list(make_state(mdp, 2))
+            exact[2][:, :2], exact[3][:, 2] = commands[:, 1:3], commands[:, 3]
+            reward = mdp.reward(exact, action, action, commands)
+            self.assertTrue(bool((reward <= COMMAND_MAX_STEP_REWARD).all()))
+        for version in (0, 3, True, "2"):
+            with self.subTest(version=version), self.assertRaises(ValueError):
+                wasd_mdp(wasd_reward_version=version)
+        with self.assertRaises(ValueError):
+            wasd_mdp(control_mode="legacy", wasd_reward_version=2)
 
     def test_versioned_named_modes_and_all_key_combinations(self):
         expected = (

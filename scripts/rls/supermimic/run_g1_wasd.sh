@@ -22,11 +22,12 @@ for target in "${milestones[@]}"; do
     fi
 done
 repo=$(git rev-parse --show-toplevel)
-config=$repo/scripts/rls/supermimic/configs/command_stealth_wasd_natural.json
+config=${WASD_CONFIG:-$repo/scripts/rls/supermimic/configs/command_stealth_wasd_natural.json}
 
 test -x "$python"
 test -f "$initial"
 test -f "$pool/train.json"
+test -f "$config"
 mkdir -p "$run" "$repo/logs"
 finish() {
     printf '%s\n' "$?" > "$run/controller.exit"

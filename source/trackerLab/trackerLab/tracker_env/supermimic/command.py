@@ -108,6 +108,7 @@ class CommandSim(TerrainSim):
             standing_joint_noise_rad=self.standing_joint_noise,
             command_mode_set=self.command_mode_set,
             control_mode=mdp.control_mode, control_mode_version=mdp.control_mode_version,
+            wasd_reward_version=mdp.wasd_reward_version,
         )
         if self.command_mode_set == "wasd":
             self.contract["wasd_keyboard"] = wasd_keyboard_metadata()

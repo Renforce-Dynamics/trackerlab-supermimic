@@ -28,19 +28,19 @@ test -x "$python"
 test -f "$initial"
 test -f "$pool/train.json"
 mkdir -p "$run" "$repo/logs"
-if [ -n "$(find "$run" -mindepth 1 -maxdepth 1 -print -quit)" ]; then
-    printf 'Run directory must be empty before a fresh warm start.\n' >&2
-    exit 2
-fi
-exec 9>"$repo/logs/.supermimic-terrain-gpu0.lock"
-flock -n 9
-
 finish() {
     printf '%s\n' "$?" > "$run/controller.exit"
 }
 trap finish EXIT
+printf 'waiting_for_gpu\n' > "$run/controller.phase"
+exec 9>"$repo/logs/.supermimic-terrain-gpu0.lock"
+flock 9
 
-git rev-parse HEAD > "$run/code.receipt"
+if [ -f "$run/code.receipt" ]; then
+    git rev-parse HEAD >> "$run/code-continuations.receipt"
+else
+    git rev-parse HEAD > "$run/code.receipt"
+fi
 git diff --exit-code
 git diff --cached --exit-code
 test -z "$(git ls-files --others --exclude-standard)"

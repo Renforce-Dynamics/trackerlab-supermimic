@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import math
 import os
@@ -73,14 +74,23 @@ def parse_args(argv=None):
     parser.add_argument("--command-range-mode", choices=("reference", "full"), default="reference")
     parser.add_argument("--stealth-command", type=float, nargs=3)
     parser.add_argument("--stealth-control-mode", choices=("fixed", "keyboard"), default="fixed")
-    parser.add_argument("--style-feature-mode", choices=("full", "proprioceptive", "postural"),
+    parser.add_argument("--style-feature-mode", choices=("full", "proprioceptive", "postural",
+                                                       "postural_end_effectors"),
                         default="proprioceptive")
     parser.add_argument("--reference-reset-probability", type=float, default=.7)
     parser.add_argument("--foot-slide-weight", type=float, default=.008)
     parser.add_argument("--feet-close-weight", type=float, default=.008)
+    parser.add_argument("--foot-slip-mode", choices=("legacy", "g1_sole"), default="legacy")
     parser.add_argument("--self-collisions", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--collision-mask-version", type=int, choices=(1, 2), default=2)
     parser.add_argument("--physical-domain-randomization", action="store_true")
     parser.add_argument("--stealth-upper-body-constraint", action="store_true")
+    parser.add_argument("--upper-body-reference", type=Path)
+    parser.add_argument("--upper-body-residual", type=float, default=.25)
+    parser.add_argument("--upper-body-acceleration", type=float, default=0.)
+    parser.add_argument("--entry-duration-s", type=float, default=0.)
+    parser.add_argument("--grounded-start", action="store_true")
+    parser.add_argument("--standing-joint-noise", type=float, default=0.)
     parser.add_argument("--clearance-ratio", type=float, default=1.)
     parser.add_argument("--action-limit", type=float, default=20.)
     parser.add_argument("--jump-height", type=float, default=0.)
@@ -114,11 +124,22 @@ def can_transfer_world_model(source_arguments, target_arguments):
     return (
         source_arguments.get("self_collisions", False)
         == target_arguments.get("self_collisions", False)
+        and source_arguments.get("collision_mask_version", 1)
+        == target_arguments.get("collision_mask_version", 1)
         and source_arguments.get("solver_iterations", 50)
         == target_arguments.get("solver_iterations", 50)
         and source_arguments.get("physical_domain_randomization", False)
         == target_arguments.get("physical_domain_randomization", False)
     )
+
+
+def noise_padded_actor_history(mdp, observations, history_steps):
+    """Match reset collection: repeat one noisy initial frame in padded slots."""
+    noisy = mdp.add_noise(observations)
+    padding = (observations.shape[1] - history_steps).clamp(0, observations.shape[1] - 1)
+    first = noisy[torch.arange(len(noisy), device=noisy.device), padding]
+    padded = torch.arange(noisy.shape[1], device=noisy.device)[None] < padding[:, None]
+    return torch.where(padded[..., None], first[:, None], noisy)
 
 
 def validate_style_references(config_path, robot):
@@ -289,7 +310,7 @@ def main():
     from trackerLab.kinematics.supermimic.robot import RobotKinematics
     from trackerLab.motion_buffer.motion_lib.supermimic import MotionLib
     from trackerLab.tracker_env.mdp.supermimic_command import (
-        COMMAND_VERSION, SCENARIO_DIM, CommandMDP, advance_command,
+        COMMAND_VERSION, SCENARIO_DIM, CommandMDP, advance_command, entry_blend,
     )
     from trackerLab.tracker_env.supermimic.command import CommandSim
 
@@ -303,6 +324,9 @@ def main():
         raise SystemExit("Keyboard command modes are only available for stealth tasks")
     if args.stealth_upper_body_constraint and (task.robot, task.profile) != ("g1", "stealth"):
         raise SystemExit("The static upper-body constraint is currently calibrated for G1 stealth")
+    if (args.upper_body_reference or args.upper_body_acceleration or args.upper_body_residual != .25
+            ) and not args.stealth_upper_body_constraint:
+        raise SystemExit("Upper-body settings require the upper-body constraint")
     if min(args.num_envs, args.iterations, args.horizon, args.hist, args.wm_batches,
            args.wm_batch, args.pi_batch, args.log_every, args.ckpt_every, args.keep_every,
            args.critic_epochs, args.critic_minibatches, args.speed_probe_updates) < 1:
@@ -366,14 +390,15 @@ def main():
     field_data = generate(task.profile, robot_height, args.seed)
     field = HeightField(field_data, robot_height, args.device)
     cpu_model, _, _, _, _, _, _, _, contract = build_model(
-        task.robot, field_data, args.solver_iterations, self_collisions=args.self_collisions)
+        task.robot, field_data, args.solver_iterations, self_collisions=args.self_collisions,
+        collision_mask_version=args.collision_mask_version)
     joint_ids = torch.tensor([cpu_model.joint(name).id for name in spec.joint_names])
     qlo = torch.tensor(cpu_model.jnt_range[:, 0], dtype=torch.float32)[joint_ids].to(args.device)
     qhi = torch.tensor(cpu_model.jnt_range[:, 1], dtype=torch.float32)[joint_ids].to(args.device)
     default_q = torch.tensor(spec.default_q, device=args.device)
     mdp = CommandMDP(field, default_q, qlo, qhi, gamma=args.gamma,
                      profile=task.profile, clearance_ratio=args.clearance_ratio,
-                     action_limit=args.action_limit)
+                     action_limit=args.action_limit, entry_duration_s=args.entry_duration_s)
     mdp.set_style_weight(args.amp_weight)
     env = CommandSim(task, mdp, args.num_envs, args.device, args.seed,
                      args.solver_iterations, args.max_episode_steps,
@@ -383,7 +408,10 @@ def main():
                      stealth_keyboard_mode=(task.profile == "stealth"
                                             and args.stealth_control_mode == "keyboard"),
                      self_collisions=args.self_collisions,
-                     physical_domain_randomization=args.physical_domain_randomization)
+                     physical_domain_randomization=args.physical_domain_randomization,
+                     grounded_start=args.grounded_start,
+                     standing_joint_noise=args.standing_joint_noise,
+                     collision_mask_version=args.collision_mask_version)
     actor = TerrainPolicy(mdp.obs_dim, mdp.goal_dim, hist=args.hist,
                           num_joints=spec.num_joints, action_limit=args.action_limit).to(args.device)
     world = TerrainWorldModel(field, spec.num_joints).to(args.device)
@@ -396,15 +424,38 @@ def main():
     kin = RobotKinematics(args.device, spec)
     motion = MotionLib.from_config(str(args.amp_motion_config.resolve()), kin, args.device)
     upper_body_constraint = None
+    upper_body_reference_receipt = None
     if args.stealth_upper_body_constraint:
+        external_reference = None
+        entry_times, entry_references = None, None
+        if args.upper_body_reference:
+            reference_bytes = args.upper_body_reference.read_bytes()
+            document = json.loads(reference_bytes)
+            external_reference = document.get("reference_q", document)
+            entry_times = document.get("entry_times_s")
+            entry_references = document.get("entry_reference_q")
+            upper_body_reference_receipt = {
+                "sha256": hashlib.sha256(reference_bytes).hexdigest(),
+                "source": document.get("source"),
+            }
+        if args.entry_duration_s and (entry_times is None or entry_references is None):
+            raise ValueError(
+                "G1 arm entry requires an audited upper-body-reference document with "
+                "entry_times_s and entry_reference_q")
         reference = calibrate_upper_body_reference(
-            motion, spec.joint_names, method="medoid",
+            motion, spec.joint_names, reference_q=external_reference, method="medoid",
         )
         upper_body_constraint = UpperBodyConstraint(
             spec.joint_names, spec.default_q, spec.action_scale, reference,
-            residual_radius_rad=.25, max_joint_rate_rad_s=1.2, control_dt=.02,
+            residual_radius_rad=args.upper_body_residual,
+            max_joint_rate_rad_s=1.2, control_dt=.02,
             action_limit=args.action_limit,
+            max_joint_acceleration_rad_s2=args.upper_body_acceleration,
+            entry_times_s=entry_times, entry_reference_q=entry_references,
+            posture_tolerance_rad=.25 if args.upper_body_residual != .25 else None,
         ).to(args.device)
+        if upper_body_constraint.entry_duration_s > args.entry_duration_s:
+            raise ValueError("Command entry clock must cover the entire arm entry schedule")
     upper_body_config = (
         upper_body_constraint.to_dict() if upper_body_constraint is not None else None
     )
@@ -413,7 +464,7 @@ def main():
     quality = LocomotionQuality(
         kin, field, contract["motors_effort_velocity_kp_kd_armature"],
         foot_slide_weight=args.foot_slide_weight,
-        feet_close_weight=args.feet_close_weight)
+        feet_close_weight=args.feet_close_weight, foot_slip_mode=args.foot_slip_mode)
     quality.calibrate(motion)
     command_envelope = None
     if task.profile == "stealth" and args.stealth_control_mode == "keyboard":
@@ -476,6 +527,11 @@ def main():
         if (ck["arguments"].get("physical_domain_randomization", False)
                 != args.physical_domain_randomization):
             raise ValueError("Changed physical domain requires --warm-start in a new run")
+        for name, default in (("entry_duration_s", 0.), ("grounded_start", False),
+                              ("foot_slip_mode", "legacy"), ("standing_joint_noise", 0.),
+                              ("collision_mask_version", 1)):
+            if ck["arguments"].get(name, default) != getattr(args, name):
+                raise ValueError(f"Resume {name} differs from the saved objective")
         saved_upper_body_config = ck.get("stealth_upper_body_constraint")
         if saved_upper_body_config != upper_body_config:
             raise ValueError("Resume upper-body constraint differs from the saved objective")
@@ -539,10 +595,12 @@ def main():
                    "training_reference_resets": env.contract.get("reference_resets"),
                    "style_reference_validation": reference_receipt,
                    "stealth_upper_body_constraint": upper_body_config,
+                   "upper_body_reference_receipt": upper_body_reference_receipt,
                    "command_envelope": command_envelope,
                    "locomotion_quality": {"foot_support": "geometry estimate, not measured force",
                                           "foot_slide_weight": quality.foot_slide_weight,
                                           "feet_close_weight": quality.feet_close_weight,
+                                          "foot_slip_mode": quality.foot_slip_mode,
                                           "sole_height": quality.sole_height.cpu().tolist()},
                    "style": {"motion_config": str(args.amp_motion_config.resolve()),
                              "training_only": True, "weight": args.amp_weight,
@@ -584,9 +642,11 @@ def main():
         if upper_body_constraint is not None:
             n = spec.num_joints
             previous_action = history[:, -1, 2 * n + 6:3 * n + 6]
-            action = upper_body_constraint(action, previous_action)
+            older_action = history[:, -2, 2 * n + 6:3 * n + 6]
+            action = upper_body_constraint(
+                action, previous_action, older_action, entry_time=c[..., 6] + .02)
         next_state = world.step(state, action, xi_n)
-        next_c = advance_command(c)
+        next_c = mdp.advance_command(c)
         observation = mdp.add_noise(mdp.obs(next_state, action, xi, next_c))
         return next_state, action, torch.cat((history[:, 1:], observation[:, None]), 1), next_c
 
@@ -595,7 +655,7 @@ def main():
 
     style_reward_fn = style.reward_from_features
     style_frame_fn = style.frame_features
-    if upper_body_constraint is None:
+    if upper_body_constraint is None or args.entry_duration_s:
         regularization_reward_fn = quality.reward
     else:
         def regularization_reward_fn(previous_state, state, action, xi):
@@ -620,6 +680,13 @@ def main():
         collect_actor = actor
     env.locomotion_reward_fn = regularization_reward_fn
     env.command_outputs_fn = command_outputs_fn
+    if upper_body_constraint is not None and args.entry_duration_s:
+        def entry_upper_body_reward(state, c):
+            if upper_body_constraint.entry_duration_s:
+                return upper_body_constraint.posture_reward(state, entry_time=c[..., 6])
+            return upper_body_constraint.posture_reward(
+                state, entry_blend(c, args.entry_duration_s))
+        env.entry_upper_body_reward_fn = entry_upper_body_reward
 
     @torch.no_grad()
     def collect(steps):
@@ -643,7 +710,9 @@ def main():
             if upper_body_constraint is not None:
                 n = spec.num_joints
                 previous_action = obs_hist[:, -1, 2 * n + 6:3 * n + 6]
-                action = upper_body_constraint(action, previous_action)
+                older_action = obs_hist[:, -2, 2 * n + 6:3 * n + 6]
+                action = upper_body_constraint(
+                    action, previous_action, older_action, entry_time=env.c[..., 6] + .02)
             transition = env.step(action)
             buffer.add(transition)
             outcomes["episodes"] += transition["done"].sum()
@@ -677,8 +746,13 @@ def main():
             if tries > 64:
                 raise RuntimeError("Replay has too few episode-interior starts for imagined rollouts")
             data, hist = buffer.sample_starts(2 * batch, args.hist)
+            complete_history = data["history_steps"] >= style.history_steps
+            if args.entry_duration_s:
+                complete_history = complete_history | (
+                    (data["ep_step"] < style.history_steps)
+                    & (data["history_steps"] == data["ep_step"] + 1))
             valid = ((data["ep_step"] + args.horizon < args.max_episode_steps)
-                     & (data["history_steps"] >= style.history_steps))
+                     & complete_history)
             idx = valid.nonzero().flatten()[:batch - count]
             starts.append({key: value[idx] for key, value in data.items()})
             histories.append({key: value[idx] for key, value in hist.items()})
@@ -698,8 +772,10 @@ def main():
         xi_n = normalize_xi(xi)
         with torch.no_grad():
             history_states = unflatten_state(hist["s"])
-            obs_hist_local = mdp.add_noise(mdp.obs(
-                history_states, hist["a_prev"], hist["xi"], hist["c"]))
+            observations = mdp.obs(history_states, hist["a_prev"], hist["xi"], hist["c"])
+            obs_hist_local = (
+                noise_padded_actor_history(mdp, observations, data["history_steps"])
+                if getattr(args, "entry_duration_s", 0.) else mdp.add_noise(observations))
         actor_hist = obs_hist_local[:, -args.hist:]
         with torch.no_grad():
             style_history = style_frame_fn(history_states)[:, -style.history_steps:]
@@ -727,9 +803,17 @@ def main():
             preceding, tuple(value.flatten(0, 1) for value in states),
             torch.stack(actions).flatten(0, 1),
             xi.unsqueeze(0).expand(args.horizon, -1, -1).flatten(0, 1))
+        if upper_body_constraint is not None and getattr(args, "entry_duration_s", 0.):
+            reward = reward + entry_upper_body_reward(
+                tuple(value.flatten(0, 1) for value in states), flat_c)
         style_frames = style_frame_fn(states)
         style_windows = style.rollout_features(style_history, style_frames).flatten(0, 1)
         style_reward = style_reward_fn(style_windows)
+        if getattr(args, "entry_duration_s", 0.):
+            real_history = data["history_steps"][None] + torch.arange(
+                1, args.horizon + 1, device=args.device)[:, None]
+            style_reward = style_reward * (real_history >= style.history_steps).flatten()
+            style_reward = style_reward * entry_blend(flat_c, args.entry_duration_s)
         reward = reward + args.amp_weight * style_reward
         reward, done = reward.view(args.horizon, -1), done.view(args.horizon, -1)
         alive = torch.cumprod(1 - done, 0)
@@ -902,6 +986,7 @@ def main():
                               "opt_pi": opt_pi.state_dict(), "opt_v": opt_v.state_dict(),
                               "amp_style": style.checkpoint(),
                               "stealth_upper_body_constraint": upper_body_config,
+                              "upper_body_reference_receipt": upper_body_reference_receipt,
                               "arguments": vars(args) | {"run_dir": str(run),
                                   "amp_motion_config": str(args.amp_motion_config.resolve())}}
                 torch.save(checkpoint, run / "last.pt.tmp")

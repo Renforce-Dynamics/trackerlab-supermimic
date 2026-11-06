@@ -46,7 +46,7 @@ TERMS = (
 )
 
 
-def advance_command(c, dt=CONTROL_DT):
+def advance_command(c, dt=CONTROL_DT, duration=JUMP_DURATION):
     """Pure, differentiable command-clock update for one control action.
 
     Translational/yaw commands remain fixed in imagination. Real collection
@@ -56,8 +56,26 @@ def advance_command(c, dt=CONTROL_DT):
         raise ValueError(f"Command scenario must have {SCENARIO_DIM} columns")
     if not 0 <= dt < math.inf:
         raise ValueError("Command timestep must be finite and nonnegative")
-    elapsed = (c[..., 6:7] + dt).clamp(0, JUMP_DURATION)
+    if not 0 < duration < math.inf:
+        raise ValueError("Command duration must be finite and positive")
+    elapsed = (c[..., 6:7] + dt).clamp(0, duration)
     return torch.cat((c[..., :6], elapsed), -1)
+
+
+def entry_command(c, duration, standing_height):
+    """Blend a skill-entry command without any reference-motion playback."""
+    if duration == 0.:
+        return c
+    blend = entry_blend(c, duration)[..., None]
+    clearance = standing_height + blend * (c[..., 4:5] - standing_height)
+    return torch.cat((c[..., :1], c[..., 1:4] * blend, clearance, c[..., 5:]), -1)
+
+
+def entry_blend(c, duration):
+    if duration == 0.:
+        return torch.ones_like(c[..., 6])
+    fraction = (c[..., 6] / duration).clamp(0, 1)
+    return fraction.pow(3) * (10. + fraction * (-15. + 6. * fraction))
 
 
 def jump_pulse(c):
@@ -85,7 +103,7 @@ class CommandMDP(TerrainMDP):
 
     def __init__(self, field, default_q, qlo, qhi, gamma=.99, profile=None,
                  clearance_ratio=1.0, *, target_clearance_m=None, jump_height=0.,
-                 action_limit=ACTION_LIMIT):
+                 action_limit=ACTION_LIMIT, entry_duration_s=0.):
         profile = field.terrain.profile if profile is None else profile
         if profile not in (*PROFILES, *COMMAND_PROFILES) or profile != field.terrain.profile:
             raise ValueError("Command profile must match the heightfield profile")
@@ -98,6 +116,9 @@ class CommandMDP(TerrainMDP):
             raise ValueError("Jump height must be finite and nonnegative")
         if not math.isfinite(action_limit) or action_limit <= 0:
             raise ValueError("Action limit must be finite and positive")
+        if (not math.isfinite(entry_duration_s) or entry_duration_s < 0
+                or (entry_duration_s and (profile != "stealth" or jump_height))):
+            raise ValueError("Entry duration must be nonnegative and requires nonjumping stealth")
         super().__init__(field, default_q, qlo, qhi, gamma)
         self.profile = profile
         self.terrain_navigation = profile in PROFILES
@@ -105,6 +126,7 @@ class CommandMDP(TerrainMDP):
         self.target_clearance_m = float(clearance)
         self.clearance_ratio = self.target_clearance_m / field.height
         self.jump_height, self.action_limit = float(jump_height), float(action_limit)
+        self.entry_duration_s = float(entry_duration_s)
         self.goal_dim = GOAL_DIM
         self.obs_dim = 3 * self.num_joints + 9 + len(field.offsets)
         self.critic_dim = 13 + 2 * self.num_joints + self.num_joints + 4 + GOAL_DIM + len(field.model_offsets)
@@ -128,7 +150,10 @@ class CommandMDP(TerrainMDP):
         self.success_reward = success if self.terrain_navigation else 0.
 
     def advance_command(self, c, dt=CONTROL_DT):
-        return advance_command(c, dt)
+        return advance_command(c, dt, max(JUMP_DURATION, self.entry_duration_s))
+
+    def effective_command(self, c):
+        return entry_command(c, self.entry_duration_s, self.field.height)
 
     def obs(self, S, a_prev, xi, c):
         _, R, _, _, q, qd = S
@@ -140,10 +165,12 @@ class CommandMDP(TerrainMDP):
         return torch.cat((proprio, self.field.features(S)), -1)
 
     def goal(self, S, c):
+        c = self.effective_command(c)
         scale = self.field.scale
         commands = torch.cat((
             c[..., 1:3] / scale, c[..., 3:4], c[..., 4:6] / scale,
-            jump_pulse(c).unsqueeze(-1) / scale, c[..., 6:7] / JUMP_DURATION,
+            jump_pulse(c).unsqueeze(-1) / scale,
+            c[..., 6:7] / max(JUMP_DURATION, self.entry_duration_s),
         ), -1)
         if self.terrain_navigation:
             H = yaw_mat(S[1])
@@ -157,6 +184,7 @@ class CommandMDP(TerrainMDP):
         return torch.cat((commands, navigation), -1)
 
     def reward(self, S, a, a_prev, c, terms=False):
+        c = self.effective_command(c)
         p, R, _, _, q, qd = S
         scale = self.field.scale
         v_body, w_body = body_velocities(S)
@@ -236,6 +264,8 @@ class CommandMDP(TerrainMDP):
         return self.success_reward * success - FALL_PENALTY * fall
 
     def command_metrics(self, S, c):
+        requested = c
+        c = self.effective_command(c)
         v_body, w_body = body_velocities(S)
         velocity_error = torch.linalg.vector_norm(v_body[..., :2] - c[..., 1:3], dim=-1)
         command_speed = torch.linalg.vector_norm(c[..., 1:3], dim=-1)
@@ -247,7 +277,7 @@ class CommandMDP(TerrainMDP):
         clearance_error = (clearance - target_clearance(c)).abs()
         tracking = ((velocity_error <= .25 * self.field.scale) & (yaw_error <= .25)
                     & (clearance_error <= .12 * self.field.height)
-                    & (S[1][..., 2, 2] >= .7) & ~self.termination(S, c)
+                    & (S[1][..., 2, 2] >= .7) & ~self.termination(S, requested)
                     & (~moving_command | (commanded_progress >= .5 * command_speed)))
         return {
             "velocity_error_mps": velocity_error, "yaw_rate_error_rps": yaw_error,

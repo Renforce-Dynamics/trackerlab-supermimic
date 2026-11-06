@@ -19,7 +19,7 @@ configure_paths()
 
 from trackerTask.supermimic.registry import TASK_REGISTRY
 from trackerTask.supermimic.terrain import ROBOTS, PROFILES, TASKS, generate
-from trackerTask.supermimic.mujoco_terrain import build_model
+from trackerTask.supermimic.mujoco_terrain import _recompute_body_collision_masks, build_model
 from trackerTask.supermimic.robots import get_robot
 from trackerLab.algorithms.supermimic.buffer import ReplayBuffer
 from trackerLab.algorithms.supermimic.networks import WorldModel
@@ -110,6 +110,20 @@ class SuperMimicTerrainTests(unittest.TestCase):
         self.assertFalse(can_transfer_world_model(
             base, {"self_collisions": False, "solver_iterations": 80}))
 
+    def test_world_model_transfer_requires_matching_collision_mask_versions(self):
+        base = {"self_collisions": True, "solver_iterations": 50}
+        legacy = dict(base, collision_mask_version=1)
+        coherent = dict(base, collision_mask_version=2)
+        self.assertTrue(can_transfer_world_model(legacy, dict(legacy)))
+        self.assertTrue(can_transfer_world_model(coherent, dict(coherent)))
+        self.assertTrue(can_transfer_world_model(base, legacy))
+        self.assertFalse(can_transfer_world_model(legacy, coherent))
+        self.assertFalse(can_transfer_world_model(coherent, legacy))
+        self.assertFalse(can_transfer_world_model(base, coherent))
+        # The mask contract is part of dynamics even with self collision disabled.
+        self.assertFalse(can_transfer_world_model(
+            dict(legacy, self_collisions=False), dict(coherent, self_collisions=False)))
+
     def test_seeded_profiles_scale_with_robot_height(self):
         for profile in PROFILES:
             full = generate(profile, .76, 42)
@@ -122,43 +136,144 @@ class SuperMimicTerrainTests(unittest.TestCase):
             self.assertTrue(np.isfinite(full.normalized).all())
             self.assertGreater(float(np.ptp(full.heights)), .05)
 
-    def test_collision_masks_with_self_contained_model(self):
+    def collision_fixture_parameters(self):
         spec = get_robot("g1")
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "robot.xml"
-            path.write_text(
-                '<mujoco><compiler angle="radian"/>'
-                '<worldbody><body name="pelvis" pos="0 0 .76"><freejoint/>'
-                '<geom type="sphere" size=".05" mass="1"/>'
-                '<geom name="visual_only" type="sphere" size=".06" mass="0" '
-                'contype="0" conaffinity="0"/>'
-                '<body name="left_leg" pos="0 .1 0">'
-                '<joint name="left_hip_pitch_joint" range="-1 1"/>'
-                '<geom type="sphere" size=".03" mass=".2"/></body>'
-                '<body name="right_leg" pos="0 -.1 0">'
-                '<joint name="right_hip_pitch_joint" range="-1 1"/>'
-                '<geom type="sphere" size=".03" mass=".2"/></body>'
-                '</body></worldbody></mujoco>',
-                encoding="utf-8",
-            )
-            fixture = replace(
-                spec, mjcf_path=str(path), com_body="pelvis",
-                joint_names=("left_hip_pitch_joint", "right_hip_pitch_joint"),
-                tracked_bodies=("pelvis", "left_leg", "right_leg"),
-                default_q=(0., 0.), action_scale=(.25, .25),
-            )
-            motors = [(20., 12., 25., .5, .01)] * 2
-            with patch(
-                "trackerTask.supermimic.mujoco_terrain.robot_parameters",
-                return_value=(fixture, .76, motors),
-            ):
-                terrain = generate("velocity", .76, 42)
-                default, *_ = build_model("g1", terrain)
-                colliding, *_ = build_model("g1", terrain, self_collisions=True)
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        path = Path(directory.name) / "robot.xml"
+        path.write_text(
+            '<mujoco><compiler angle="radian"/>'
+            '<default><geom contype="1" conaffinity="0"/></default>'
+            '<worldbody><body name="pelvis" pos="0 0 .76"><freejoint/>'
+            '<geom type="sphere" size=".05" mass="1"/>'
+            '<geom name="visual_only" type="sphere" size=".06" mass="0" '
+            'contype="0" conaffinity="0"/>'
+            '<body name="left_leg" pos="0 .02 0">'
+            '<joint name="left_hip_pitch_joint" range="-1 1"/>'
+            '<geom name="left_sphere" type="sphere" size=".03" mass=".2"/></body>'
+            '<body name="right_leg" pos="0 -.02 0">'
+            '<joint name="right_hip_pitch_joint" range="-1 1"/>'
+            '<geom name="right_sphere" type="sphere" size=".03" mass=".2"/></body>'
+            '<body name="empty_mount" pos=".1 0 0"/>'
+            '</body></worldbody></mujoco>',
+            encoding="utf-8",
+        )
+        fixture = replace(
+            spec, mjcf_path=str(path), com_body="pelvis",
+            joint_names=("left_hip_pitch_joint", "right_hip_pitch_joint"),
+            tracked_bodies=("pelvis", "left_leg", "right_leg"),
+            default_q=(0., 0.), action_scale=(.25, .25),
+        )
+        return fixture, .76, [(20., 12., 25., .5, .01)] * 2
+
+    def test_collision_masks_with_self_contained_model(self):
+        import mujoco
+
+        with patch("trackerTask.supermimic.mujoco_terrain.robot_parameters",
+                   return_value=self.collision_fixture_parameters()):
+            terrain = generate("velocity", .76, 42)
+            default, *_, default_contract = build_model("g1", terrain, ground_plane=True)
+            colliding, *_, colliding_contract = build_model(
+                "g1", terrain, ground_plane=True, self_collisions=True)
+        self.assertEqual(default_contract["collision_mask_version"], 2)
+        self.assertEqual(colliding_contract["collision_mask_version"], 2)
         self.assert_collision_masks(default, colliding)
         visual = colliding.geom("visual_only").id
         self.assertEqual(int(colliding.geom_contype[visual]), 0)
         self.assertEqual(int(colliding.geom_conaffinity[visual]), 0)
+        for model in (default, colliding):
+            with self.subTest(self_collisions=model is colliding):
+                data = mujoco.MjData(model)
+                mujoco.mj_forward(model, data)
+                contacts = {
+                    tuple(sorted((int(contact.geom1), int(contact.geom2))))
+                    for contact in data.contact
+                }
+                if model is colliding:
+                    self.assertEqual(contacts, {
+                        tuple(sorted((model.geom("left_sphere").id, model.geom("right_sphere").id)))
+                    })
+                    self.assertEqual(data.ncon, 1)
+                    self.assertAlmostEqual(data.contact[0].dist, -.02)
+                    self.assertGreaterEqual(data.contact[0].efc_address, 0)
+                else:
+                    self.assertEqual(contacts, set())
+                    self.assertEqual(data.ncon, 0)
+
+    def test_collision_mask_v1_preserves_original_builder_setconst_output(self):
+        import mujoco
+
+        original_setconst = mujoco.mj_setConst
+        original = {}
+
+        def capture_original_algorithm(model, data):
+            # The original builder ends its model edits with this exact call.
+            # Preserve that runtime's result, including any automatic mask refresh.
+            original_setconst(model, data)
+            for name in ("body_contype", "body_conaffinity", "geom_contype", "geom_conaffinity"):
+                original[name] = getattr(model, name).copy()
+            mujoco.mj_forward(model, data)
+            original["contacts"] = [
+                (int(contact.geom1), int(contact.geom2), float(contact.dist), int(contact.efc_address))
+                for contact in data.contact
+            ]
+
+        with patch("trackerTask.supermimic.mujoco_terrain.robot_parameters",
+                   return_value=self.collision_fixture_parameters()):
+            terrain = generate("velocity", .76, 42)
+            for enabled in (False, True):
+                with self.subTest(self_collisions=enabled), patch(
+                    "mujoco.mj_setConst", side_effect=capture_original_algorithm
+                ) as setconst:
+                    legacy, *_, contract = build_model(
+                        "g1", terrain, ground_plane=True, self_collisions=enabled,
+                        collision_mask_version=1)
+                    setconst.assert_called_once()
+                    self.assertEqual(contract["collision_mask_version"], 1)
+                    for name in ("body_contype", "body_conaffinity", "geom_contype", "geom_conaffinity"):
+                        np.testing.assert_array_equal(getattr(legacy, name), original[name])
+                    data = mujoco.MjData(legacy)
+                    mujoco.mj_forward(legacy, data)
+                    contacts = [
+                        (int(contact.geom1), int(contact.geom2), float(contact.dist), int(contact.efc_address))
+                        for contact in data.contact
+                    ]
+                    self.assertEqual(contacts, original["contacts"])
+
+    def test_mask_refresh_restores_contacts_after_explicit_post_build_mutation(self):
+        import mujoco
+
+        with patch("trackerTask.supermimic.mujoco_terrain.robot_parameters",
+                   return_value=self.collision_fixture_parameters()):
+            model, *_ = build_model("g1", generate("velocity", .76, 42), ground_plane=True)
+        # This mutation happens AFTER build_model/mj_setConst. It is a separate
+        # failure mode, not evidence of stale aggregates in the original builder.
+        robot = (model.geom_bodyid != 0) & (model.geom_contype != 0)
+        body_affinity = model.body_conaffinity.copy()
+        model.geom_conaffinity[robot] = 3
+        data = mujoco.MjData(model)
+        mujoco.mj_forward(model, data)
+        np.testing.assert_array_equal(model.body_conaffinity, body_affinity)
+        self.assertEqual(data.ncon, 0)
+        self.assertEqual(int(model.body_conaffinity[model.body("left_leg").id]), 1)
+
+        _recompute_body_collision_masks(model)
+        self.assert_body_collision_masks(model)
+        mujoco.mj_forward(model, data)
+        self.assertEqual(data.ncon, 1)
+        self.assertEqual(
+            {int(data.contact[0].geom1), int(data.contact[0].geom2)},
+            {model.geom("left_sphere").id, model.geom("right_sphere").id})
+        self.assertAlmostEqual(data.contact[0].dist, -.02)
+        self.assertGreaterEqual(data.contact[0].efc_address, 0)
+
+    def test_collision_mask_version_rejects_invalid_values_before_loading_assets(self):
+        with patch("trackerTask.supermimic.mujoco_terrain.robot_parameters") as parameters:
+            for version in (None, False, True, 0, 3, -1, 1., 2., "1", "2"):
+                with self.subTest(version=version), self.assertRaisesRegex(
+                    ValueError, "collision_mask_version"):
+                    build_model("g1", None, collision_mask_version=version)
+            parameters.assert_not_called()
 
     @unittest.skipUnless(
         Path(get_robot("g1").mjcf_path).is_file(),
@@ -170,7 +285,17 @@ class SuperMimicTerrainTests(unittest.TestCase):
         colliding, *_ = build_model("g1", terrain, self_collisions=True)
         self.assert_collision_masks(default, colliding)
 
+    def assert_body_collision_masks(self, model):
+        for body in range(model.nbody):
+            attached = model.geom_bodyid == body
+            for name in ("contype", "conaffinity"):
+                expected = np.bitwise_or.reduce(getattr(model, "geom_" + name)[attached], initial=0)
+                self.assertEqual(int(getattr(model, "body_" + name)[body]), int(expected),
+                                 f"{model.body(body).name}: body_{name}")
+
     def assert_collision_masks(self, default, colliding):
+        for model in (default, colliding):
+            self.assert_body_collision_masks(model)
         robot = (colliding.geom_bodyid != 0) & (colliding.geom_contype != 0)
         ground = colliding.geom("supermimic_ground").id
         self.assertTrue(np.all(colliding.geom_contype[robot] == 2))

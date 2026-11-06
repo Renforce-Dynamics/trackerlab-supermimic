@@ -1,5 +1,10 @@
 # G1 Stealth: Aiming Arms And Physical Randomization
 
+The follow-up [entry and geometric style experiment](g1_stealth_entry.md)
+adds grounded resets, explicit endpoint AMP features, collision-reviewed arm
+entry profiles, and physical-sole slip measurements. This page describes the
+preceding stage and its unchanged preset.
+
 The existing keyboard run finishes its scheduled 20,000 iterations before this
 stage starts. `continue_g1_stealth.py` waits for the exact completion receipt,
 the immutable final checkpoint, and the recorded source process to exit.

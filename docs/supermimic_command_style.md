@@ -173,6 +173,11 @@ Foot-slide and narrow-stance weights are strengthened for this G1 pilot preset.
 The keyboard collision preset starts from the robot's default standing state;
 the LAFAN clip remains an AMP expert source and does not seed colliding poses.
 
+The opt-in [G1 entry experiment](g1_stealth_entry.md) extends this baseline with
+geometric AMP features and separate entry quality checks. Its corrected arm
+targets require a new immutable derivative pool matching the AMP expert, while
+the original train clip and Aiming1 holdout remain untouched.
+
 LAFAN1's original archive contains:
 
 ```text

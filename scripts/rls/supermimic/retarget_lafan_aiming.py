@@ -3,6 +3,8 @@
 Requires bvh==0.3 plus requirements-gait.txt (Mink 1.4.0 / DAQP).
 Input data are read-only. Derivatives inside this checkout must be Git-ignored.
 Only body motion is retargeted; no carried object is instantiated.
+Optional hand-forward tracking uses skeleton/model geometry. Original LAFAN1
+has zero hand End Sites and no thumb landmarks, so palm roll is unobserved.
 """
 
 from __future__ import annotations
@@ -65,6 +67,7 @@ class BvhMotion:
     frame_time: float
     start_frame: int
     total_frames: int
+    end_sites: tuple[tuple[tuple[float, ...], ...], ...] = ()
 
 
 def parse_bvh(text, start_frame=0, max_frames=300):
@@ -104,6 +107,12 @@ def parse_bvh(text, start_frame=0, max_frames=300):
     offsets = np.array([parsed.joint_offset(name) for name in names])
     if not np.isfinite(offsets).all():
         raise ValueError("BVH offsets must be finite")
+    end_sites = tuple(tuple(tuple(map(float, node["OFFSET"]))
+                            for node in parsed.get_joint(name).filter("End"))
+                      for name in names)
+    if any(len(offset) != 3 or not np.isfinite(offset).all()
+           for sites in end_sites for offset in sites):
+        raise ValueError("BVH End Site offsets must be finite three-vectors")
     positions = np.broadcast_to(offsets, (len(rows), *offsets.shape)).copy()
     rotations = np.broadcast_to(np.eye(3), (len(rows), len(names), 3, 3)).copy()
     quaternions = np.zeros((len(rows), len(names), 4))
@@ -129,7 +138,7 @@ def parse_bvh(text, start_frame=0, max_frames=300):
             quaternions[:, joint] = rotation.as_quat()
         cursor += len(declared)
     return BvhMotion(names, parents, offsets, positions, rotations, quaternions, channels,
-                     frame_time, start_frame, parsed.nframes)
+                     frame_time, start_frame, parsed.nframes, end_sites)
 
 
 def resample_local(motion):
@@ -176,6 +185,175 @@ def role_indices(names):
     if missing:
         raise ValueError(f"Missing original LAFAN1 joints: {sorted(missing)}")
     return np.array([names.index(name) for name in SOURCE_ROLES])
+
+
+def _unit_direction(value):
+    value = np.asarray(value, dtype=float)
+    if value.shape != (3,) or not np.isfinite(value).all() or vector_norm(value) < 1e-8:
+        raise ValueError("Hand direction requires a finite nonzero three-vector")
+    return value / vector_norm(value)
+
+
+def source_hand_axes(motion):
+    """Hand-local forward axes from the BVH zero-channel rest hierarchy.
+
+    A nonzero terminal End Site specifies wrist-to-hand forward. Ubisoft's
+    original 22-joint files instead have zero End Sites. For these, extend the
+    incoming ForeArm->Hand OFFSET in the zero-channel rest pose: parent and
+    child rotation frames coincide in that pose. This is an explicit straight
+    hand rest convention, not a measured fingertip or palm-normal direction.
+    Applying the animated Hand rotation retains wrist flexion/deviation.
+
+    Both sides use their own distal offsets without a sign flip. No transverse
+    axis can be recovered from a single bone; never invent a thumb/palm axis.
+    """
+    axes, evidence = [], {}
+    for side in ("Left", "Right"):
+        name, parent = side + "Hand", side + "ForeArm"
+        if name not in motion.names or parent not in motion.names:
+            raise ValueError(f"Hand calibration requires {parent} and {name}")
+        joint = motion.names.index(name)
+        if motion.parents[joint] != motion.names.index(parent):
+            raise ValueError(f"{name} must be a direct child of {parent}")
+        if np.any(motion.parents == joint):
+            raise ValueError(f"{name} must be terminal for hand-forward calibration")
+        if len(motion.end_sites) != len(motion.names) or len(motion.end_sites[joint]) != 1:
+            raise ValueError(f"{name} requires one explicit BVH End Site")
+        end = np.asarray(motion.end_sites[joint][0], dtype=float)
+        if end.shape != (3,) or not np.isfinite(end).all():
+            raise ValueError(f"{name} has an invalid End Site")
+        has_end_direction = vector_norm(end) > 1e-8
+        axis = _unit_direction(end if has_end_direction else motion.offsets[joint])
+        axes.append(axis)
+        evidence[name] = {
+            "local_forward": axis.tolist(), "end_site_offset_cm": end.tolist(),
+            "basis": ("terminal End Site" if has_end_direction else
+                      "zero-channel rest extension of ForeArm->Hand OFFSET"),
+            "palm_roll_observed": False,
+        }
+    return np.array(axes), evidence
+
+
+def robot_hand_axes(model):
+    """Calibrate fixed rubber-palm forward from its mesh in the wrist frame.
+
+    The longest mesh principal axis is a fixed-hand length proxy. The wrist_pitch ->
+    wrist_yaw direction resolves PCA's sign in the robot's straight-link rest
+    posture. This measures the actual fitted hand mesh, including its mounting
+    angle, rather than treating the wrist hinge axis as the palm direction.
+    """
+    import mujoco
+
+    rest = mujoco.MjData(model)
+    mujoco.mj_kinematics(model, rest)
+    axes, evidence = [], {}
+    for side in ("left", "right"):
+        wrist = model.body(side + "_wrist_yaw_link").id
+        pitch = model.body(side + "_wrist_pitch_link").id
+        if model.body_parentid[wrist] != pitch:
+            raise ValueError("Hand calibration requires the G1 pitch->yaw wrist chain")
+        mesh_id = model.mesh(side + "_rubber_hand").id
+        geoms = np.flatnonzero((model.geom_type == mujoco.mjtGeom.mjGEOM_MESH)
+                               & (model.geom_dataid == mesh_id)
+                               & (model.geom_bodyid == wrist))
+        if len(geoms) != 1:
+            raise ValueError(f"Expected one fitted {side} rubber-hand mesh")
+        geom = int(geoms[0])
+        vertices = model.mesh_vert[
+            model.mesh_vertadr[mesh_id]:model.mesh_vertadr[mesh_id] + model.mesh_vertnum[mesh_id]
+        ]
+        if len(vertices) < 3:
+            raise ValueError("Rubber-hand mesh must contain at least three vertices")
+        geom_R = np.empty(9)
+        mujoco.mju_quat2Mat(geom_R, model.geom_quat[geom])
+        body_vertices = vertices @ geom_R.reshape(3, 3).T + model.geom_pos[geom]
+        covariance = np.cov(body_vertices.T)
+        eigenvalues, eigenvectors = np.linalg.eigh(covariance)
+        principal = eigenvectors[:, -1]
+        rotation = rest.xmat[wrist].reshape(3, 3)
+        wrist_forward = _unit_direction(
+            rotation.T @ (rest.xpos[wrist] - rest.xpos[pitch]))
+        alignment = float(principal @ wrist_forward)
+        if abs(alignment) < .5 or eigenvalues[-1] <= eigenvalues[-2]:
+            raise ValueError(f"{side} rubber-hand principal axis is ambiguous")
+        if alignment < 0:
+            principal = -principal
+            alignment = -alignment
+        axes.append(_unit_direction(principal))
+        evidence[side] = {
+            "local_forward": axes[-1].tolist(),
+            "mesh_vertices_sha256": hashlib.sha256(
+                np.asarray(body_vertices, dtype="<f8").tobytes()).hexdigest(),
+            "principal_variance_m2": float(eigenvalues[-1]),
+            "next_variance_m2": float(eigenvalues[-2]),
+            "principal_axis_to_wrist_axis_deg": float(np.degrees(np.arccos(
+                np.clip(alignment, -1, 1)))),
+            "sign_basis": "model.qpos0 wrist_pitch->wrist_yaw direction",
+            "geometry_note": "Vertex PCA length proxy; depends on fixed-mesh tessellation",
+        }
+    return np.array(axes), evidence
+
+
+def hand_forward_directions(hand_rotations, local_axes):
+    """Apply calibrated left/right local hand axes to world rotations."""
+    rotations = np.asarray(hand_rotations, dtype=float)
+    axes = np.asarray(local_axes, dtype=float)
+    if rotations.ndim < 3 or rotations.shape[-3:] != (2, 3, 3):
+        raise ValueError("hand_rotations must end in (2, 3, 3)")
+    if not np.isfinite(rotations).all() or axes.shape != (2, 3):
+        raise ValueError("Hand rotations and two local axes must be finite")
+    axes = np.array([_unit_direction(axis) for axis in axes])
+    return np.einsum("...sij,sj->...si", rotations, axes)
+
+
+def make_hand_direction_task(frame_name, local_axis, cost):
+    """Two-DOF direction task with an exact world-frame vector Jacobian.
+
+    e = R(q) a - d, J = -[R(q) a]x J_angular_world. Isotropic vector weights
+    preserve world-rotation invariance and leave roll about a in the nullspace.
+    Reject the antipodal stationary point of this chordal residual explicitly.
+    Mink remains optional until IK is requested.
+    """
+    import mink
+
+    if isinstance(cost, bool) or not math.isfinite(cost) or cost <= 0:
+        raise ValueError("Hand orientation cost must be finite and positive")
+
+    class HandDirectionTask(mink.Task):
+        def __init__(self):
+            super().__init__(cost=np.full(3, cost), lm_damping=1e-3)
+            self.local_axis = _unit_direction(local_axis)
+            self.target_direction = None
+
+        def set_target(self, direction):
+            self.target_direction = _unit_direction(direction)
+
+        def _rotation(self, configuration):
+            return configuration.get_transform_frame_to_world(
+                frame_name, "body").rotation().as_matrix()
+
+        def compute_error(self, configuration):
+            if self.target_direction is None:
+                raise ValueError("Hand direction target has not been set")
+            direction = self._rotation(configuration) @ self.local_axis
+            if direction @ self.target_direction <= -1 + 1e-8:
+                raise ValueError("Antipodal hand directions require a closer IK initial pose")
+            return direction - self.target_direction
+
+        def compute_jacobian(self, configuration):
+            rotation = self._rotation(configuration)
+            angular = rotation @ configuration.get_frame_jacobian(frame_name, "body")[3:]
+            return np.cross(angular.T, rotation @ self.local_axis).T
+
+    return HandDirectionTask()
+
+
+def validate_hand_options(hand_orientation, hand_orientation_cost):
+    if hand_orientation not in ("none", "forward"):
+        raise ValueError("hand_orientation must be 'none' or 'forward'")
+    if (isinstance(hand_orientation_cost, bool)
+            or not math.isfinite(hand_orientation_cost) or hand_orientation_cost <= 0):
+        raise ValueError("Hand orientation cost must be finite and positive")
 
 
 def morphology_targets(source_p, source_R, rest_p):
@@ -251,7 +429,9 @@ def align_floor(values, task_group):
     return values, report
 
 
-def retarget_motion(motion, task_group="aiming"):
+def retarget_motion(motion, task_group="aiming", *, hand_orientation="none",
+                    hand_orientation_cost=1.):
+    validate_hand_options(hand_orientation, hand_orientation_cost)
     import mink
     import mujoco
     from bootstrap import configure_paths
@@ -282,6 +462,28 @@ def retarget_motion(motion, task_group="aiming"):
     human_p = np.einsum("ij,...j->...i", heading, human_p - origin)
     human_R = np.einsum("ij,...jk->...ik", heading, human_R)
     configuration = mink.Configuration(model, data.qpos.copy())
+    hand_tasks, hand_errors = [], []
+    hand_report = {"mode": hand_orientation, "cost": 0.}
+    if hand_orientation == "forward":
+        source_axes, evidence = source_hand_axes(motion)
+        robot_axes, robot_evidence = robot_hand_axes(model)
+        hand_indices = [motion.names.index(side + "Hand") for side in ("Left", "Right")]
+        hand_targets = hand_forward_directions(
+            human_R[:, hand_indices], source_axes)
+        hand_tasks = [make_hand_direction_task(body_names[role], axis, hand_orientation_cost)
+                      for role, axis in zip((10, 13), robot_axes)]
+        hand_report = {
+            "mode": hand_orientation, "cost": hand_orientation_cost,
+            "source": evidence, "robot": robot_evidence,
+            "robot_local_forward": robot_axes.tolist(),
+            "robot_basis": "principal fixed rubber-hand mesh axis in wrist_yaw body",
+            "residual": "world-frame unit direction difference; two rotational DOFs",
+            "palm_roll_observed": False,
+            "limitations": ("Zero End Sites use a straight-hand rest convention. "
+                            "Robot forward is a fixed-mesh PCA length proxy. "
+                            "Palm roll and finger articulation are not reconstructed. "
+                            "Collision avoidance is not part of this IK objective."),
+        }
     tasks = []
     for role, body in enumerate(body_names):
         foot, hand = role in (4, 7), role in (10, 13)
@@ -293,7 +495,7 @@ def retarget_motion(motion, task_group="aiming"):
         ))
     posture = mink.PostureTask(model, cost=.03, lm_damping=1e-3)
     posture.set_target(data.qpos.copy())
-    all_tasks = [*tasks, posture, mink.DampingTask(model, cost=.005)]
+    all_tasks = [*tasks, *hand_tasks, posture, mink.DampingTask(model, cost=.005)]
     limits = [mink.ConfigurationLimit(model), mink.VelocityLimit(
         model, {name: motor[1] for name, motor in zip(spec.joint_names, motors)})]
     output, errors, scales = [], [], []
@@ -306,6 +508,8 @@ def retarget_motion(motion, task_group="aiming"):
         for task, p, R in zip(tasks, targets_p, targets_R):
             task.set_target(mink.SE3.from_rotation_and_translation(
                 mink.SO3.from_matrix(R), p))
+        for side, task in enumerate(hand_tasks):
+            task.set_target(hand_targets[frame, side])
         if frame == 0:
             q = configuration.q.copy()
             q[:3] = targets_p[0]
@@ -320,6 +524,11 @@ def retarget_motion(motion, task_group="aiming"):
         q = configuration.q.copy()
         output.append(np.r_[q[:3], q[[4, 5, 6, 3]], q[qids]])
         errors.append(vector_norm(configuration.data.xpos[bodies] - targets_p, axis=1))
+        if hand_tasks:
+            actual = np.einsum("sij,sj->si", configuration.data.xmat[
+                bodies[[10, 13]]].reshape(2, 3, 3), robot_axes)
+            hand_errors.append(np.degrees(np.arccos(
+                np.clip(np.sum(actual * hand_targets[frame], axis=1), -1, 1))))
         scales.append(scale)
         if (frame + 1) % 100 == 0:
             print(f"IK {frame + 1}/{len(times)}", flush=True)
@@ -333,6 +542,11 @@ def retarget_motion(motion, task_group="aiming"):
         if np.sum(values[frame - 1, 3:7] * values[frame, 3:7]) < 0:
             values[frame, 3:7] *= -1
     values, floor = align_floor(values, task_group)
+    if hand_tasks:
+        hand_report["forward_error_deg_mean"] = dict(zip(
+            ("LeftHand", "RightHand"), np.mean(hand_errors, axis=0).tolist()))
+        hand_report["forward_error_deg_p95"] = dict(zip(
+            ("LeftHand", "RightHand"), np.quantile(hand_errors, .95, axis=0).tolist()))
     report = {
         "solver": {"mink": version("mink"), "daqp": version("daqp"),
                    "qp_solver": "daqp", "first_frame_iterations": 40,
@@ -343,6 +557,7 @@ def retarget_motion(motion, task_group="aiming"):
         "world_basis": WORLD_BASIS.tolist(), "pelvis_trunk_basis": BODY_BASIS.tolist(),
         "foot_basis": FOOT_BASIS.tolist(),
         "foot_orientation": "Toe global orientation mapped to G1 ankle; pitch/roll retained",
+        "hand_orientation": hand_report,
         "initial_yaw_removed_rad": yaw,
         "ik_position_error_m_mean": dict(zip(body_names, np.mean(errors, axis=0).tolist())),
         "ik_position_error_m_p95": dict(zip(body_names, np.quantile(errors, .95, axis=0).tolist())),
@@ -379,7 +594,8 @@ def validate_paths(sources, outputs, report):
 
 
 def convert(bvhs, output, task_group="aiming", start_frame=0, max_frames=300, report=None,
-            start_frames=None):
+            start_frames=None, *, hand_orientation="none", hand_orientation_cost=1.):
+    validate_hand_options(hand_orientation, hand_orientation_cost)
     sources = [Path(path).expanduser().resolve() for path in bvhs]
     output = Path(output).expanduser().resolve()
     if not sources or len(set(sources)) != len(sources):
@@ -401,12 +617,16 @@ def convert(bvhs, output, task_group="aiming", start_frame=0, max_frames=300, re
     for source, destination, identity, source_start in zip(sources, outputs, identities, starts):
         source_hash = digest(source)
         motion = parse_bvh(source.read_text(encoding="utf-8-sig"), source_start, max_frames)
-        values, metrics = retarget_motion(motion, task_group)
+        values, metrics = retarget_motion(
+            motion, task_group, hand_orientation=hand_orientation,
+            hand_orientation_cost=hand_orientation_cost)
         if digest(source) != source_hash:
             raise ValueError("Source BVH changed during conversion")
         config = {"task_group": task_group, "start_frame": source_start,
                   "max_frames": max_frames, "source_fps": SOURCE_FPS,
-                  "output_fps": OUTPUT_FPS, "retargeter_sha256": revision}
+                  "output_fps": OUTPUT_FPS, "retargeter_sha256": revision,
+                  "hand_orientation": hand_orientation,
+                  "hand_orientation_cost": hand_orientation_cost if hand_orientation != "none" else 0.}
         destination.parent.mkdir(parents=True, exist_ok=True)
         with destination.open("x", encoding="utf-8", newline="") as stream:
             np.savetxt(stream, values, delimiter=",", fmt="%.10g")
@@ -460,9 +680,14 @@ def main(argv=None):
                         help="One zero-based start frame for each --bvh input")
     parser.add_argument("--max-frames", type=int, default=300)
     parser.add_argument("--report", "--output-report", dest="report", type=Path)
+    parser.add_argument("--hand-orientation", choices=("none", "forward"), default="none",
+                        help="Optional skeleton-calibrated hand forward; palm roll remains free")
+    parser.add_argument("--hand-orientation-cost", type=float, default=1.,
+                        help="Positive direction-task weight when --hand-orientation forward")
     args = parser.parse_args(argv)
     convert(args.bvh, args.output, args.task_group, args.start_frame, args.max_frames, args.report,
-            args.start_frames)
+            args.start_frames, hand_orientation=args.hand_orientation,
+            hand_orientation_cost=args.hand_orientation_cost)
 
 
 if __name__ == "__main__":

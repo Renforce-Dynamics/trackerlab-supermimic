@@ -27,7 +27,8 @@ class CommandSim(TerrainSim):
                  jump_height=0., action_limit=ACTION_LIMIT,
                  command_resample_steps=(100, 250), jump_probability=.15,
                  stealth_keyboard_mode=False, self_collisions=False,
-                 physical_domain_randomization=False):
+                 physical_domain_randomization=False, grounded_start=False,
+                 standing_joint_noise=0., collision_mask_version=2):
         if task.profile != mdp.profile:
             raise ValueError("Command task and MDP profiles must match")
         clearance = mdp.target_clearance_m if target_clearance_m is None else target_clearance_m
@@ -43,6 +44,13 @@ class CommandSim(TerrainSim):
             raise ValueError("Episode length must be positive")
         if stealth_keyboard_mode and task.profile != "stealth":
             raise ValueError("Keyboard command modes require a stealth task")
+        if grounded_start and (task.robot, task.profile) != ("g1", "stealth"):
+            raise ValueError("Grounded entry currently requires G1 stealth")
+        if (not math.isfinite(standing_joint_noise) or not 0 <= standing_joint_noise <= .05
+                or (standing_joint_noise and not grounded_start)):
+            raise ValueError("Standing joint noise requires grounded entry and a range of 0..0.05 radians")
+        if mdp.entry_duration_s and jump_height:
+            raise ValueError("Stealth entry clock cannot be shared with jump pulses")
         if (len(command_resample_steps) != 2
                 or any(type(value) is not int for value in command_resample_steps)
                 or not 100 <= command_resample_steps[0] <= command_resample_steps[1]
@@ -53,6 +61,8 @@ class CommandSim(TerrainSim):
         self.jump_probability = float(jump_probability)
         self.stealth_keyboard_mode = bool(stealth_keyboard_mode)
         self.self_collisions = bool(self_collisions)
+        self.grounded_start = bool(grounded_start)
+        self.standing_joint_noise = float(standing_joint_noise)
         self._stealth_mode_ids = (
             torch.zeros(num_envs, dtype=torch.long, device=device)
             if self.stealth_keyboard_mode else None)
@@ -61,7 +71,8 @@ class CommandSim(TerrainSim):
         super().__init__(task, mdp, num_envs, device, seed, solver_iterations,
                          max_episode_steps, physical_ray_validation,
                          scenario_dim=SCENARIO_DIM, self_collisions=self_collisions,
-                         physical_domain_randomization=physical_domain_randomization)
+                         physical_domain_randomization=physical_domain_randomization,
+                         collision_mask_version=collision_mask_version)
         self.curriculum = mdp.terrain_navigation
         self.contract.update(
             objective="command-driven-locomotion", objective_version=COMMAND_VERSION,
@@ -75,6 +86,7 @@ class CommandSim(TerrainSim):
                 "robot_geom_contype": 2,
                 "robot_geom_conaffinity": 3 if self.self_collisions else 1,
                 "self_collisions": self.self_collisions,
+                "collision_mask_version": collision_mask_version,
                 "actuation": "joint-limited PD targets with source robot effort caps",
                 "root_motion": "MuJoCo-Warp physics only",
                 "foot_contact_classifier": False,
@@ -85,6 +97,9 @@ class CommandSim(TerrainSim):
                  for name, vx, vy, yaw, probability in STEALTH_KEYBOARD_MODES]
                 if self.stealth_keyboard_mode else None),
             flat_success="survive at least 10 seconds through timeout and track commands on at least 80% of actions",
+            entry_duration_s=mdp.entry_duration_s,
+            grounded_start=self.grounded_start,
+            standing_joint_noise_rad=self.standing_joint_noise,
         )
 
     def _reset_state(self, ids):
@@ -99,6 +114,15 @@ class CommandSim(TerrainSim):
             self._episode_yaw_error = torch.zeros_like(self._episode_tracking)
             self._episode_clearance_error = torch.zeros_like(self._episode_tracking)
         super()._reset_state(ids)
+        if getattr(self, "grounded_start", False):
+            if self.standing_joint_noise:
+                noise = (2 * torch.rand(len(ids), self.spec.num_joints,
+                                        device=self.device) - 1) * self.standing_joint_noise
+                q = (self.qpos[ids[:, None], self._qpos_ids] + noise).clamp(self.qlo, self.qhi)
+                self.qpos[ids[:, None], self._qpos_ids] = q
+                self.ctrl[ids[:, None], self._actuator_ids] = q
+                self.a_prev[ids] = (q - self.default_q - self.xi[ids, 1:-3]) / self.action_scale
+            self._ground_start(ids)
         self.c[ids] = 0
         if self.mdp.terrain_navigation:
             self.c[ids, 0] = self.centers[self.levels[ids]]
@@ -108,6 +132,38 @@ class CommandSim(TerrainSim):
             value[ids] = 0
         if hasattr(self, "_reference_reset_states"):
             self._apply_reference_resets(ids)
+
+    def _ground_start(self, ids):
+        """Place the four physical sole spheres on the local flat ground."""
+        if not hasattr(self, "_entry_kin"):
+            import mujoco
+            from trackerLab.kinematics.supermimic.robot import RobotKinematics
+            feet = FOOT_BODIES["g1"]
+            self._entry_kin = RobotKinematics(self.device, self.spec, tracked=feet)
+            centers, radii = [], []
+            for foot in feet:
+                body_id = self.cpu_model.body(foot).id
+                indices = [
+                    i for i in range(self.cpu_model.ngeom)
+                    if self.cpu_model.geom_bodyid[i] == body_id
+                    and self.cpu_model.geom_contype[i] != 0
+                    and self.cpu_model.geom_type[i] == mujoco.mjtGeom.mjGEOM_SPHERE
+                ]
+                if len(indices) != 4:
+                    raise ValueError("G1 entry requires four sole spheres per foot")
+                centers.append(self.cpu_model.geom_pos[indices].tolist())
+                radii.append(self.cpu_model.geom_size[indices, 0].tolist())
+            self._entry_centers = torch.tensor(centers, device=self.device)
+            self._entry_radii = torch.tensor(radii, device=self.device)
+        state = tuple(value[ids] for value in self.state())
+        positions, rotations, *_ = self._entry_kin.forward(*state)
+        points = positions[..., None, :] + (
+            rotations[..., None, :, :] @ self._entry_centers[..., None]
+        ).squeeze(-1)
+        gaps = (points[..., 2] - self._entry_radii
+                - self.mdp.field.sample(points[..., :2]))
+        adjustment = .001 - gaps.flatten(1).amin(-1)
+        self.qpos[ids, self._root_qpos + 2] += adjustment
 
     def set_stealth_keyboard_mode(self):
         if self.mdp.profile != "stealth":
@@ -282,6 +338,9 @@ class CommandSim(TerrainSim):
         self.ctrl[ids[:, None], self._actuator_ids] = target
         self.a_prev[ids] = ((target - self.default_q - offsets) / self.action_scale).clamp(
             -self.action_limit, self.action_limit)
+        if self.mdp.entry_duration_s:
+            # Reference starts are already in the locomotion skill's final arm pose.
+            self.c[ids, 6] = self.mdp.entry_duration_s
         if self.stealth_keyboard_mode:
             pass
         elif hasattr(self, "_command_ranges"):
@@ -361,7 +420,8 @@ class CommandSim(TerrainSim):
         self.c[ids, 1:4] = commands
         self.c[ids, 4] = self.target_clearance_m
         self.c[ids, 5] = torch.where(u[:, 3] < self.jump_probability, height, 0.)
-        self.c[ids, 6] = 0
+        if not self.mdp.entry_duration_s:
+            self.c[ids, 6] = 0
         self._command_age[ids] = 0
         lo, hi = self.command_resample_steps
         self._command_interval[ids] = torch.randint(lo, hi + 1, (count,), device=self.device)
@@ -377,7 +437,7 @@ class CommandSim(TerrainSim):
             self.ctrl[:, self._actuator_ids] = target
             self.wp.capture_launch(self.physics_graph, stream=self._stream)
         S1 = self.state()
-        c1 = advance_command(c0, CONTROL_DT)
+        c1 = self.mdp.advance_command(c0, CONTROL_DT)
         self.c.copy_(c1)
         self.ep_step += 1
         self._command_age += 1
@@ -399,6 +459,10 @@ class CommandSim(TerrainSim):
             penalty = self.locomotion_reward_fn(S0, S1, a, self.xi)
             reward = reward + penalty
             reward_terms["locomotion_regularization"] = penalty
+        if hasattr(self, "entry_upper_body_reward_fn"):
+            penalty = self.entry_upper_body_reward_fn(S1, c1)
+            reward = reward + penalty
+            reward_terms["entry_upper_body"] = penalty
         terminal_reward = self.mdp.terminal_reward(success, fallen)
         reward_terms["terminal"] = terminal_reward
         reward = torch.nan_to_num(reward + terminal_reward, nan=-FALL_PENALTY,

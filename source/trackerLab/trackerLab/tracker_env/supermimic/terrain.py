@@ -22,7 +22,7 @@ class TerrainSim:
     def __init__(self, task, mdp, num_envs=4096, device="cuda:0", seed=42,
                  solver_iterations=50, max_episode_steps=1000,
                  physical_ray_validation=False, scenario_dim=2, self_collisions=False,
-                 physical_domain_randomization=False):
+                 physical_domain_randomization=False, collision_mask_version=2):
         import mujoco
         import mujoco_warp as mw
         import warp as wp
@@ -41,6 +41,7 @@ class TerrainSim:
         self.physical_ray_validation = physical_ray_validation
         self.physical_domain_randomization = physical_domain_randomization
         self.self_collisions = self_collisions
+        self.collision_mask_version = collision_mask_version
         self.spec = get_robot(self.robot)
         self.height = ROBOT_HEIGHTS[self.robot]
         self.scale = self.height / .76
@@ -57,7 +58,7 @@ class TerrainSim:
         self.action_scale = torch.tensor(self.spec.action_scale, device=device)
         model_result = build_model(
             self.robot, self.terrain, solver_iterations,
-            self_collisions=self_collisions)
+            self_collisions=self_collisions, collision_mask_version=collision_mask_version)
         (self.cpu_model, _, _, self._qpos_ids_np, self._qvel_ids_np, self.root_id,
          self.com_id, self._actuator_ids_np, self.contract) = model_result
         self._qpos_ids = torch.tensor(self._qpos_ids_np, device=device)

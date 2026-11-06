@@ -67,8 +67,11 @@ def command_runtime_options(checkpoint):
         "command_resample_steps": tuple(arguments.get("command_resample_steps", (100, 250))),
         "stealth_keyboard_mode": arguments.get("stealth_control_mode") == "keyboard",
         "self_collisions": arguments.get("self_collisions", False),
+        "collision_mask_version": arguments.get("collision_mask_version", 1),
         "physical_domain_randomization":
             arguments.get("physical_domain_randomization", False),
+        "grounded_start": arguments.get("grounded_start", False),
+        "standing_joint_noise": arguments.get("standing_joint_noise", 0.),
     }
 
 
@@ -79,13 +82,15 @@ def attach_locomotion_quality(env, kin, field, motors, checkpoint,
     quality = LocomotionQuality(
         kin, field, motors,
         foot_slide_weight=checkpoint.get("arguments", {}).get("foot_slide_weight", .008),
-        feet_close_weight=checkpoint.get("arguments", {}).get("feet_close_weight", .008))
+        feet_close_weight=checkpoint.get("arguments", {}).get("feet_close_weight", .008),
+        foot_slip_mode=checkpoint.get("arguments", {}).get("foot_slip_mode", "legacy"))
     sole_height = torch.as_tensor(
         checkpoint["quality_sole_height"], device=kin.device, dtype=quality.sole_height.dtype)
     if sole_height.shape != quality.sole_height.shape or not bool(torch.isfinite(sole_height).all()):
         raise ValueError("Checkpoint sole calibration must contain one finite height per foot")
     quality.sole_height = sole_height.detach().clone()
-    if upper_body_constraint is None:
+    duration = checkpoint.get("arguments", {}).get("entry_duration_s", 0.)
+    if upper_body_constraint is None or duration:
         env.locomotion_reward_fn = quality.reward
     else:
         def reward(previous_state, state, action, xi):
@@ -93,6 +98,13 @@ def attach_locomotion_quality(env, kin, field, motors, checkpoint,
                 upper_body_constraint.posture_reward(state)
             )
         env.locomotion_reward_fn = reward
+    if upper_body_constraint is not None and duration:
+        from trackerLab.tracker_env.mdp.supermimic_command import entry_blend
+        def entry_reward(state, c):
+            if upper_body_constraint.entry_duration_s:
+                return upper_body_constraint.posture_reward(state, entry_time=c[..., 6])
+            return upper_body_constraint.posture_reward(state, entry_blend(c, duration))
+        env.entry_upper_body_reward_fn = entry_reward
     return quality
 
 
@@ -175,7 +187,8 @@ def main():
     solver_iterations = ck["arguments"].get("solver_iterations", 50)
     model, *_ = build_model(
         task.robot, field_data, solver_iterations,
-        self_collisions=ck["arguments"].get("self_collisions", False))
+        self_collisions=ck["arguments"].get("self_collisions", False),
+        collision_mask_version=ck["arguments"].get("collision_mask_version", 1))
     joint_ids = [model.joint(name).id for name in spec.joint_names]
     limits = torch.tensor(model.jnt_range[joint_ids], device=device, dtype=torch.float32)
     if command_mode:
@@ -186,6 +199,7 @@ def main():
             gamma=ck["arguments"].get("gamma", .99), profile=task.profile,
             clearance_ratio=ck["arguments"].get("clearance_ratio", 1.),
             action_limit=ck["arguments"].get("action_limit", 4.),
+            entry_duration_s=ck["arguments"].get("entry_duration_s", 0.),
         )
         mdp.set_style_weight(ck["arguments"].get("amp_weight", .5))
         simulation = CommandSim
@@ -195,7 +209,9 @@ def main():
                          gamma=ck["arguments"].get("gamma", .99))
         simulation = TerrainSim
         evaluation_version = OBJECTIVE_VERSION
-    runtime_options = command_runtime_options(ck) if command_mode else {}
+    runtime_options = command_runtime_options(ck) if command_mode else {
+        "collision_mask_version": ck["arguments"].get("collision_mask_version", 1),
+    }
     env = simulation(task, mdp, args.num_envs, device, args.seed, solver_iterations,
                      max_episode_steps=ck["arguments"]["max_episode_steps"], **runtime_options)
     if command_mode and ck.get("command_envelope"):
@@ -239,7 +255,7 @@ def main():
             env.qpos[:6].cpu().numpy(), field.features(env.state())[:6].cpu().numpy(),
             int(model.jnt_qposadr[free_id]), model.jnt_qposadr[joint_ids],
         )
-        first_commands = env.c[:6].cpu().numpy()
+        first_commands = (mdp.effective_command(env.c) if command_mode else env.c)[:6].cpu().numpy()
         first_context = env.xi[:6].cpu().numpy()
         recorded_commands = [first_commands.copy()]
     history = torch.zeros(args.num_envs, actor.hist, mdp.obs_dim, device=device)
@@ -272,17 +288,20 @@ def main():
         if upper_body_constraint is not None:
             n = spec.num_joints
             previous_action = history[:, -1, 2 * n + 6:3 * n + 6]
-            action = upper_body_constraint(action, previous_action)
+            older_action = history[:, -2, 2 * n + 6:3 * n + 6]
+            action = upper_body_constraint(
+                action, previous_action, older_action, entry_time=env.c[..., 6] + .02)
         tr = env.step(action)
         if command_mode:
             p, R, v, w, *_ = unflatten_state(tr["s1"])
             local_v = (R.transpose(-1, -2) @ v.unsqueeze(-1)).squeeze(-1)
             local_w = (R.transpose(-1, -2) @ w.unsqueeze(-1)).squeeze(-1)
-            velocity_error = ((local_v[:, :2] - tr["c"][:, 1:3]) / field.scale).square().sum(-1)
-            yaw_error = (local_w[:, 2] - tr["c"][:, 3]).square()
+            evaluated_command = mdp.effective_command(tr["c1"])
+            velocity_error = ((local_v[:, :2] - evaluated_command[:, 1:3]) / field.scale).square().sum(-1)
+            yaw_error = (local_w[:, 2] - evaluated_command[:, 3]).square()
             from trackerLab.tracker_env.mdp.supermimic_command import target_clearance
             clearance_error = ((p[:, 2] - field.sample(p[:, :2])
-                                - target_clearance(tr["c1"])) / field.scale).square()
+                                - target_clearance(evaluated_command)) / field.scale).square()
             valid = ~tr["done"] & (tr["ep_step"] >= 10)
             command_sum += torch.stack((velocity_error[valid].sum(), yaw_error[valid].sum(),
                                         clearance_error[valid].sum()))
@@ -319,7 +338,10 @@ def main():
             if upper_body_constraint is not None:
                 state = unflatten_state(tr["s1"])
                 indices = upper_body_constraint.upper_indices
-                pose_error = state[4].index_select(-1, indices) - upper_body_constraint.reference_q
+                target = (upper_body_constraint.reference_at(tr["c1"][..., 6])
+                          if upper_body_constraint.entry_duration_s else
+                          upper_body_constraint.reference_q)
+                pose_error = state[4].index_select(-1, indices) - target
                 arm_speed = state[5].index_select(-1, indices).abs()
                 upper_body_sums += torch.stack((
                     pose_error[valid].abs().sum(),
@@ -333,7 +355,10 @@ def main():
                 tr["done"][:6].cpu().numpy(), tr["episode_success"][:6].cpu().numpy(),
                 tr["episode_fall"][:6].cpu().numpy(),
             )
-            recorded_commands.append(tr.get("c1", tr["c"])[:6].cpu().numpy())
+            command = tr.get("c1", tr["c"])
+            if command_mode:
+                command = mdp.effective_command(command)
+            recorded_commands.append(command[:6].cpu().numpy())
         position = unflatten_state(tr["s1"])[0][:, 0] / field.scale
         progress = torch.maximum(progress, position)
         done = tr["done"].float()
@@ -358,6 +383,8 @@ def main():
               "trained_iterations": ck["iteration"], "evaluation_seed": args.seed,
               "physical_domain_randomization":
                   env.contract.get("physical_domain_randomization"),
+              "entry_duration_s": ck["arguments"].get("entry_duration_s", 0.),
+              "foot_slip_mode": ck["arguments"].get("foot_slip_mode", "legacy"),
               "terrain_seed_held_out": args.seed != ck["arguments"]["seed"],
               "physics_steps": args.steps, "num_envs": args.num_envs,
               "policy_exploration_noise": False, "observation_noise": True, "lanes": lanes}

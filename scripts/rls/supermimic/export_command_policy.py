@@ -18,15 +18,18 @@ from trackerTask.supermimic.robots import get_robot
 
 
 class ConstrainedCommandPolicy(nn.Module):
-    def __init__(self, policy, constraint, num_joints):
+    def __init__(self, policy, constraint, num_joints, entry_duration_s=0.):
         super().__init__()
         self.policy, self.constraint, self.num_joints = policy, constraint, num_joints
+        self.command_clock_scale = max(.8, entry_duration_s)
 
     def forward(self, observation_history, goal):
         action = self.policy(observation_history, goal)
         n = self.num_joints
         previous = observation_history[:, -1, 2 * n + 6:3 * n + 6]
-        return self.constraint(action, previous)
+        older = observation_history[:, -2, 2 * n + 6:3 * n + 6]
+        return self.constraint(
+            action, previous, older, entry_time=goal[:, 6] * self.command_clock_scale + .02)
 
 
 def export(checkpoint_path, output):
@@ -47,7 +50,8 @@ def export(checkpoint_path, output):
     upper_body_config = checkpoint.get("stealth_upper_body_constraint")
     if upper_body_config is not None:
         constraint = UpperBodyConstraint.from_dict(upper_body_config).eval()
-        policy = ConstrainedCommandPolicy(actor, constraint, n).eval()
+        policy = ConstrainedCommandPolicy(
+            actor, constraint, n, checkpoint["arguments"].get("entry_duration_s", 0.)).eval()
     if any(not bool(torch.isfinite(value).all()) for value in policy.state_dict().values()):
         raise FloatingPointError("Actor contains nonfinite values")
     output.mkdir(parents=True, exist_ok=True)
@@ -70,6 +74,8 @@ def export(checkpoint_path, output):
     }
     if upper_body_config is not None:
         actor_payload["stealth_upper_body_constraint"] = upper_body_config
+    if checkpoint["arguments"].get("entry_duration_s", 0.):
+        actor_payload["entry_duration_s"] = checkpoint["arguments"]["entry_duration_s"]
     torch.save(actor_payload, output / "actor.pt")
     metadata = {
         "task": checkpoint["task"], "robot": spec.name, "iteration": checkpoint["iteration"],
@@ -98,6 +104,14 @@ def export(checkpoint_path, output):
         "stealth_upper_body_constraint": upper_body_config,
         "physical_domain_randomization":
             checkpoint["arguments"].get("physical_domain_randomization", False),
+        "entry_duration_s": checkpoint["arguments"].get("entry_duration_s", 0.),
+        "arm_entry_profile": (
+            "Embedded fixed skill-entry arm waypoints; evaluated from the existing goal clock"
+            if upper_body_config and upper_body_config.get("entry_times_s") else None),
+        "entry_command": (
+            "CommandMDP.effective_command: quintic velocity/yaw and height blend; "
+            "clock starts at skill entry and continues across command changes"
+        ),
         "validation_max_error": errors,
         "deployment_requirement": "Local height map and a body-velocity estimate; simulator truth is used in training.",
     }

@@ -1,7 +1,9 @@
 """CPU contracts for original BVH conversion; optional local two-frame G1 IK."""
 
 from pathlib import Path
+from dataclasses import replace
 import importlib.util
+import inspect
 import json
 import os
 import subprocess
@@ -88,6 +90,46 @@ class BvhTests(unittest.TestCase):
         np.testing.assert_allclose(p[:, 1], p[:, 0] + np.einsum(
             "nij,j->ni", r[:, 0], (0, 10, 0)))
 
+    def test_original_hand_axes_use_zero_end_site_fallback_without_side_flip(self):
+        source = REPO / "data/raw/lafan1-original/aiming2_subject3.bvh"
+        if not source.is_file():
+            self.skipTest("Original LAFAN1 BVH required")
+        motion = aiming.parse_bvh(source.read_text(encoding="utf-8-sig"), max_frames=1)
+        axes, evidence = aiming.source_hand_axes(motion)
+        for side, axis in enumerate(axes):
+            name = ("LeftHand", "RightHand")[side]
+            joint = motion.names.index(name)
+            self.assertEqual(motion.end_sites[joint], ((0., 0., 0.),))
+            np.testing.assert_allclose(
+                axis, motion.offsets[joint] / np.linalg.norm(motion.offsets[joint]))
+            self.assertGreater(axis[0], .99)
+            self.assertFalse(evidence[name]["palm_roll_observed"])
+
+    def test_nonzero_hand_end_sites_define_each_forward_axis(self):
+        motion = aiming.parse_bvh(FIXTURE)
+        names = ("LeftForeArm", "LeftHand", "RightForeArm", "RightHand")
+        offsets = np.array(((0, 0, 0), (2, 0, 0), (0, 0, 0), (3, 0, 0)), dtype=float)
+        custom = replace(
+            motion, names=names, parents=np.array((-1, 0, -1, 2)), offsets=offsets,
+            positions=np.broadcast_to(offsets, (2, 4, 3)).copy(),
+            rotations=np.broadcast_to(np.eye(3), (2, 4, 3, 3)).copy(),
+            quaternions=np.broadcast_to((0., 0., 0., 1.), (2, 4, 4)).copy(),
+            channels=((), (), (), ()),
+            end_sites=((), ((1., 1., 0.),), (), ((1., -1., 0.),)),
+        )
+        axes, evidence = aiming.source_hand_axes(custom)
+        np.testing.assert_allclose(axes[0], (2**-.5, 2**-.5, 0))
+        np.testing.assert_allclose(axes[1], (2**-.5, -2**-.5, 0))
+        self.assertEqual(evidence["LeftHand"]["basis"], "terminal End Site")
+        with self.assertRaisesRegex(ValueError, "End Site"):
+            aiming.source_hand_axes(replace(custom, end_sites=()))
+        with self.assertRaisesRegex(ValueError, "direct child"):
+            aiming.source_hand_axes(replace(custom, parents=np.array((-1, 2, -1, 2))))
+        with self.assertRaisesRegex(ValueError, "nonzero"):
+            aiming.source_hand_axes(replace(
+                custom, offsets=np.zeros((4, 3)),
+                end_sites=((), ((0., 0., 0.),), (), ((0., 0., 0.),))))
+
 
 class GeometryTests(unittest.TestCase):
     def test_y_up_cm_maps_to_z_up_m_with_proper_rotation(self):
@@ -112,6 +154,50 @@ class GeometryTests(unittest.TestCase):
         self.assertEqual(aiming.SOURCE_ROLES[11], "RightArm")
         with self.assertRaisesRegex(ValueError, "Missing original"):
             aiming.role_indices(("Hips",))
+
+    def test_hand_directions_are_covariant_under_world_rotation(self):
+        rng = np.random.default_rng(20261106)
+        rotations = Rotation.random(12, random_state=rng).as_matrix().reshape(6, 2, 3, 3)
+        local_axes = np.array(((1., .02, 0.), (1., -.01, .01)))
+        world_rotation = Rotation.from_rotvec((.4, -.2, .7)).as_matrix()
+        original = aiming.hand_forward_directions(rotations, local_axes)
+        transformed = aiming.hand_forward_directions(
+            np.einsum("ij,nsjk->nsik", world_rotation, rotations), local_axes)
+        np.testing.assert_allclose(
+            transformed, np.einsum("ij,nsj->nsi", world_rotation, original), atol=1e-12)
+        np.testing.assert_allclose(np.linalg.norm(original, axis=-1), 1., atol=1e-12)
+
+    def test_hand_direction_ignores_unobservable_local_roll_and_axis_scale(self):
+        rotations = Rotation.from_euler("xyz", ((.4, -.2, .6), (-.1, .9, -.2))).as_matrix()
+        axes = np.array(((1., .2, .1), (1., -.3, .2)))
+        unit_axes = axes / np.linalg.norm(axes, axis=-1, keepdims=True)
+        twists = Rotation.from_rotvec(unit_axes * np.array((1.2, -.6))[:, None]).as_matrix()
+        np.testing.assert_allclose(
+            aiming.hand_forward_directions(rotations @ twists, axes * 10.),
+            aiming.hand_forward_directions(rotations, axes), atol=1e-12)
+        for bad in (np.zeros((2, 3)), np.full((2, 3), np.nan), np.zeros((3, 3))):
+            with self.assertRaises(ValueError):
+                aiming.hand_forward_directions(rotations, bad)
+
+    def test_optional_hand_orientation_is_disabled_by_default(self):
+        self.assertEqual(inspect.signature(aiming.retarget_motion).parameters[
+            "hand_orientation"].default, "none")
+        self.assertEqual(inspect.signature(aiming.convert).parameters[
+            "hand_orientation"].default, "none")
+        aiming.validate_hand_options("none", 1.)
+        aiming.validate_hand_options("forward", .5)
+        for mode, cost in (("guessed", 1.), ("forward", 0.), ("none", float("nan"))):
+            with self.subTest(mode=mode, cost=cost), self.assertRaises(ValueError):
+                aiming.validate_hand_options(mode, cost)
+
+    def test_cli_forwards_explicit_hand_mode_and_weight(self):
+        with patch.object(aiming, "convert") as convert:
+            aiming.main([
+                "--bvh", "aiming2_subject3.bvh", "--output", "candidate.csv",
+                "--hand-orientation", "forward", "--hand-orientation-cost", ".6",
+            ])
+        self.assertEqual(convert.call_args.kwargs,
+                         {"hand_orientation": "forward", "hand_orientation_cost": .6})
 
     def test_toe_basis_retains_pitch_and_roll(self):
         robot = Rotation.from_euler("XYZ", (20., -30., 5.), degrees=True).as_matrix()
@@ -213,7 +299,123 @@ class LocalRealIKTests(unittest.TestCase):
             self.assertEqual(row["split"], "test")
             self.assertLess(row["ground_alignment"]["physical_foot_floor_distance_m"]["min"], .01)
             self.assertGreaterEqual(row["ground_alignment"]["physical_foot_floor_distance_m"]["min"], 0)
+            self.assertEqual(row["hand_orientation"]["mode"], "none")
+            self.assertEqual(row["hand_orientation"]["cost"], 0.)
         self.assertEqual(aiming.digest(source), before)
+
+
+@unittest.skipUnless(all(importlib.util.find_spec(name)
+                        for name in ("mujoco", "mink", "torch", "daqp")),
+                     "Local MuJoCo and Mink required")
+class HandTaskTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        from bootstrap import configure_paths
+        configure_paths()
+        import mink
+        import mujoco
+        from trackerTask.supermimic.robots import get_robot
+
+        if not Path(get_robot("g1").mjcf_path).is_file():
+            raise unittest.SkipTest("Local G1 model assets required")
+        from retarget_gait_references import flat_model
+
+        cls.mink, cls.mujoco = mink, mujoco
+        cls.model, cls.spec, height, qids, *_ = flat_model("g1")
+        cls.data = mujoco.MjData(cls.model)
+        cls.data.qpos[:3] = (0, 0, height)
+        cls.data.qpos[qids] = cls.spec.default_q
+        mujoco.mj_forward(cls.model, cls.data)
+
+    def test_robot_axes_follow_mesh_principal_axis_on_both_sides(self):
+        axes, evidence = aiming.robot_hand_axes(self.model)
+        for axis in axes:
+            np.testing.assert_allclose(np.linalg.norm(axis), 1., atol=1e-12)
+            self.assertGreater(axis[0], .8)
+        self.assertLess(axes[0, 1], 0.)
+        self.assertGreater(axes[1, 1], 0.)
+        for side in ("left", "right"):
+            self.assertGreater(evidence[side]["principal_variance_m2"],
+                               evidence[side]["next_variance_m2"])
+            self.assertGreater(evidence[side]["principal_axis_to_wrist_axis_deg"], 10.)
+
+    def test_direction_task_jacobian_matches_finite_difference_and_keeps_roll_free(self):
+        body_name = "left_wrist_yaw_link"
+        body_id = self.model.body(body_name).id
+        local_axis = aiming.robot_hand_axes(self.model)[0][0]
+        task = aiming.make_hand_direction_task(body_name, local_axis, 1.)
+        configuration = self.mink.Configuration(self.model, self.data.qpos.copy())
+        rotation = configuration.data.xmat[body_id].reshape(3, 3)
+        current = rotation @ local_axis
+        task.set_target(Rotation.from_rotvec((.2, -.1, .3)).apply(current))
+        analytic = task.compute_jacobian(configuration)
+        numeric = np.empty_like(analytic)
+        epsilon = 1e-6
+        q0 = configuration.q.copy()
+        for dof in range(self.model.nv):
+            tangent = np.zeros(self.model.nv)
+            tangent[dof] = epsilon
+            plus, minus = q0.copy(), q0.copy()
+            self.mujoco.mj_integratePos(self.model, plus, tangent, 1.)
+            self.mujoco.mj_integratePos(self.model, minus, tangent, -1.)
+            configuration.update(plus)
+            error_plus = task.compute_error(configuration)
+            configuration.update(minus)
+            error_minus = task.compute_error(configuration)
+            numeric[:, dof] = (error_plus - error_minus) / (2 * epsilon)
+        configuration.update(q0)
+        np.testing.assert_allclose(analytic, numeric, atol=2e-7, rtol=2e-6)
+
+        frame_jacobian = configuration.get_frame_jacobian(body_name, "body")
+        angular_world = rotation @ frame_jacobian[3:]
+        roll_velocity = np.linalg.lstsq(angular_world, current, rcond=None)[0]
+        np.testing.assert_allclose(analytic @ roll_velocity, np.zeros(3), atol=1e-7)
+
+    def test_unset_and_antipodal_targets_fail_explicitly(self):
+        body_name = "right_wrist_yaw_link"
+        task = aiming.make_hand_direction_task(body_name, (1., 0., 0.), 1.)
+        configuration = self.mink.Configuration(self.model, self.data.qpos.copy())
+        with self.assertRaisesRegex(ValueError, "not been set"):
+            task.compute_error(configuration)
+        direction = configuration.data.xmat[self.model.body(body_name).id].reshape(3, 3)[:, 0]
+        task.set_target(-direction)
+        with self.assertRaisesRegex(ValueError, "Antipodal"):
+            task.compute_error(configuration)
+
+    @unittest.skipUnless(importlib.util.find_spec("bvh"), "Install bvh==0.3")
+    def test_real_optional_ik_reduces_forward_error_and_disabled_path_ignores_hands(self):
+        source = REPO / "data/raw/lafan1-original/aiming2_subject3.bvh"
+        if not source.is_file():
+            self.skipTest("Original LAFAN1 BVH required")
+        motion = aiming.parse_bvh(source.read_text(encoding="utf-8-sig"), 340, 4)
+        baseline, baseline_report = aiming.retarget_motion(motion)
+        changed_rotations = motion.rotations.copy()
+        changed_quaternions = motion.quaternions.copy()
+        hands = [motion.names.index(side + "Hand") for side in ("Left", "Right")]
+        changed_rotations[:, hands] = np.eye(3)
+        changed_quaternions[:, hands] = (0., 0., 0., 1.)
+        changed = replace(motion, rotations=changed_rotations,
+                          quaternions=changed_quaternions, end_sites=())
+        with patch.object(aiming, "source_hand_axes", side_effect=AssertionError(
+                "Disabled path must not calibrate hand orientation")):
+            unchanged, _ = aiming.retarget_motion(changed, hand_orientation="none")
+        np.testing.assert_array_equal(baseline, unchanged)
+        corrected, report = aiming.retarget_motion(motion, hand_orientation="forward")
+        self.assertEqual(baseline_report["hand_orientation"]["cost"], 0.)
+        self.assertEqual(report["validation"]["joint_limit_violation_max_rad"], 0.)
+        self.assertFalse(report["hand_orientation"]["palm_roll_observed"])
+        self.assertLess(max(report["hand_orientation"]["forward_error_deg_mean"].values()), 1.)
+        self.assertGreater(np.max(abs(baseline[:, 7:] - corrected[:, 7:])), .1)
+        legacy = REPO / (
+            "data/style-research-20261104/g1-stealth-single-v3/source/"
+            "aiming2_subject3__f00340-00460.csv")
+        if legacy.is_file():
+            saved = np.loadtxt(legacy, delimiter=",", max_rows=len(baseline))
+            # Floor-height smoothing uses the clip length; compare the IK pose
+            # and horizontal root against the longer archived conversion.
+            columns = [0, 1, *range(3, baseline.shape[1])]
+            np.testing.assert_allclose(baseline[:, columns], saved[:, columns],
+                                       atol=1e-8, rtol=0)
 
 
 if __name__ == "__main__":

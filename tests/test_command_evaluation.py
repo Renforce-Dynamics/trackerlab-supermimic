@@ -50,7 +50,9 @@ class CommandEvaluationTests(unittest.TestCase):
                     "command_resample_steps": tuple(interval), "jump_height": .2,
                     "jump_probability": .3, "action_limit": 20.,
                     "stealth_keyboard_mode": False, "self_collisions": False,
+                    "collision_mask_version": 1,
                     "physical_domain_randomization": False,
+                    "grounded_start": False, "standing_joint_noise": 0.,
                 })
                 self.assertIs(arguments["command_resample_steps"], interval)
 
@@ -59,7 +61,9 @@ class CommandEvaluationTests(unittest.TestCase):
             "command_resample_steps": (100, 250), "jump_height": 0.,
             "jump_probability": .15, "action_limit": 4.,
             "stealth_keyboard_mode": False, "self_collisions": False,
+            "collision_mask_version": 1,
             "physical_domain_randomization": False,
+            "grounded_start": False, "standing_joint_noise": 0.,
         })
 
     def test_runtime_options_restore_physical_domain_randomization(self):
@@ -67,6 +71,13 @@ class CommandEvaluationTests(unittest.TestCase):
             "arguments": {"physical_domain_randomization": True},
         })
         self.assertTrue(options["physical_domain_randomization"])
+
+    def test_runtime_options_restore_repaired_collision_masks(self):
+        options = command_runtime_options({
+            "arguments": {"self_collisions": True, "collision_mask_version": 2},
+        })
+        self.assertTrue(options["self_collisions"])
+        self.assertEqual(options["collision_mask_version"], 2)
 
     def test_evaluation_uses_saved_calibration_and_includes_penalty_in_episode_return(self):
         sim = CpuCommandSim(max_episode_steps=1)

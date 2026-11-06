@@ -9,12 +9,25 @@ import numpy as np
 from trackerTask.supermimic.terrain import robot_parameters
 
 
+def _recompute_body_collision_masks(model):
+    """Refresh broadphase OR aggregates after geom collision-mask changes."""
+    model.body_contype[:] = 0
+    model.body_conaffinity[:] = 0
+    np.bitwise_or.at(model.body_contype, model.geom_bodyid, model.geom_contype)
+    np.bitwise_or.at(model.body_conaffinity, model.geom_bodyid, model.geom_conaffinity)
+
+
 def build_model(robot, terrain, solver_iterations=50, *, render_size=None, ground_plane=False,
-                self_collisions=False):
+                self_collisions=False, collision_mask_version=2):
+    """Build with explicit mask aggregation (v2) or original mj_setConst behavior (v1)."""
     import mujoco
 
     if not isinstance(self_collisions, bool):
         raise ValueError("self_collisions must be a boolean")
+    if (isinstance(collision_mask_version, bool)
+            or not isinstance(collision_mask_version, int)
+            or collision_mask_version not in (1, 2)):
+        raise ValueError("collision_mask_version must be 1 (legacy) or 2")
     spec, height, motors = robot_parameters(robot)
     path = Path(spec.mjcf_path).resolve()
     document = ET.parse(path).getroot()
@@ -134,6 +147,9 @@ def build_model(robot, terrain, solver_iterations=50, *, render_size=None, groun
     model.opt.ls_iterations = 50
     model.hfield_data[:] = terrain.normalized.ravel()
     mujoco.mj_setConst(model, mujoco.MjData(model))
+    if collision_mask_version == 2:
+        # mj_setConst can already refresh these; make the v2 invariant explicit.
+        _recompute_body_collision_masks(model)
     contract = {
         "backend": "mujoco-warp", "algorithm": "supermimic-world-model-imagination-critic",
         "robot": robot, "source_mjcf": str(path),
@@ -142,7 +158,7 @@ def build_model(robot, terrain, solver_iterations=50, *, render_size=None, groun
         "action_scale": list(spec.action_scale), "motors_effort_velocity_kp_kd_armature": motors,
         "height": height, "physics_dt": .005, "control_substeps": 4,
         "solver_iterations": solver_iterations, "solver_ls_iterations": 50,
-        "self_collisions": self_collisions,
+        "self_collisions": self_collisions, "collision_mask_version": collision_mask_version,
         "terrain": {
             "profile": terrain.profile, "seed": terrain.seed,
             "height_sha256": hashlib.sha256(terrain.heights.tobytes()).hexdigest(),

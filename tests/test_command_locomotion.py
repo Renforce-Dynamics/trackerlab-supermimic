@@ -702,16 +702,17 @@ class CommandLocomotionTests(unittest.TestCase):
         self.assertFalse(sim.mdp.termination(sim.state(), sim.c).any())
 
     def test_reference_rotation_handedness_uses_torch_core_operations(self):
-        identity = torch.eye(3)
-        reflected_first_axis = identity.clone()
-        reflected_first_axis[:, 0] *= -1
-        reflected_third_axis = identity.clone()
-        reflected_third_axis[:, 2] *= -1
-        rotations = torch.stack((identity, reflected_first_axis, reflected_third_axis))
-        columns = torch.nan_to_num(rotations)
-        determinant = (torch.cross(columns[..., :, 0], columns[..., :, 1], dim=-1)
-                       * columns[..., :, 2]).sum(-1)
-        torch.testing.assert_close(determinant, torch.tensor([1., -1., -1.]))
+        sim = CpuCommandSim(batch=8)
+        motion = make_reset_motion(sim, frames=3)
+        motion.root_R[1, :, 0] *= -1
+        motion.root_R[2] = so3_exp(torch.tensor([.12, -.08, .4]))
+        original = motion.root_R.clone()
+        with patch.object(torch.linalg, "det", side_effect=RuntimeError("optional CUDA library")):
+            receipt = sim.set_reference_resets(
+                motion, probability=1., grounded_mask=torch.ones(3, dtype=torch.bool))
+        self.assertEqual(receipt["eligible_frames"], 2)
+        torch.testing.assert_close(sim._reference_reset_states[1], original[[0, 2]])
+        torch.testing.assert_close(motion.root_R, original)
 
     def test_reference_stealth_frames_match_low_physical_clearance(self):
         sim = CpuCommandSim("stealth", batch=8, clearance_ratio=.65)

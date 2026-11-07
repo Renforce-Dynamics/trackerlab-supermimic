@@ -151,3 +151,46 @@ After the owner's 5000-update instruction, this arm was cooperatively saved at
 17000. The initial 131 all-command updates are retained. Intermediate reviews
 at13000/14000/15000 remain visible; the agreed first judgment follows the full
 5000 command updates from12000 to17000. Later milestones remain conditional.
+
+## Minimal Reward Trial: Additional 20000 Updates
+
+The owner authorized the most likely small repair and 20000 additional updates.
+The `wasd-v2-20k` recipe starts from the same reviewed12000 checkpoint and uses
+all nine canonical command modes. Its target is cumulative32000, with reviews
+at13000/14000/16000/17000/20000/24000/28000/32000. The17000 review provides
+a matched-update comparison against the previous5000-update trial.
+The recipe reuses existing WASD-v2
+reward code rather than introducing a new reward function or architecture.
+
+Compared with the failed all-command legacy-reward trial, the intentional
+learning change is the task reward selection:
+
+- Direction-symmetric `dont_wait`, projected along either moving command.
+- Moving velocity width0.30m/s, stationary velocity width0.10m/s, yaw width0.40rad/s.
+- Identical positive reward maxima, AMP weight, physical regularizers and metrics.
+- Same single expert, fixed arm controller, 4.84s entry, observation/goal layout,
+  physical randomization, reset mixture, learning rates and replay settings.
+- Full state restoration includes actor, WM, critic, discriminator and every
+  optimizer. The inherited critic must adapt to the changed reward; its saved
+  value estimates are initialization, not a calibrated value function for v2.
+
+`--allow-command-reward-change` explicitly admits legacy-to-WASD-v2 only.
+It is applied once in a new run directory; normal resumes still reject
+unannounced reward changes. The resume receipt sets `reward_mode_preserved`
+to null and records the changed mode/version, with no model/optimizer reset.
+Existing sampling-change admission remains separately required.
+
+```bash
+bash scripts/rls/supermimic/run_g1_command_curriculum.sh \
+  PYTHON OUTPUT SOURCE_12000 ORIGINAL_POOL ORIGINAL_FORWARD_REPORT \
+  FIXED_PHYSICAL_BANK BANK_PROTOCOL all 32000 wasd-v2-20k
+```
+
+Per-mode guards validate the expected WASD reward metadata. Short-term numerical
+guard failures are recorded below32000 without curtailing the requested budget;
+invalid evidence, numerical/runtime errors and explicit STOP requests still stop.
+At32000 the original physical quality guards apply, with no automatic extension.
+
+This is an experiment, not a guarantee that the single forward expert supports
+natural reverse and idle. Style/reward conflict, old-gait retention and critic
+calibration remain risks. The stopped17000 candidate is not the starting point.

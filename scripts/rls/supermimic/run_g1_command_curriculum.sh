@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [ "$#" -lt 7 ] || [ "$#" -gt 9 ]; then
-    printf 'usage: run_g1_command_curriculum.sh PYTHON OUTPUT SOURCE POOL BASELINE BANK BANK_PROTOCOL [staged|all] [MINIMUM_REVIEW_ITERATION]\n' >&2
+if [ "$#" -lt 7 ] || [ "$#" -gt 10 ]; then
+    printf 'usage: run_g1_command_curriculum.sh PYTHON OUTPUT SOURCE POOL BASELINE BANK BANK_PROTOCOL [staged|all] [MINIMUM_REVIEW_ITERATION] [legacy|wasd-v2-20k]\n' >&2
     exit 2
 fi
 python=$1
@@ -14,12 +14,29 @@ bank=$6
 bank_protocol=$7
 schedule=${8:-staged}
 minimum_review=${9:-0}
+recipe=${10:-legacy}
+reward_mode=legacy
+reward_version=1
+maximum=25000
+milestones=(13000 14000 15000 17000 19000 21000 23000 25000)
+case "$recipe" in
+    legacy) ;;
+    wasd-v2-20k)
+        test "$schedule" = all
+        test "$minimum_review" = 32000
+        reward_mode=wasd
+        reward_version=2
+        maximum=32000
+        milestones=(13000 14000 16000 17000 20000 24000 28000 32000)
+        ;;
+    *) printf 'Unknown reward recipe.\n' >&2; exit 2 ;;
+esac
 case "$schedule" in
     staged|all) ;;
     *) printf 'Command schedule must be staged or all.\n' >&2; exit 2 ;;
 esac
-if [[ ! "$minimum_review" =~ ^(0|[1-9][0-9]{0,4})$ ]] || (( minimum_review > 25000 )); then
-    printf 'Minimum review iteration must be an integer from 0 to 25000.\n' >&2
+if [[ ! "$minimum_review" =~ ^(0|[1-9][0-9]{0,4})$ ]] || (( minimum_review > maximum )); then
+    printf 'Minimum review iteration must be an integer within this recipe budget.\n' >&2
     exit 2
 fi
 repo=$(git rev-parse --show-toplevel)
@@ -40,6 +57,7 @@ test -z "$(git ls-files --others --exclude-standard)"
 git rev-parse HEAD > "$output/code.receipt"
 printf '%s\n' "$schedule" > "$output/command-schedule.receipt"
 printf '%s\n' "$minimum_review" > "$output/minimum-review-iteration.receipt"
+printf '%s\n' "$recipe" > "$output/reward-recipe.receipt"
 sha256sum "$source" "$pool/manifest.json" "$pool/upper-body-reference.json" "$baseline" "$bank" "$bank_protocol" "$config" > "$output/input.receipt"
 
 stop_requested() {
@@ -91,11 +109,18 @@ if [ "$schedule" = all ]; then
 fi
 resume=$source
 previous=$("$python" -c 'import sys, torch; print(torch.load(sys.argv[1], map_location="cpu", weights_only=False)["iteration"])' "$source")
-if [[ ! "$previous" =~ ^[0-9]+$ ]] || (( previous < 12000 || previous >= 25000 )); then
-    printf 'Source iteration must be from 12000 to 24999.\n' >&2
+if [[ ! "$previous" =~ ^[0-9]+$ ]] || (( previous < 12000 || previous >= maximum )); then
+    printf 'Source iteration must be within this continuation budget.\n' >&2
     exit 2
 fi
-for target in 13000 14000 15000 17000 19000 21000 23000 25000; do
+if [ "$recipe" = wasd-v2-20k ]; then
+    test "$previous" = 12000
+fi
+adaptation=()
+if [ "$recipe" = wasd-v2-20k ]; then
+    adaptation=(--allow-command-reward-change)
+fi
+for target in "${milestones[@]}"; do
     if [ "$schedule" = staged ] && (( target == 14000 )); then
         modes+=(backward)
     elif [ "$schedule" = staged ] && (( target == 15000 )); then
@@ -109,12 +134,14 @@ for target in 13000 14000 15000 17000 19000 21000 23000 25000; do
     "$python" -u scripts/rls/supermimic/train_terrain.py \
         --task locomotion/g1/stealth --config "$config" \
         --run-dir "$output/training" --resume "$resume" \
-        --stealth-control-mode wasd --command-reward-mode legacy \
+        --stealth-control-mode wasd --command-reward-mode "$reward_mode" \
+        --wasd-reward-version "$reward_version" "${adaptation[@]}" \
         --command-training-modes "${modes[@]}" --allow-command-sampling-change \
         --amp-motion-config "$pool/train.json" --upper-body-reference "$pool/upper-body-reference.json" \
         --iterations "$target" --buffer-steps 500 --keep-every 1000 --ckpt-every 250 --log-every 25 \
         > "$output/train-to-$target.stdout.log" 2>&1
     stop_requested
+    adaptation=()
     tag=$(printf '%06d' "$target")
     checkpoint=$output/training/iteration_$tag.pt
     directory=$output/review/iter$tag
@@ -137,6 +164,7 @@ for target in 13000 14000 15000 17000 19000 21000 23000 25000; do
     active_status=0
     "$python" scripts/rls/supermimic/check_command_curriculum.py \
             --cycle "$directory/seed101/cycle/evaluation.json" --training-modes "${modes[@]}" \
+            --reward-mode "$reward_mode" \
             --output "$directory/active-mode-gate.json" > "$directory/active-mode-gate.stdout.log" 2>&1 \
         || active_status=$?
     if ! "$python" scripts/rls/supermimic/command_training_budget.py \
@@ -154,6 +182,6 @@ for target in 13000 14000 15000 17000 19000 21000 23000 25000; do
     previous=$target
 done
 stop_requested
-printf 'review_25000_seed103\n' > "$output/controller.phase"
+printf 'review_%s_seed103\n' "$maximum" > "$output/controller.phase"
 review "$checkpoint" "$directory/seed103" 103
 printf 'completed_pending_visual_and_command_acceptance\n' > "$output/controller.phase"

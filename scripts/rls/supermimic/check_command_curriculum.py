@@ -92,13 +92,15 @@ def _counts(row, path):
             for key in COUNTS}
 
 
-def _observe(report, training_modes):
+def _observe(report, training_modes, reward_mode="legacy"):
+    if not isinstance(reward_mode, str) or reward_mode not in ("legacy", "wasd"):
+        raise ValueError("reward_mode: expected 'legacy' or 'wasd'")
     if not isinstance(report, dict):
         raise ValueError("cycle: expected a JSON object")
     _finite_numbers(report, "cycle")
     for field, expected in (
             ("task", "locomotion/g1/stealth"), ("stealth_control_mode", "wasd"),
-            ("command_reward_mode", "legacy"), ("command_mode_layout", "cycle"),
+            ("command_reward_mode", reward_mode), ("command_mode_layout", "cycle"),
             ("fixed_command_mode", None), ("command_sequence", None),
             ("num_envs", 90), ("physics_steps", 1500),
             ("policy_exploration_noise", False), ("observation_noise", True)):
@@ -219,12 +221,12 @@ def _observe(report, training_modes):
     }
 
 
-def evaluate_curriculum(cycle, training_modes):
-    """Return a JSON-safe continuation receipt; malformed evidence rejects."""
+def evaluate_curriculum(cycle, training_modes, reward_mode="legacy"):
+    """Return a JSON-safe fall-guard receipt for the expected reward mode."""
     reasons, observed, active = [], None, None
     try:
         active = _training_modes(training_modes, "training_modes")
-        observed = _observe(cycle, active)
+        observed = _observe(cycle, active, reward_mode=reward_mode)
     except (ValueError, RecursionError) as error:
         reasons.append(str(error))
     if observed is not None:
@@ -253,6 +255,8 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--cycle", type=Path, required=True)
     parser.add_argument("--training-modes", nargs="+", required=True)
+    parser.add_argument("--reward-mode", choices=("legacy", "wasd"), default="legacy",
+                        help="Expected command reward metadata (default: legacy)")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
     cycle, errors = None, []
@@ -260,7 +264,7 @@ def main(argv=None):
         cycle = json.loads(args.cycle.read_text(encoding="utf-8-sig"), object_pairs_hook=_unique_object)
     except (OSError, ValueError, RecursionError) as error:
         errors.append(f"cycle: could not read evaluation report: {error}")
-    receipt = evaluate_curriculum(cycle, args.training_modes)
+    receipt = evaluate_curriculum(cycle, args.training_modes, reward_mode=args.reward_mode)
     receipt["reasons"][:0] = errors
     receipt["passed"] = not receipt["reasons"]
     try:

@@ -83,6 +83,8 @@ def parse_args(argv=None):
     parser.add_argument("--command-reward-mode", choices=("legacy", "wasd"))
     parser.add_argument("--command-training-modes", nargs="+")
     parser.add_argument("--allow-command-sampling-change", action="store_true")
+    parser.add_argument("--allow-command-reward-change", action="store_true",
+                        help="Explicit full-state legacy-to-WASD-v2 reward trial in a new run")
     parser.add_argument("--wasd-reward-version", type=int, choices=(1, 2), default=1)
     parser.add_argument("--style-feature-mode", choices=("full", "proprioceptive", "postural",
                                                        "postural_end_effectors"),
@@ -134,23 +136,37 @@ def validate_resume_command_resampling(checkpoint, args):
 
 
 def validate_command_sampling_resume(checkpoint, args):
-    """Allow an explicit sampler curriculum while preserving the reward and learning state."""
+    """Allow explicit sampling or reward adaptation while retaining learning state."""
     validate_command_curriculum_options(args)
     old = checkpoint["arguments"]
     old_mode, new_mode = old.get("stealth_control_mode", "fixed"), args.stealth_control_mode
     old_reward = old.get("command_reward_mode") or ("wasd" if old_mode == "wasd" else "legacy")
     new_reward = args.command_reward_mode or ("wasd" if new_mode == "wasd" else "legacy")
-    if old_reward != new_reward:
+    old_version, new_version = old.get("wasd_reward_version", 1), args.wasd_reward_version
+    reward_changed = old_reward != new_reward or old_version != new_version
+    if reward_changed and not args.allow_command_reward_change:
         raise ValueError("Resume task reward mode differs from the saved objective")
+    if reward_changed and not (old_reward == "legacy" and new_reward == "wasd"
+                               and new_version == 2 and old_mode in ("keyboard", "wasd")):
+        raise ValueError("Explicit reward adaptation only supports legacy to WASD-v2")
     old_subset, new_subset = old.get("command_training_modes"), args.command_training_modes
     changed = old_mode != new_mode or old_subset != new_subset
     if changed and not args.allow_command_sampling_change:
         raise ValueError("Command sampling change requires explicit --allow-command-sampling-change")
     if changed and (old_mode not in ("keyboard", "wasd") or new_mode != "wasd"):
         raise ValueError("Command curriculum only supports keyboard/wasd to WASD sampling")
-    return {"source_control_mode": old_mode, "target_control_mode": new_mode,
+    receipt = {"source_control_mode": old_mode, "target_control_mode": new_mode,
             "source_training_modes": old_subset, "target_training_modes": new_subset,
-            "reward_mode_preserved": new_reward, "command_sampling_changed": changed}
+            "reward_mode_preserved": None if reward_changed else new_reward,
+            "command_sampling_changed": changed}
+    if reward_changed:
+        receipt["reward_adaptation"] = {
+            "source_mode": old_reward, "target_mode": new_reward,
+            "source_version": old_version, "target_version": new_version,
+            "model_and_optimizer_resets": False,
+            "critic_initialization": "saved critic retained; refits to changed rewards during continuation",
+        }
+    return receipt
 
 
 def validate_command_curriculum_options(args):
@@ -166,6 +182,11 @@ def validate_command_curriculum_options(args):
         raise ValueError("WASD reward version 2 requires WASD rewards")
     if args.allow_command_sampling_change and not args.resume:
         raise ValueError("Explicit command-sampling adaptation requires full --resume")
+    if args.allow_command_reward_change:
+        if not args.resume or args.warm_start:
+            raise ValueError("Explicit command-reward adaptation requires full --resume only")
+        if effective != "wasd" or args.wasd_reward_version != 2:
+            raise ValueError("Explicit command-reward adaptation requires WASD-v2 rewards")
     names = args.command_training_modes
     if names is not None:
         if args.stealth_control_mode != "wasd":
@@ -687,6 +708,8 @@ def main():
             raise ValueError("Resume requires the same command/style objective")
         validate_resume_command_resampling(ck, args)
         sampling_receipt = validate_command_sampling_resume(ck, args)
+        if sampling_receipt.get("reward_adaptation") and (run / "last.pt").exists():
+            raise ValueError("A reward adaptation requires a new run directory")
         validate_actor_normalization_resume(ck, args.freeze_actor_normalization)
         for name in ("gamma", "hist", "amp_weight", "clearance_ratio",
                      "style_feature_mode", "amp_history", "command_range_mode",
@@ -700,7 +723,7 @@ def main():
             raise ValueError("Changed physical domain requires --warm-start in a new run")
         for name, default in (("entry_duration_s", 0.), ("grounded_start", False),
                               ("foot_slip_mode", "legacy"), ("standing_joint_noise", 0.),
-                              ("collision_mask_version", 1), ("wasd_reward_version", 1)):
+                              ("collision_mask_version", 1)):
             if ck["arguments"].get(name, default) != getattr(args, name):
                 raise ValueError(f"Resume {name} differs from the saved objective")
         saved_upper_body_config = ck.get("stealth_upper_body_constraint")

@@ -11,7 +11,7 @@ import unittest
 
 REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "scripts/rls/supermimic"))
-from check_command_curriculum import COMMAND_MODES, MODE_NAMES, evaluate_curriculum
+from check_command_curriculum import COMMAND_MODES, MODE_NAMES, _observe, evaluate_curriculum
 
 
 ORIGINAL_FIVE = ["forward", "turn_left", "turn_right", "forward_left", "forward_right"]
@@ -19,7 +19,7 @@ SIX_MODES = [*ORIGINAL_FIVE, "idle"]
 SCRIPT = REPO / "scripts/rls/supermimic/check_command_curriculum.py"
 
 
-def evaluation(training_modes=SIX_MODES, *, falls=None, successes=None):
+def evaluation(training_modes=SIX_MODES, *, falls=None, successes=None, reward_mode="legacy"):
     """Mirror the evaluator's distinct keyboard and flat-task lane timeouts."""
     falls, successes = falls or {}, successes or {}
     rows, outcomes = [], []
@@ -52,7 +52,7 @@ def evaluation(training_modes=SIX_MODES, *, falls=None, successes=None):
         lane["success_fraction"] = lane["successes"] / max(lane["episodes"], 1)
     return {
         "task": "locomotion/g1/stealth", "stealth_control_mode": "wasd",
-        "command_reward_mode": "legacy", "training_command_modes": list(training_modes),
+        "command_reward_mode": reward_mode, "training_command_modes": list(training_modes),
         "fixed_command_mode": None, "command_mode_layout": "cycle", "command_sequence": None,
         "num_envs": 90, "physics_steps": 1500, "evaluation_seed": 101,
         "entry_duration_s": 4.84, "policy_exploration_noise": False, "observation_noise": True,
@@ -67,8 +67,8 @@ def evaluation(training_modes=SIX_MODES, *, falls=None, successes=None):
 
 
 class CommandCurriculumGateTests(unittest.TestCase):
-    def assert_rejected(self, report, reason, training_modes=SIX_MODES):
-        receipt = evaluate_curriculum(report, training_modes)
+    def assert_rejected(self, report, reason, training_modes=SIX_MODES, *, reward_mode="legacy"):
+        receipt = evaluate_curriculum(report, training_modes, reward_mode=reward_mode)
         self.assertFalse(receipt["passed"])
         self.assertIn(reason, "\n".join(receipt["reasons"]))
         self.assertFalse(receipt["all_commands_accepted"])
@@ -101,6 +101,73 @@ class CommandCurriculumGateTests(unittest.TestCase):
             self.assertFalse(row["directional_capability"]["readiness_assessed"])
         self.assertEqual(report, original)
         json.dumps(receipt, allow_nan=False)
+
+    def test_explicit_reward_mode_accepts_matching_reports_without_changing_guard_claims(self):
+        for reward_mode in ("legacy", "wasd"):
+            for modes in (SIX_MODES, MODE_NAMES):
+                with self.subTest(reward_mode=reward_mode, modes=modes):
+                    report = evaluation(modes, reward_mode=reward_mode)
+                    original = copy.deepcopy(report)
+                    receipt = evaluate_curriculum(report, modes, reward_mode=reward_mode)
+                    self.assertTrue(receipt["passed"])
+                    self.assertEqual(receipt["reasons"], [])
+                    self.assertEqual(receipt["scope"], "active_mode_fall_guard_only")
+                    self.assertEqual(receipt["thresholds"], {"max_active_mode_fall_fraction": .10})
+                    self.assertFalse(receipt["all_commands_accepted"])
+                    self.assertTrue(receipt["visual_review_required"])
+                    self.assertEqual(receipt["observed"], _observe(
+                        report, list(modes), reward_mode=reward_mode))
+                    self.assertEqual(report, original)
+                    json.dumps(receipt, allow_nan=False)
+        report = evaluation()
+        self.assertEqual(evaluate_curriculum(report, SIX_MODES),
+                         evaluate_curriculum(report, SIX_MODES, reward_mode="legacy"))
+        self.assertEqual(_observe(report, SIX_MODES),
+                         _observe(report, SIX_MODES, reward_mode="legacy"))
+
+    def test_reward_mode_metadata_must_match_the_explicit_expectation(self):
+        for expected, other in (("legacy", "wasd"), ("wasd", "legacy")):
+            for recorded in (other, None, True, 1, [], {}):
+                with self.subTest(expected=expected, recorded=recorded):
+                    report = evaluation(reward_mode=recorded)
+                    receipt = self.assert_rejected(
+                        report, f"cycle.command_reward_mode: expected {expected!r}",
+                        reward_mode=expected)
+                    self.assertIsNone(receipt["observed"])
+            report = evaluation(reward_mode=expected)
+            del report["command_reward_mode"]
+            self.assert_rejected(report, "command_reward_mode: missing required field",
+                                 reward_mode=expected)
+
+    def test_expected_reward_mode_rejects_unsupported_values_and_types(self):
+        for reward_mode in (None, True, 0, 1., "", "auto", "WASD", "legacy ",
+                            [], ["wasd"], {}, ("wasd",), float("nan")):
+            with self.subTest(reward_mode=reward_mode):
+                report = evaluation(reward_mode=reward_mode)
+                receipt = self.assert_rejected(
+                    report, "reward_mode: expected 'legacy' or 'wasd'", reward_mode=reward_mode)
+                self.assertIsNone(receipt["observed"])
+                with self.assertRaisesRegex(ValueError, "reward_mode: expected 'legacy' or 'wasd'"):
+                    _observe(report, SIX_MODES, reward_mode=reward_mode)
+
+    def test_explicit_wasd_keeps_canonical_evidence_counts_and_inclusive_fall_limit(self):
+        report = evaluation(MODE_NAMES, falls={name: 1 for name in MODE_NAMES}, reward_mode="wasd")
+        self.assertTrue(evaluate_curriculum(report, MODE_NAMES, reward_mode="wasd")["passed"])
+        self.assert_rejected(
+            evaluation(MODE_NAMES, falls={"backward": 2}, reward_mode="wasd"),
+            "backward.fall_fraction: 0.2 > 0.1", MODE_NAMES, reward_mode="wasd")
+        for change, reason in (("missing_mode", "all nine canonical mode rows"),
+                               ("command", "forward.command: differs from canonical twist"),
+                               ("counts", "keyboard_episode_metrics.total")):
+            with self.subTest(change=change):
+                report = evaluation(MODE_NAMES, reward_mode="wasd")
+                if change == "missing_mode":
+                    report["keyboard_mode_metrics"].pop()
+                elif change == "command":
+                    report["keyboard_mode_metrics"][0]["command"][0] = .2
+                else:
+                    report["keyboard_episode_metrics"]["total"]["episodes"] += 1
+                self.assert_rejected(report, reason, MODE_NAMES, reward_mode="wasd")
 
     def test_active_mode_failure_cannot_be_diluted_by_pooled_average(self):
         report = evaluation(falls={"idle": 2})
@@ -338,12 +405,53 @@ class CommandCurriculumGateTests(unittest.TestCase):
                          for row in table.elts)
         self.assertEqual(COMMAND_MODES, expected)
 
-    def run_cli(self, cycle, output, training_modes=SIX_MODES):
+    def run_cli(self, cycle, output, training_modes=SIX_MODES, *, reward_mode=None):
         # Disable site packages so the command proves its standard-library boundary.
+        command = [sys.executable, "-I", "-S", "-B", str(SCRIPT), "--cycle", str(cycle),
+                   "--training-modes", *training_modes, "--output", str(output)]
+        if reward_mode is not None:
+            command.extend(("--reward-mode", reward_mode))
         return subprocess.run(
-            [sys.executable, "-I", "-S", "-B", str(SCRIPT), "--cycle", str(cycle),
-             "--training-modes", *training_modes, "--output", str(output)],
+            command,
             capture_output=True, text=True, timeout=15)
+
+    def test_cli_explicit_reward_mode_requires_matching_metadata(self):
+        with tempfile.TemporaryDirectory(prefix="command-curriculum-reward-") as temporary:
+            root = Path(temporary)
+            cycle, output = root / "cycle.json", root / "gate.json"
+            for expected in (None, "legacy", "wasd"):
+                for recorded in ("legacy", "wasd"):
+                    with self.subTest(expected=expected, recorded=recorded):
+                        payload = json.dumps(evaluation(MODE_NAMES, reward_mode=recorded))
+                        cycle.write_text(payload, encoding="utf-8")
+                        process = self.run_cli(cycle, output, MODE_NAMES, reward_mode=expected)
+                        passed = recorded == (expected or "legacy")
+                        self.assertEqual(process.returncode, 0 if passed else 2, process.stderr)
+                        receipt = json.loads(process.stdout)
+                        self.assertEqual(receipt, json.loads(output.read_text(encoding="utf-8")))
+                        self.assertEqual(receipt["passed"], passed)
+                        self.assertEqual(receipt["scope"], "active_mode_fall_guard_only")
+                        self.assertEqual(receipt["thresholds"], {"max_active_mode_fall_fraction": .10})
+                        self.assertFalse(receipt["all_commands_accepted"])
+                        self.assertTrue(receipt["visual_review_required"])
+                        self.assertEqual(cycle.read_text(encoding="utf-8"), payload)
+                        if not passed:
+                            self.assertIn("cycle.command_reward_mode", "\n".join(receipt["reasons"]))
+
+    def test_cli_rejects_unsupported_reward_modes_without_writing_output(self):
+        with tempfile.TemporaryDirectory(prefix="command-curriculum-invalid-reward-") as temporary:
+            root = Path(temporary)
+            cycle, output = root / "cycle.json", root / "gate.json"
+            payload = json.dumps(evaluation())
+            cycle.write_text(payload, encoding="utf-8")
+            for reward_mode in ("", "auto", "WASD", "legacy "):
+                with self.subTest(reward_mode=reward_mode):
+                    process = self.run_cli(cycle, output, reward_mode=reward_mode)
+                    self.assertEqual(process.returncode, 2)
+                    self.assertIn("--reward-mode", process.stderr)
+                    self.assertIn("invalid choice", process.stderr)
+                    self.assertFalse(output.exists())
+                    self.assertEqual(cycle.read_text(encoding="utf-8"), payload)
 
     def test_cli_pass_reject_malformed_and_missing_input_receipts(self):
         with tempfile.TemporaryDirectory(prefix="command-curriculum-gate-") as temporary:

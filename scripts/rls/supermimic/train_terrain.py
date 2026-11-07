@@ -68,6 +68,8 @@ def parse_args(argv=None):
     parser.add_argument("--warm-start-reset-arms", action="store_true")
     parser.add_argument("--warm-start-reset-world", action="store_true")
     parser.add_argument("--warm-start-normalizer-prior-count", type=float, default=0.)
+    parser.add_argument("--freeze-actor-normalization", action="store_true")
+    parser.add_argument("--warm-start-require-control-match", action="store_true")
     parser.add_argument("--gait-warm-start", type=Path)
     parser.add_argument("--gait-quality", type=Path)
     parser.add_argument("--amp-motion-config", type=Path)
@@ -169,6 +171,24 @@ def adapt_warm_start_actor(actor, joint_names, *, reset_arms=False, normalizer_p
                 "mean_and_variance_preserved": True,
             }
     return receipt
+
+
+def update_collection_normalizers(actor, observations, goals, *, frozen=False):
+    """Preserve a transferred policy's input mapping during collection."""
+    if not frozen:
+        actor.obs_norm.update(observations)
+        actor.goal_norm.update(goals)
+
+
+def validate_actor_normalization_resume(checkpoint, frozen):
+    if checkpoint["arguments"].get("freeze_actor_normalization", False) != frozen:
+        raise ValueError("Resume actor normalization mode differs; use a new warm-start run")
+
+
+def validate_warm_start_control(checkpoint, upper_body_config, rate_limiter_config, reset_arms):
+    if (reset_arms or checkpoint.get("stealth_upper_body_constraint") != upper_body_config
+            or checkpoint.get("upper_body_rate_limit") != rate_limiter_config):
+        raise ValueError("Recovery requires unchanged warm-start arm outputs and controller")
 
 
 def noise_padded_actor_history(mdp, observations, history_steps):
@@ -368,6 +388,11 @@ def main():
     if (args.warm_start_reset_arms or args.warm_start_reset_world
             or args.warm_start_normalizer_prior_count) and not (args.warm_start or args.resume):
         raise SystemExit("Warm-start adaptation options require --warm-start or --resume")
+    if (args.freeze_actor_normalization or args.warm_start_require_control_match
+            ) and not (args.warm_start or args.resume):
+        raise SystemExit("Recovery preservation options require a transferred checkpoint")
+    if args.freeze_actor_normalization and args.warm_start_normalizer_prior_count:
+        raise SystemExit("Frozen actor normalization cannot reopen its prior count")
     if (args.upper_body_reference or args.upper_body_acceleration or args.upper_body_residual != .25
             ) and not args.stealth_upper_body_constraint:
         raise SystemExit("Upper-body settings require the upper-body constraint")
@@ -580,6 +605,7 @@ def main():
                 or ck.get("objective_version") != COMMAND_VERSION):
             raise ValueError("Resume requires the same command/style objective")
         validate_resume_command_resampling(ck, args)
+        validate_actor_normalization_resume(ck, args.freeze_actor_normalization)
         for name in ("gamma", "hist", "amp_weight", "clearance_ratio",
                      "style_feature_mode", "amp_history", "command_range_mode",
                      "jump_height", "jump_probability", "action_limit", "stealth_command",
@@ -633,6 +659,9 @@ def main():
             raise ValueError("Warm start needs a matching robot command/style checkpoint")
         if ck["arguments"].get("action_limit", 4.) != args.action_limit:
             raise ValueError("Warm-start action limit differs from the actor's control contract")
+        if args.warm_start_require_control_match:
+            validate_warm_start_control(
+                ck, upper_body_config, rate_limiter_config, args.warm_start_reset_arms)
         actor.load_state_dict(ck["actor"])
         actor_adaptation = adapt_warm_start_actor(
             actor, spec.joint_names, reset_arms=args.warm_start_reset_arms,
@@ -655,7 +684,12 @@ def main():
                           "critic_reset": True, "actor_optimizer_reset": True,
                           "world_model_optimizer_reset": True, "critic_optimizer_reset": True,
                           "style_optimizer_restored": restore_style,
+                          "actor_normalization_frozen": args.freeze_actor_normalization,
+                          "warm_start_control_match_required": args.warm_start_require_control_match,
                           "runtime_motion_reference": False}
+    if args.freeze_actor_normalization and any(
+            norm.count.item() <= 0 for norm in (actor.obs_norm, actor.goal_norm)):
+        raise ValueError("Frozen actor normalization requires initialized saved statistics")
     if start_it >= args.iterations:
         raise ValueError("Requested iterations must exceed resumed checkpoint iteration")
     amp_updates_total = style.checkpoint()["updates"]
@@ -777,8 +811,8 @@ def main():
             obs_hist = torch.where(fresh[:, None, None], obs[:, None].expand_as(obs_hist),
                                    torch.cat((obs_hist[:, 1:], obs[:, None]), 1))
             goal = mdp.goal(state, env.c)
-            actor.obs_norm.update(obs)
-            actor.goal_norm.update(goal)
+            update_collection_normalizers(
+                actor, obs, goal, frozen=args.freeze_actor_normalization)
             action = collect_actor(obs_hist, goal)
             action = action + .1 * torch.randn_like(action)
             if action_constraint is not None:

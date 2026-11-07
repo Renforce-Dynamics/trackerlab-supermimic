@@ -10,7 +10,10 @@ REPO = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO / "scripts/rls/supermimic"))
 from bootstrap import configure_paths
 configure_paths()
-from train_terrain import adapt_warm_start_actor
+from train_terrain import (
+    adapt_warm_start_actor, update_collection_normalizers,
+    validate_actor_normalization_resume, validate_warm_start_control,
+)
 from trackerLab.algorithms.supermimic import networks
 from trackerLab.algorithms.supermimic.terrain_networks import TerrainPolicy
 from trackerTask.supermimic.robots import get_robot
@@ -93,6 +96,49 @@ class CommandInitializationTests(unittest.TestCase):
         for count in (-1., float("nan"), float("inf"), 2e8, True):
             with self.subTest(count=count), self.assertRaises(ValueError):
                 adapt_warm_start_actor(actor, spec.joint_names, normalizer_prior_count=count)
+
+    def test_frozen_collection_preserves_policy_mapping_across_shifted_warmup_batches(self):
+        _, actor = self.make_actor()
+        # A low count would otherwise change both statistics during warmup.
+        actor.obs_norm.count.fill_(100.)
+        actor.goal_norm.count.fill_(100.)
+        observations, goals = torch.randn(4, 2, actor.obs_dim), torch.randn(4, 12)
+        with torch.no_grad():
+            original_actions = actor(observations, goals)
+        original_state = {name: value.clone() for name, value in actor.state_dict().items()}
+        for _ in range(64):
+            update_collection_normalizers(
+                actor, torch.full((16, actor.obs_dim), 3.),
+                torch.full((16, 12), -.5), frozen=True)
+        with torch.no_grad():
+            torch.testing.assert_close(actor(observations, goals), original_actions, rtol=0, atol=0)
+        for name, value in actor.state_dict().items():
+            torch.testing.assert_close(value, original_state[name], rtol=0, atol=0)
+        update_collection_normalizers(
+            actor, torch.full((16, actor.obs_dim), 3.), torch.full((16, 12), -.5))
+        self.assertEqual(actor.obs_norm.count.item(), 116.)
+        self.assertFalse(torch.equal(actor.obs_norm.mean, original_state["obs_norm.mean"]))
+
+    def test_resume_preserves_explicit_normalization_mode_and_legacy_default(self):
+        validate_actor_normalization_resume({"arguments": {}}, False)
+        validate_actor_normalization_resume(
+            {"arguments": {"freeze_actor_normalization": True}}, True)
+        for saved, requested in (({}, True), ({"freeze_actor_normalization": True}, False)):
+            with self.subTest(saved=saved), self.assertRaises(ValueError):
+                validate_actor_normalization_resume({"arguments": saved}, requested)
+
+    def test_recovery_rejects_controller_changes_and_arm_row_reset(self):
+        saved = {"stealth_upper_body_constraint": {"reference_q": {"elbow": .5}},
+                 "upper_body_rate_limit": None}
+        control = {"reference_q": {"elbow": .5}}
+        validate_warm_start_control(saved, control, None, False)
+        for upper, limiter, reset in (
+            (None, {"response_version": 2}, False),
+            ({"reference_q": {"elbow": .6}}, None, False),
+            (control, None, True),
+        ):
+            with self.subTest(upper=upper), self.assertRaises(ValueError):
+                validate_warm_start_control(saved, upper, limiter, reset)
 
 
 if __name__ == "__main__":

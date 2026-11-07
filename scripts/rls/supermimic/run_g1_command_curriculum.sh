@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [ "$#" -ne 7 ]; then
-    printf 'usage: run_g1_command_curriculum.sh PYTHON OUTPUT SOURCE_12000 POOL BASELINE BANK BANK_PROTOCOL\n' >&2
+if [ "$#" -lt 7 ] || [ "$#" -gt 8 ]; then
+    printf 'usage: run_g1_command_curriculum.sh PYTHON OUTPUT SOURCE_12000 POOL BASELINE BANK BANK_PROTOCOL [staged|all]\n' >&2
     exit 2
 fi
 python=$1
@@ -12,6 +12,11 @@ pool=$4
 baseline=$5
 bank=$6
 bank_protocol=$7
+schedule=${8:-staged}
+case "$schedule" in
+    staged|all) ;;
+    *) printf 'Command schedule must be staged or all.\n' >&2; exit 2 ;;
+esac
 repo=$(git rev-parse --show-toplevel)
 config=$repo/scripts/rls/supermimic/configs/command_stealth_entry.json
 test -x "$python"
@@ -28,6 +33,7 @@ git diff --exit-code
 git diff --cached --exit-code
 test -z "$(git ls-files --others --exclude-standard)"
 git rev-parse HEAD > "$output/code.receipt"
+printf '%s\n' "$schedule" > "$output/command-schedule.receipt"
 sha256sum "$source" "$pool/manifest.json" "$pool/upper-body-reference.json" "$baseline" "$bank" "$bank_protocol" "$config" > "$output/input.receipt"
 
 stop_requested() {
@@ -74,13 +80,16 @@ review() {
 
 # Retain all earlier modes when adding idle, reverse, then reverse arcs.
 modes=(forward turn_left turn_right forward_left forward_right idle)
+if [ "$schedule" = all ]; then
+    modes=(forward backward turn_left turn_right forward_left forward_right backward_left backward_right idle)
+fi
 resume=$source
 previous=12000
 for target in 13000 14000 15000 17000 19000 21000 23000 25000; do
     stop_requested
-    if (( target == 14000 )); then
+    if [ "$schedule" = staged ] && (( target == 14000 )); then
         modes+=(backward)
-    elif (( target == 15000 )); then
+    elif [ "$schedule" = staged ] && (( target == 15000 )); then
         modes+=(backward_left backward_right)
     fi
     printf 'training_to_%s\n' "$target" > "$output/controller.phase"

@@ -63,8 +63,13 @@ It preserves every stage's run config, summary and immutable checkpoint.
 ```bash
 bash scripts/rls/supermimic/run_g1_command_curriculum.sh \
   PYTHON OUTPUT SOURCE_12000 ORIGINAL_POOL ORIGINAL_FORWARD_REPORT \
-  FIXED_PHYSICAL_BANK BANK_PROTOCOL
+  FIXED_PHYSICAL_BANK BANK_PROTOCOL [staged|all]
 ```
+
+The optional `all` schedule trains all nine commands from the first stage, with
+the same milestone caps and guards. It requires a separate empty run directory;
+it never resumes a failed staged arm automatically. Its schedule choice is
+recorded in `command-schedule.receipt`.
 
 ## Preserved Settings
 
@@ -113,3 +118,20 @@ but do not guarantee the requested appearance. This sampling-only experiment
 keeps those factors explicit rather than changing data, rewards and controllers
 together. Entry duration and fixed-arm expression cannot improve from additional
 actor updates; controller retiming remains a separate physical experiment.
+
+## First Six-Mode Review and All-Command Comparison
+
+The staged arm reached 13000 (+1000 actor updates) with its continuity audit
+passing. Held-forward vx was 0.210222 m/s with 1/24 falls, while support-sole
+slip was 0.144149 m/s. The nine-mode cycle found 2/12 completed episodes falling
+in `forward_right`, exceeding the active-mode 10% guard. Reverse commands were
+still untrained (straight reverse mean vx +0.012 m/s), and idle drift remained
+(mean vx +0.051, vy +0.042 m/s). Preserve this failed arm as experimental evidence.
+
+The owner requests every command to participate in training. A separate bounded
+all-command arm therefore starts from the verified 12000 checkpoint, using the
+`all` schedule. Its first +1000-update review applies the same forward guard and
+the same 10% bound to all nine modes. Only command sampling differs from the
+source recipe. No threshold increase or automatic promotion of failed weights
+is permitted. The source and staged cycle layouts differ; the observed failure
+does not establish whether sampling, adaptation or physical cohort caused it.

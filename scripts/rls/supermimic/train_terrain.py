@@ -104,6 +104,8 @@ def parse_args(argv=None):
     parser.add_argument("--jump-height", type=float, default=0.)
     parser.add_argument("--jump-probability", type=float, default=.15)
     parser.add_argument("--command-resample-steps", type=int, nargs=2, default=(100, 250))
+    parser.add_argument("--command-margin-steps", type=int,
+                        help="Require the current command to outlast imagination by this margin")
     parser.add_argument("--solver-iterations", type=int, default=50)
     parser.add_argument("--max-episode-steps", type=int, default=1000)
     parser.add_argument("--describe", action="store_true")
@@ -189,6 +191,16 @@ def validate_warm_start_control(checkpoint, upper_body_config, rate_limiter_conf
     if (reset_arms or checkpoint.get("stealth_upper_body_constraint") != upper_body_config
             or checkpoint.get("upper_body_rate_limit") != rate_limiter_config):
         raise ValueError("Recovery requires unchanged warm-start arm outputs and controller")
+
+
+def command_timing_start_mask(data, horizon, margin_steps):
+    """Match the upstream command-time-left actor-start condition."""
+    if margin_steps is None:
+        return torch.ones_like(data["ep_step"], dtype=torch.bool)
+    if type(margin_steps) is not int or margin_steps < 0:
+        raise ValueError("Command margin must be a nonnegative integer or disabled")
+    remaining = data["command_time_left_steps"]
+    return remaining > horizon + margin_steps
 
 
 def noise_padded_actor_history(mdp, observations, history_steps):
@@ -404,6 +416,8 @@ def main():
         raise SystemExit("Replay buffer must cover imagination and WM windows; UTD must be positive")
     if args.horizon >= args.max_episode_steps or args.wm_only_iters < 0:
         raise SystemExit("Imagination horizon must fit an episode and WM warmup must be nonnegative")
+    if args.command_margin_steps is not None and args.command_margin_steps < 0:
+        raise SystemExit("Command margin must be nonnegative")
     if args.pi_batch * args.horizon < args.critic_minibatches:
         raise SystemExit("Each critic minibatch must contain at least one sample")
     if (not 0 < args.gamma < 1 or not 0 <= args.lam <= 1
@@ -590,15 +604,28 @@ def main():
     env.set_reference_resets(motion, probability=args.reference_reset_probability,
                              grounded_mask=grounded)
     env.reset()
+    resume_checkpoint = (
+        torch.load(args.resume.resolve(), map_location=args.device, weights_only=False)
+        if args.resume else None)
+    previous_command_margin = (
+        resume_checkpoint["arguments"].get("command_margin_steps")
+        if resume_checkpoint is not None else None)
+    if args.command_margin_steps is None and previous_command_margin is not None:
+        args.command_margin_steps = previous_command_margin
+    if (args.command_margin_steps is not None
+            and args.horizon + args.command_margin_steps >= max(args.command_resample_steps)):
+        raise ValueError("Command interval cannot contain the imagined horizon and margin")
     buffer = ReplayBuffer(args.buffer_steps, args.num_envs, args.device, spec.num_joints,
-                          scenario_dim=SCENARIO_DIM)
+                          scenario_dim=SCENARIO_DIM,
+                          command_timing=args.command_margin_steps is not None)
     obs_hist = torch.zeros(args.num_envs, args.hist, mdp.obs_dim, device=args.device)
     style_hist = style.frame_features(env.state())[:, None].expand(
         -1, style.history_steps, -1).clone()
     start_it = 0
     initialization = None
+    resume_receipt = None
     if args.resume:
-        ck = torch.load(args.resume.resolve(), map_location=args.device, weights_only=False)
+        ck = resume_checkpoint
         if ck["task"] != args.task:
             raise ValueError("Resume checkpoint task differs")
         if (ck.get("training_stage") != "command-style"
@@ -652,6 +679,14 @@ def main():
                   "projected optimizer moments were preserved.", flush=True)
         start_it = ck["iteration"]
         initialization = ck.get("initialization")
+        resume_receipt = {
+            "checkpoint": str(args.resume.resolve()), "iteration": start_it,
+            "actor_world_critic_style_restored": True,
+            "optimizer_states_restored": True,
+            "command_margin_steps_before": previous_command_margin,
+            "command_margin_steps_after": args.command_margin_steps,
+            "sampling_filter_changed": previous_command_margin != args.command_margin_steps,
+        }
     elif args.warm_start:
         ck = torch.load(args.warm_start.resolve(), map_location=args.device, weights_only=False)
         if (ck.get("training_stage") != "command-style" or ck.get("robot") != task.robot
@@ -696,6 +731,7 @@ def main():
     with (run / "run_config.json").open("w", encoding="utf-8") as stream:
         json.dump({"arguments": vars(args) | {"run_dir": str(run)},
                    "objective_version": COMMAND_VERSION, "initialization": initialization,
+                   "resume_receipt": resume_receipt,
                    "success_terminal_value": mdp.success_reward,
                    "task": task.describe(), "algorithm": "SuperMimic command + AMP style",
                    "runtime_motion_reference": False,
@@ -860,7 +896,8 @@ def main():
                     (data["ep_step"] < style.history_steps)
                     & (data["history_steps"] == data["ep_step"] + 1))
             valid = ((data["ep_step"] + args.horizon < args.max_episode_steps)
-                     & complete_history)
+                     & complete_history
+                     & command_timing_start_mask(data, args.horizon, args.command_margin_steps))
             idx = valid.nonzero().flatten()[:batch - count]
             starts.append({key: value[idx] for key, value in data.items()})
             histories.append({key: value[idx] for key, value in hist.items()})
@@ -1088,6 +1125,7 @@ def main():
                               "training_stage": "command-style",
                               "objective_version": COMMAND_VERSION,
                               "initialization": initialization,
+                              "resume_receipt": resume_receipt,
                               "robot": task.robot,
                               "command_envelope": command_envelope,
                               "quality_sole_height": quality.sole_height,

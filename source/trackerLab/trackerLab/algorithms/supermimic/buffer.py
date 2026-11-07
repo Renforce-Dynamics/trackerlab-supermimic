@@ -24,7 +24,12 @@ FIELDS = {
 
 
 class ReplayBuffer:
-    def __init__(self, T: int, N: int, device: str, num_joints=29, scenario_dim=0):
+    def __init__(self, T: int, N: int, device: str, num_joints=29, scenario_dim=0,
+                 command_timing=False):
+        if not isinstance(command_timing, bool):
+            raise ValueError("command_timing must be a boolean")
+        if command_timing and (type(scenario_dim) is not int or scenario_dim <= 0):
+            raise ValueError("command_timing requires a positive integer scenario_dim")
         self.T, self.N, self.device = T, N, device
         self.data = {}
         self.fields = {**FIELDS,
@@ -36,6 +41,8 @@ class ReplayBuffer:
                        "xi": (num_joints + 4, torch.float32)}
         if scenario_dim:
             self.fields["c"] = (scenario_dim, torch.float32)
+        if command_timing:
+            self.fields["command_time_left_steps"] = ((), torch.int32)
         for k, (shape, dt) in self.fields.items():
             shp = (T, N) + ((shape,) if isinstance(shape, int) else shape)
             self.data[k] = torch.zeros(shp, dtype=dt, device=device)
@@ -85,6 +92,8 @@ class ReplayBuffer:
         henv = env.unsqueeze(-1).expand_as(hrows)
         keys = ("s", "a_prev", "xi", "f") + (("c",) if "c" in self.fields else ())
         start_keys = keys + ("ep_step", "motion_id")
+        if "command_time_left_steps" in self.fields:
+            start_keys += ("command_time_left_steps",)
         start = {k: self.data[k][row, env] for k in start_keys}
         start["history_steps"] = torch.minimum(ep_step, age) + 1
         hist_d = {k: self.data[k][hrows, henv] for k in keys}

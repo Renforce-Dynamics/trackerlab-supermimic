@@ -521,6 +521,7 @@ class CommandSim(TerrainSim):
     def step(self, action):
         S0 = self.state()
         c0, a_prev = self.c.clone(), self.a_prev.clone()
+        command_time_left_steps = self._command_interval - self._command_age
         policy_action = action.clone()
         a = policy_action.clamp(-self.action_limit, self.action_limit)
         target = (self.default_q + self.xi[:, 1:-3] + a * self.action_scale).clamp(self.qlo, self.qhi)
@@ -565,6 +566,7 @@ class CommandSim(TerrainSim):
             "s": flatten_state(S0), "s1": flatten_state(S1), "a": a,
             "policy_action": policy_action, "a_prev": a_prev, "xi": self.xi.clone(),
             "c": c0, "c1": c1, "r": reward, "reward_terms": reward_terms,
+            "command_time_left_steps": command_time_left_steps,
             "f": self.ep_step - 1, "motion_id": self.levels.clone(),
             "ep_step": self.ep_step - 1, "terminated": terminated,
             "truncated": truncated, "done": done, "command_metrics": metrics,

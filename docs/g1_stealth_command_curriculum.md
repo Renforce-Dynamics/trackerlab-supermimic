@@ -34,7 +34,8 @@ belongs to an external state machine selecting another policy.
 
 ## Bounded Queue
 
-`scripts/rls/supermimic/run_g1_command_curriculum.sh` resumes iteration 12000:
+`scripts/rls/supermimic/run_g1_command_curriculum.sh` can resume iteration 12000
+or a later saved continuation, skipping completed milestones:
 
 | Cumulative iteration | Additional updates in stage | Training modes |
 | ---: | ---: | --- |
@@ -62,14 +63,23 @@ It preserves every stage's run config, summary and immutable checkpoint.
 
 ```bash
 bash scripts/rls/supermimic/run_g1_command_curriculum.sh \
-  PYTHON OUTPUT SOURCE_12000 ORIGINAL_POOL ORIGINAL_FORWARD_REPORT \
-  FIXED_PHYSICAL_BANK BANK_PROTOCOL [staged|all]
+  PYTHON OUTPUT SOURCE ORIGINAL_POOL ORIGINAL_FORWARD_REPORT \
+  FIXED_PHYSICAL_BANK BANK_PROTOCOL [staged|all] [MINIMUM_REVIEW_ITERATION]
 ```
 
 The optional `all` schedule trains all nine commands from the first stage, with
 the same milestone caps and guards. It requires a separate empty run directory;
 it never resumes a failed staged arm automatically. Its schedule choice is
 recorded in `command-schedule.receipt`.
+
+The owner subsequently requested a full 5000-update command trial before
+judgment. `all 17000` records the same intermediate guards, but numerical
+fall/speed guard failures below cumulative 17000 remain diagnostics rather than
+stopping training. Invalid reports, nonfinite values and operational errors
+still stop. At 17000 and later, both guards must pass for any further training.
+`command_training_budget.py` writes the explicit continuation decision without
+changing the original guard receipts. The minimum review iteration is saved
+in a separate receipt.
 
 ## Preserved Settings
 
@@ -132,6 +142,12 @@ The owner requests every command to participate in training. A separate bounded
 all-command arm therefore starts from the verified 12000 checkpoint, using the
 `all` schedule. Its first +1000-update review applies the same forward guard and
 the same 10% bound to all nine modes. Only command sampling differs from the
-source recipe. No threshold increase or automatic promotion of failed weights
-is permitted. The source and staged cycle layouts differ; the observed failure
+source recipe. No threshold increase or acceptance declaration is implied by
+continued training. The source and staged cycle layouts differ; the observed failure
 does not establish whether sampling, adaptation or physical cohort caused it.
+
+After the owner's 5000-update instruction, this arm was cooperatively saved at
+12131 and its full state carried into a new run with minimum review iteration
+17000. The initial 131 all-command updates are retained. Intermediate reviews
+at13000/14000/15000 remain visible; the agreed first judgment follows the full
+5000 command updates from12000 to17000. Later milestones remain conditional.

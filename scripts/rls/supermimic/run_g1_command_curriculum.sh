@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [ "$#" -lt 7 ] || [ "$#" -gt 8 ]; then
-    printf 'usage: run_g1_command_curriculum.sh PYTHON OUTPUT SOURCE_12000 POOL BASELINE BANK BANK_PROTOCOL [staged|all]\n' >&2
+if [ "$#" -lt 7 ] || [ "$#" -gt 9 ]; then
+    printf 'usage: run_g1_command_curriculum.sh PYTHON OUTPUT SOURCE POOL BASELINE BANK BANK_PROTOCOL [staged|all] [MINIMUM_REVIEW_ITERATION]\n' >&2
     exit 2
 fi
 python=$1
@@ -13,10 +13,15 @@ baseline=$5
 bank=$6
 bank_protocol=$7
 schedule=${8:-staged}
+minimum_review=${9:-0}
 case "$schedule" in
     staged|all) ;;
     *) printf 'Command schedule must be staged or all.\n' >&2; exit 2 ;;
 esac
+if [[ ! "$minimum_review" =~ ^(0|[1-9][0-9]{0,4})$ ]] || (( minimum_review > 25000 )); then
+    printf 'Minimum review iteration must be an integer from 0 to 25000.\n' >&2
+    exit 2
+fi
 repo=$(git rev-parse --show-toplevel)
 config=$repo/scripts/rls/supermimic/configs/command_stealth_entry.json
 test -x "$python"
@@ -34,6 +39,7 @@ git diff --cached --exit-code
 test -z "$(git ls-files --others --exclude-standard)"
 git rev-parse HEAD > "$output/code.receipt"
 printf '%s\n' "$schedule" > "$output/command-schedule.receipt"
+printf '%s\n' "$minimum_review" > "$output/minimum-review-iteration.receipt"
 sha256sum "$source" "$pool/manifest.json" "$pool/upper-body-reference.json" "$baseline" "$bank" "$bank_protocol" "$config" > "$output/input.receipt"
 
 stop_requested() {
@@ -84,14 +90,21 @@ if [ "$schedule" = all ]; then
     modes=(forward backward turn_left turn_right forward_left forward_right backward_left backward_right idle)
 fi
 resume=$source
-previous=12000
+previous=$("$python" -c 'import sys, torch; print(torch.load(sys.argv[1], map_location="cpu", weights_only=False)["iteration"])' "$source")
+if [[ ! "$previous" =~ ^[0-9]+$ ]] || (( previous < 12000 || previous >= 25000 )); then
+    printf 'Source iteration must be from 12000 to 24999.\n' >&2
+    exit 2
+fi
 for target in 13000 14000 15000 17000 19000 21000 23000 25000; do
-    stop_requested
     if [ "$schedule" = staged ] && (( target == 14000 )); then
         modes+=(backward)
     elif [ "$schedule" = staged ] && (( target == 15000 )); then
         modes+=(backward_left backward_right)
     fi
+    if (( target <= previous )); then
+        continue
+    fi
+    stop_requested
     printf 'training_to_%s\n' "$target" > "$output/controller.phase"
     "$python" -u scripts/rls/supermimic/train_terrain.py \
         --task locomotion/g1/stealth --config "$config" \
@@ -116,16 +129,22 @@ for target in 13000 14000 15000 17000 19000 21000 23000 25000; do
         --checkpoint "$checkpoint" --reference-checkpoint "$source" \
         --bank "$bank" --bank-protocol "$bank_protocol" \
         --output "$directory/world-validation.json" > "$directory/world-validation.stdout.log" 2>&1
-    if ! "$python" scripts/rls/supermimic/check_wasd_recovery.py \
+    forward_status=0
+    "$python" scripts/rls/supermimic/check_wasd_recovery.py \
             --baseline "$baseline" --candidate "$directory/seed101/forward/evaluation.json" \
-            --output "$directory/forward-gate.json" > "$directory/forward-gate.stdout.log" 2>&1; then
-        printf 'forward_gate_failed_%s\n' "$target" > "$output/controller.phase"
-        exit 2
-    fi
-    if ! "$python" scripts/rls/supermimic/check_command_curriculum.py \
+            --output "$directory/forward-gate.json" > "$directory/forward-gate.stdout.log" 2>&1 \
+        || forward_status=$?
+    active_status=0
+    "$python" scripts/rls/supermimic/check_command_curriculum.py \
             --cycle "$directory/seed101/cycle/evaluation.json" --training-modes "${modes[@]}" \
-            --output "$directory/active-mode-gate.json" > "$directory/active-mode-gate.stdout.log" 2>&1; then
-        printf 'active_mode_gate_failed_%s\n' "$target" > "$output/controller.phase"
+            --output "$directory/active-mode-gate.json" > "$directory/active-mode-gate.stdout.log" 2>&1 \
+        || active_status=$?
+    if ! "$python" scripts/rls/supermimic/command_training_budget.py \
+            --forward-gate "$directory/forward-gate.json" \
+            --active-mode-gate "$directory/active-mode-gate.json" \
+            --iteration "$target" --minimum-review-iteration "$minimum_review" \
+            --output "$directory/training-budget.json" > "$directory/training-budget.stdout.log" 2>&1; then
+        printf 'review_failed_%s_forward_%s_active_%s\n' "$target" "$forward_status" "$active_status" > "$output/controller.phase"
         exit 2
     fi
     "$python" scripts/rls/supermimic/export_command_policy.py \

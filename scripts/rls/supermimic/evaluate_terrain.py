@@ -14,6 +14,7 @@ import torch
 
 from bootstrap import configure_paths
 REPO = configure_paths()
+from export_command_policy import command_training_metadata
 from trackerTask.supermimic.terrain import get_task, generate, robot_parameters
 from trackerTask.supermimic.mujoco_terrain import build_model
 from trackerLab.algorithms.supermimic.terrain_networks import TerrainPolicy
@@ -228,7 +229,7 @@ class FirstEpisodeRecorder:
 
 
 def command_runtime_options(checkpoint):
-    """Restore command timing and control settings without training references."""
+    """Restore runtime settings; training command subsets remain metadata only."""
     arguments = checkpoint["arguments"]
     return {
         "jump_height": arguments.get("jump_height", 0.),
@@ -402,6 +403,8 @@ def main():
     command_mode = ck.get("training_stage") == "command-style"
     from trackerLab.tracker_env.mdp.supermimic_command import stealth_keyboard_modes
     checkpoint_control_mode = ck["arguments"].get("stealth_control_mode", "fixed")
+    training_metadata = command_training_metadata(ck)
+    # Evaluation always uses the canonical table, regardless of the training subset.
     mode_names = ([row[0] for row in stealth_keyboard_modes(checkpoint_control_mode)]
                   if checkpoint_control_mode in ("keyboard", "wasd") else [])
     try:
@@ -434,6 +437,7 @@ def main():
             action_limit=ck["arguments"].get("action_limit", 4.),
             entry_duration_s=ck["arguments"].get("entry_duration_s", 0.),
             control_mode="wasd" if ck["arguments"].get("stealth_control_mode") == "wasd" else "legacy",
+            reward_control_mode=training_metadata["command_reward_mode"],
             wasd_reward_version=ck["arguments"].get("wasd_reward_version", 1),
         )
         mdp.set_style_weight(ck["arguments"].get("amp_weight", .5))
@@ -690,6 +694,7 @@ def main():
               "foot_slip_mode": ck["arguments"].get("foot_slip_mode", "legacy"),
               "upper_body_rate_limit": rate_limiter_config,
               "stealth_control_mode": ck["arguments"].get("stealth_control_mode", "fixed"),
+              **training_metadata,
               "wasd_reward_version": ck["arguments"].get("wasd_reward_version", 1),
               "fixed_command_mode": args.command_mode,
               "command_mode_layout": args.mode_layout,

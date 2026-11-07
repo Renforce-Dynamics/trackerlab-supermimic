@@ -191,7 +191,7 @@ class CommandMDP(TerrainMDP):
     def __init__(self, field, default_q, qlo, qhi, gamma=.99, profile=None,
                  clearance_ratio=1.0, *, target_clearance_m=None, jump_height=0.,
                  action_limit=ACTION_LIMIT, entry_duration_s=0., control_mode="legacy",
-                 wasd_reward_version=1):
+                 wasd_reward_version=1, reward_control_mode=None):
         profile = field.terrain.profile if profile is None else profile
         if profile not in (*PROFILES, *COMMAND_PROFILES) or profile != field.terrain.profile:
             raise ValueError("Command profile must match the heightfield profile")
@@ -211,12 +211,18 @@ class CommandMDP(TerrainMDP):
             raise ValueError("control_mode must be 'legacy' or 'wasd'")
         if control_mode == "wasd" and profile != "stealth":
             raise ValueError("WASD tracking requires a stealth profile")
+        reward_control_mode = control_mode if reward_control_mode is None else reward_control_mode
+        if reward_control_mode not in ("legacy", "wasd"):
+            raise ValueError("reward_control_mode must be legacy or wasd")
+        if reward_control_mode == "wasd" and control_mode != "wasd":
+            raise ValueError("WASD rewards require WASD control")
         if (type(wasd_reward_version) is not int or wasd_reward_version not in (1, 2)
                 or (wasd_reward_version == 2 and control_mode != "wasd")):
             raise ValueError("Reward version 2 requires WASD; supported versions are 1 and 2")
         super().__init__(field, default_q, qlo, qhi, gamma)
         self.profile = profile
         self.control_mode = control_mode
+        self.reward_control_mode = reward_control_mode
         self.control_mode_version = WASD_CONTROL_VERSION if control_mode == "wasd" else 0
         self.wasd_reward_version = wasd_reward_version
         self.terrain_navigation = profile in PROFILES
@@ -300,7 +306,7 @@ class CommandMDP(TerrainMDP):
         yaw_reward = .04 * torch.exp(-ew / .25)
         dont_wait = (-.01 * (c[..., 1] / scale > .15).to(ev.dtype)
                      * torch.sigmoid((.1 - v_body[..., 0] / scale) / .03))
-        if self.control_mode == "wasd":
+        if self.reward_control_mode == "wasd":
             speed = torch.linalg.vector_norm(c[..., 1:3], dim=-1) / scale
             moving_width = .30 if self.wasd_reward_version == 2 else WASD_VELOCITY_TOLERANCE
             yaw_width = .40 if self.wasd_reward_version == 2 else WASD_YAW_TOLERANCE

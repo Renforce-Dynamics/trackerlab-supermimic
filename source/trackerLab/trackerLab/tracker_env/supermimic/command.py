@@ -194,6 +194,10 @@ class CommandSim(TerrainSim):
         fixed = getattr(self, "_fixed_keyboard_mode_name", None)
         if fixed is not None and fixed not in [row[0] for row in stealth_keyboard_modes(mode_set)]:
             raise ValueError("Clear the fixed keyboard mode before switching to a table without it")
+        training = getattr(self, "_training_command_modes", None)
+        if training is not None and any(
+                name not in [row[0] for row in stealth_keyboard_modes(mode_set)] for name in training):
+            raise ValueError("Clear the training command subset before switching to a table without its modes")
         self.command_mode_set = mode_set
         self.stealth_keyboard_mode = True
         self.contract["command_mode_set"] = mode_set
@@ -205,10 +209,42 @@ class CommandSim(TerrainSim):
             self.contract["wasd_keyboard"] = wasd_keyboard_metadata()
         else:
             self.contract.pop("wasd_keyboard", None)
+        if training is not None:
+            self._update_training_command_modes(training)
         if getattr(self, "_keyboard_evaluation_cycle", False):
             self.set_keyboard_evaluation_cycle(True)
         else:
             self.sample_commands()
+
+    def set_training_command_modes(self, names_or_none):
+        """Restrict stochastic keyboard sampling to a nonempty sequence of names.
+
+        None restores the original probabilities. Fixed modes and evaluation
+        cycles always retain access to the full selected immutable table.
+        """
+        if names_or_none is None:
+            self._training_command_modes = None
+            self.contract.pop("training_command_modes", None)
+        else:
+            if not self.stealth_keyboard_mode:
+                raise ValueError("Enable a keyboard mode set before selecting training modes")
+            available = [row[0] for row in self._keyboard_modes()]
+            if (not isinstance(names_or_none, (list, tuple)) or not names_or_none
+                    or any(not isinstance(name, str) or name not in available for name in names_or_none)
+                    or len(set(names_or_none)) != len(names_or_none)):
+                raise ValueError("Training command modes must be nonempty unique names in the selected table")
+            self._update_training_command_modes(names_or_none)
+        if self.stealth_keyboard_mode:
+            self.sample_commands()
+
+    def _update_training_command_modes(self, names):
+        modes = [row for row in self._keyboard_modes() if row[0] in names]
+        self._training_command_modes = tuple(row[0] for row in modes)
+        total = sum(row[4] for row in modes)
+        self.contract["training_command_modes"] = {
+            "training_only": True, "mode_names": list(self._training_command_modes),
+            "probabilities": [row[4] / total for row in modes],
+        }
 
     def set_fixed_keyboard_mode(self, name: str | None):
         """Force one existing mode across resampling and resets; None clears it."""
@@ -231,7 +267,7 @@ class CommandSim(TerrainSim):
         """Assign env ID modulo mode count, retaining assignments across resets.
 
         This evaluation layout is mutually exclusive with a fixed single mode.
-        Disabling it restores the selected table's probability distribution.
+        Disabling it restores stochastic sampling, including any training subset.
         """
         if not isinstance(enabled, bool):
             raise ValueError("enabled must be a boolean")
@@ -472,6 +508,13 @@ class CommandSim(TerrainSim):
             if getattr(self, "_keyboard_evaluation_cycle", False):
                 indices = ids.remainder(len(self._keyboard_modes()))
             elif fixed is None:
+                training = getattr(self, "_training_command_modes", None)
+                if training is not None:
+                    mask = torch.tensor(
+                        [row[0] in training for row in self._keyboard_modes()],
+                        device=self.device, dtype=torch.bool)
+                    probabilities *= mask
+                    probabilities /= probabilities.sum()
                 indices = torch.multinomial(probabilities.expand(count, -1), 1).squeeze(-1)
             else:
                 fixed_index = [row[0] for row in self._keyboard_modes()].index(fixed)

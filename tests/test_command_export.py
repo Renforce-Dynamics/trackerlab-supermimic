@@ -166,7 +166,10 @@ class CommandExportTests(unittest.TestCase):
         saved = torch.load(self.output / "actor.pt", map_location="cpu", weights_only=True)
         self.assertEqual(set(saved), {
             "actor", "robot", "hist", "obs_dim", "goal_dim", "action_limit", "objective_version",
+            "command_reward_mode", "training_command_modes",
         })
+        self.assertEqual(saved["command_reward_mode"], "legacy")
+        self.assertIsNone(saved["training_command_modes"])
         self.assertEqual((saved["robot"], saved["hist"], saved["obs_dim"], saved["goal_dim"]),
                          ("go2", 2, 232, self.goal_dim))
         self.assertEqual(saved["action_limit"], 4.)
@@ -361,7 +364,10 @@ class CommandExportTests(unittest.TestCase):
                 self.assertEqual(set(saved), {
                     "actor", "robot", "hist", "obs_dim", "goal_dim", "action_limit",
                     "objective_version", "stealth_upper_body_constraint", "entry_duration_s",
+                    "command_reward_mode", "training_command_modes",
                 })
+                self.assertEqual(saved["command_reward_mode"], "legacy")
+                self.assertIsNone(saved["training_command_modes"])
                 self.assertEqual(saved["entry_duration_s"], duration)
                 self.assertEqual(saved["stealth_upper_body_constraint"], config)
                 self.assertEqual(config["posture_tolerance_rad"], .25)

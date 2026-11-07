@@ -19,6 +19,21 @@ from trackerLab.tracker_env.mdp.supermimic_command import (
 from trackerTask.supermimic.robots import get_robot
 
 
+def command_training_metadata(checkpoint):
+    """Describe saved training settings without narrowing runtime commands."""
+    arguments = checkpoint["arguments"]
+    reward_mode = arguments.get("command_reward_mode")
+    if reward_mode is None:
+        reward_mode = "wasd" if arguments.get("stealth_control_mode") == "wasd" else "legacy"
+    if reward_mode not in ("legacy", "wasd"):
+        raise ValueError("command_reward_mode must be 'legacy' or 'wasd'")
+    training_modes = arguments.get("command_training_modes")
+    return {
+        "command_reward_mode": reward_mode,
+        "training_command_modes": None if training_modes is None else list(training_modes),
+    }
+
+
 class ConstrainedCommandPolicy(nn.Module):
     def __init__(self, policy, constraint, num_joints, entry_duration_s=0.):
         super().__init__()
@@ -40,6 +55,7 @@ def export(checkpoint_path, output):
     if (checkpoint.get("training_stage") != "command-style"
             or checkpoint.get("objective_version") != COMMAND_VERSION):
         raise ValueError("Expected a command/style checkpoint")
+    training_metadata = command_training_metadata(checkpoint)
     spec = get_robot(checkpoint["robot"])
     n, hist = spec.num_joints, checkpoint["arguments"]["hist"]
     obs_dim, goal_dim = 3 * n + 196, len(GOAL_FIELDS)
@@ -81,6 +97,7 @@ def export(checkpoint_path, output):
         "actor": actor.state_dict(), "robot": spec.name, "hist": hist,
         "obs_dim": obs_dim, "goal_dim": goal_dim, "action_limit": action_limit,
         "objective_version": COMMAND_VERSION,
+        **training_metadata,
     }
     if upper_body_config is not None:
         actor_payload["stealth_upper_body_constraint"] = upper_body_config
@@ -115,6 +132,7 @@ def export(checkpoint_path, output):
         "runtime_reference_motion": False, "runtime_discriminator": False,
         "runtime_world_model": False, "normalization_included": True,
         "trained_command_envelope": checkpoint.get("command_envelope"),
+        **training_metadata,
         "keyboard_control": (
             wasd_keyboard_metadata()
             if checkpoint["arguments"].get("stealth_control_mode") == "wasd" else None),

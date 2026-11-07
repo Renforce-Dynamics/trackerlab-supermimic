@@ -80,6 +80,9 @@ def parse_args(argv=None):
     parser.add_argument("--command-range-mode", choices=("reference", "full"), default="reference")
     parser.add_argument("--stealth-command", type=float, nargs=3)
     parser.add_argument("--stealth-control-mode", choices=("fixed", "keyboard", "wasd"), default="fixed")
+    parser.add_argument("--command-reward-mode", choices=("legacy", "wasd"))
+    parser.add_argument("--command-training-modes", nargs="+")
+    parser.add_argument("--allow-command-sampling-change", action="store_true")
     parser.add_argument("--wasd-reward-version", type=int, choices=(1, 2), default=1)
     parser.add_argument("--style-feature-mode", choices=("full", "proprioceptive", "postural",
                                                        "postural_end_effectors"),
@@ -128,6 +131,50 @@ def validate_resume_command_resampling(checkpoint, args):
     saved = checkpoint["arguments"].get("command_resample_steps", (100, 250))
     if tuple(saved) != tuple(args.command_resample_steps):
         raise ValueError("Resume command_resample_steps differs from the saved objective")
+
+
+def validate_command_sampling_resume(checkpoint, args):
+    """Allow an explicit sampler curriculum while preserving the reward and learning state."""
+    validate_command_curriculum_options(args)
+    old = checkpoint["arguments"]
+    old_mode, new_mode = old.get("stealth_control_mode", "fixed"), args.stealth_control_mode
+    old_reward = old.get("command_reward_mode") or ("wasd" if old_mode == "wasd" else "legacy")
+    new_reward = args.command_reward_mode or ("wasd" if new_mode == "wasd" else "legacy")
+    if old_reward != new_reward:
+        raise ValueError("Resume task reward mode differs from the saved objective")
+    old_subset, new_subset = old.get("command_training_modes"), args.command_training_modes
+    changed = old_mode != new_mode or old_subset != new_subset
+    if changed and not args.allow_command_sampling_change:
+        raise ValueError("Command sampling change requires explicit --allow-command-sampling-change")
+    if changed and (old_mode not in ("keyboard", "wasd") or new_mode != "wasd"):
+        raise ValueError("Command curriculum only supports keyboard/wasd to WASD sampling")
+    return {"source_control_mode": old_mode, "target_control_mode": new_mode,
+            "source_training_modes": old_subset, "target_training_modes": new_subset,
+            "reward_mode_preserved": new_reward, "command_sampling_changed": changed}
+
+
+def validate_command_curriculum_options(args):
+    """Reject malformed curriculum requests before allocating the simulator."""
+    from trackerLab.tracker_env.mdp.supermimic_command import STEALTH_WASD_MODES
+    reward = args.command_reward_mode
+    if reward not in (None, "legacy", "wasd"):
+        raise ValueError("Command reward mode must be legacy or wasd")
+    if reward == "wasd" and args.stealth_control_mode != "wasd":
+        raise ValueError("WASD rewards require WASD control")
+    effective = reward or ("wasd" if args.stealth_control_mode == "wasd" else "legacy")
+    if args.wasd_reward_version == 2 and effective != "wasd":
+        raise ValueError("WASD reward version 2 requires WASD rewards")
+    if args.allow_command_sampling_change and not args.resume:
+        raise ValueError("Explicit command-sampling adaptation requires full --resume")
+    names = args.command_training_modes
+    if names is not None:
+        if args.stealth_control_mode != "wasd":
+            raise ValueError("Training command subsets require WASD mode")
+        canonical = {mode.name for mode in STEALTH_WASD_MODES}
+        if (not isinstance(names, (list, tuple)) or not names
+                or any(not isinstance(name, str) or name not in canonical for name in names)
+                or len(names) != len(set(names))):
+            raise ValueError("Training modes must be a nonempty unique canonical WASD subset")
 
 
 def can_transfer_world_model(source_arguments, target_arguments):
@@ -392,6 +439,10 @@ def main():
         raise SystemExit("--stealth-command is only valid for a stealth task")
     if args.stealth_control_mode in ("keyboard", "wasd") and task.profile != "stealth":
         raise SystemExit("Keyboard command modes are only available for stealth tasks")
+    try:
+        validate_command_curriculum_options(args)
+    except ValueError as error:
+        raise SystemExit(str(error)) from error
     if args.stealth_upper_body_constraint and (task.robot, task.profile) != ("g1", "stealth"):
         raise SystemExit("The static upper-body constraint is currently calibrated for G1 stealth")
     if args.upper_body_rate_limit and (
@@ -486,7 +537,8 @@ def main():
                      profile=task.profile, clearance_ratio=args.clearance_ratio,
                      action_limit=args.action_limit, entry_duration_s=args.entry_duration_s,
                      control_mode="wasd" if args.stealth_control_mode == "wasd" else "legacy",
-                     wasd_reward_version=args.wasd_reward_version)
+                     wasd_reward_version=args.wasd_reward_version,
+                     reward_control_mode=args.command_reward_mode)
     mdp.set_style_weight(args.amp_weight)
     env = CommandSim(task, mdp, args.num_envs, args.device, args.seed,
                      args.solver_iterations, args.max_episode_steps,
@@ -590,6 +642,8 @@ def main():
                      logit_weight_decay_coefficient=.04,
                      minimum_forward_speed=.15 if task.profile == "velocity" else 0.,
                      replay_capacity=48 * args.num_envs).to(args.device)
+    if args.command_training_modes is not None:
+        env.set_training_command_modes(args.command_training_modes)
     grounded = None
     if args.reference_reset_probability:
         import numpy as np
@@ -632,11 +686,12 @@ def main():
                 or ck.get("objective_version") != COMMAND_VERSION):
             raise ValueError("Resume requires the same command/style objective")
         validate_resume_command_resampling(ck, args)
+        sampling_receipt = validate_command_sampling_resume(ck, args)
         validate_actor_normalization_resume(ck, args.freeze_actor_normalization)
         for name in ("gamma", "hist", "amp_weight", "clearance_ratio",
                      "style_feature_mode", "amp_history", "command_range_mode",
                      "jump_height", "jump_probability", "action_limit", "stealth_command",
-                     "stealth_control_mode", "foot_slide_weight", "feet_close_weight",
+                     "foot_slide_weight", "feet_close_weight",
                      "self_collisions", "reference_reset_probability"):
             if ck["arguments"].get(name) != getattr(args, name):
                 raise ValueError(f"Resume {name} differs from the saved objective")
@@ -686,6 +741,7 @@ def main():
             "command_margin_steps_before": previous_command_margin,
             "command_margin_steps_after": args.command_margin_steps,
             "sampling_filter_changed": previous_command_margin != args.command_margin_steps,
+            **sampling_receipt,
         }
     elif args.warm_start:
         ck = torch.load(args.warm_start.resolve(), map_location=args.device, weights_only=False)

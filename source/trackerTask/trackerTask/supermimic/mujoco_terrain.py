@@ -1,12 +1,54 @@
 """Build robot MJCF models with shared SuperMimic terrain and motor settings."""
 
 import hashlib
+import math
+from numbers import Real
 from pathlib import Path
 import xml.etree.ElementTree as ET
 
 import numpy as np
 
 from trackerTask.supermimic.terrain import robot_parameters
+
+
+_G1_WAIST_JOINTS = ("waist_yaw_joint", "waist_roll_joint", "waist_pitch_joint")
+
+
+def validate_waist_pd_scale(robot, waist_pd_scale):
+    """Validate the opt-in gain multiplier without loading a simulator."""
+    if isinstance(waist_pd_scale, bool) or not isinstance(waist_pd_scale, Real):
+        raise ValueError("waist_pd_scale must be finite and positive")
+    try:
+        scale = float(waist_pd_scale)
+    except OverflowError as error:
+        raise ValueError("waist_pd_scale must be finite and positive") from error
+    if not math.isfinite(scale) or scale <= 0:
+        raise ValueError("waist_pd_scale must be finite and positive")
+    if robot != "g1" and scale != 1.:
+        raise ValueError("waist_pd_scale other than 1 requires G1")
+    return scale
+
+
+def scale_waist_motors(robot, joint_names, motors, waist_pd_scale=1.0):
+    """Copy motor rows, scaling only named G1 waist Kp and Kd; retain action units."""
+    scale = validate_waist_pd_scale(robot, waist_pd_scale)
+    names = tuple(joint_names)
+    result = [tuple(motor) for motor in motors]
+    if len(names) != len(result) or any(len(motor) != 5 for motor in result):
+        raise ValueError("motors must contain one effort/velocity/Kp/Kd/armature row per joint")
+    if scale == 1.:
+        return result
+    if any(names.count(name) != 1 for name in _G1_WAIST_JOINTS):
+        raise ValueError("G1 waist scaling requires each of the three named waist joints exactly once")
+    damping_scale = math.sqrt(scale)
+    for index, name in enumerate(names):
+        if name in _G1_WAIST_JOINTS:
+            effort, velocity, kp, kd, armature = result[index]
+            kp, kd = kp * scale, kd * damping_scale
+            if not math.isfinite(kp) or not math.isfinite(kd):
+                raise ValueError("waist_pd_scale produces nonfinite motor gains")
+            result[index] = (effort, velocity, kp, kd, armature)
+    return result
 
 
 def _recompute_body_collision_masks(model):
@@ -18,8 +60,9 @@ def _recompute_body_collision_masks(model):
 
 
 def build_model(robot, terrain, solver_iterations=50, *, render_size=None, ground_plane=False,
-                self_collisions=False, collision_mask_version=2):
+                self_collisions=False, collision_mask_version=2, waist_pd_scale=1.0):
     """Build with explicit mask aggregation (v2) or original mj_setConst behavior (v1)."""
+    waist_pd_scale = validate_waist_pd_scale(robot, waist_pd_scale)
     import mujoco
 
     if not isinstance(self_collisions, bool):
@@ -29,6 +72,7 @@ def build_model(robot, terrain, solver_iterations=50, *, render_size=None, groun
             or collision_mask_version not in (1, 2)):
         raise ValueError("collision_mask_version must be 1 (legacy) or 2")
     spec, height, motors = robot_parameters(robot)
+    motors = scale_waist_motors(robot, spec.joint_names, motors, waist_pd_scale)
     path = Path(spec.mjcf_path).resolve()
     document = ET.parse(path).getroot()
     compiler = document.find("compiler")
@@ -156,6 +200,7 @@ def build_model(robot, terrain, solver_iterations=50, *, render_size=None, groun
         "source_mjcf_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
         "joint_names": list(spec.joint_names), "default_q": list(spec.default_q),
         "action_scale": list(spec.action_scale), "motors_effort_velocity_kp_kd_armature": motors,
+        "waist_pd_scale": waist_pd_scale,
         "height": height, "physics_dt": .005, "control_substeps": 4,
         "solver_iterations": solver_iterations, "solver_ls_iterations": 50,
         "self_collisions": self_collisions, "collision_mask_version": collision_mask_version,

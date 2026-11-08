@@ -13,7 +13,7 @@ from trackerLab.tracker_env.mdp.supermimic import flatten_state
 from trackerLab.tracker_env.mdp.supermimic_terrain import (
     FALL_PENALTY, terminal_masks, update_terrain_levels,
 )
-from trackerTask.supermimic.mujoco_terrain import build_model
+from trackerTask.supermimic.mujoco_terrain import build_model, validate_waist_pd_scale
 from trackerTask.supermimic.terrain import ROBOT_HEIGHTS, generate
 from trackerTask.supermimic.robots import get_robot
 
@@ -22,7 +22,9 @@ class TerrainSim:
     def __init__(self, task, mdp, num_envs=4096, device="cuda:0", seed=42,
                  solver_iterations=50, max_episode_steps=1000,
                  physical_ray_validation=False, scenario_dim=2, self_collisions=False,
-                 physical_domain_randomization=False, collision_mask_version=2):
+                 physical_domain_randomization=False, collision_mask_version=2,
+                 waist_pd_scale=1.0):
+        self.waist_pd_scale = validate_waist_pd_scale(task.robot, waist_pd_scale)
         import mujoco
         import mujoco_warp as mw
         import warp as wp
@@ -58,7 +60,8 @@ class TerrainSim:
         self.action_scale = torch.tensor(self.spec.action_scale, device=device)
         model_result = build_model(
             self.robot, self.terrain, solver_iterations,
-            self_collisions=self_collisions, collision_mask_version=collision_mask_version)
+            self_collisions=self_collisions, collision_mask_version=collision_mask_version,
+            waist_pd_scale=self.waist_pd_scale)
         (self.cpu_model, _, _, self._qpos_ids_np, self._qvel_ids_np, self.root_id,
          self.com_id, self._actuator_ids_np, self.contract) = model_result
         self._qpos_ids = torch.tensor(self._qpos_ids_np, device=device)

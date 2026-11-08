@@ -81,6 +81,17 @@ class EntrySelectionTests(unittest.TestCase):
             pose[3:7] = [np.cos(angle), 0., 0., np.sin(angle)]
             self.assertAlmostEqual(views.heading_degrees(pose), degrees)
 
+    def test_saved_motor_and_collision_settings_are_retained_for_rendering(self):
+        np.savez(self.path, **self.values, waist_pd_scale=np.array(3.),
+                 self_collisions=np.array(True), collision_mask_version=np.array(2))
+        _, _, metadata = views.load_trajectory(self.path)
+        self.assertEqual(metadata["waist_pd_scale"], 3.)
+        self.assertTrue(metadata["self_collisions"])
+        self.assertEqual(metadata["collision_mask_version"], 2)
+        np.savez(self.path, **self.values, waist_pd_scale=np.array(float("nan")))
+        with self.assertRaises(ValueError):
+            views.load_trajectory(self.path)
+
 
 class WaistTargetTests(unittest.TestCase):
     def test_quintic_replaces_exactly_three_waist_entries(self):

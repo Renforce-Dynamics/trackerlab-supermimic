@@ -124,6 +124,12 @@ class SuperMimicTerrainTests(unittest.TestCase):
         self.assertFalse(can_transfer_world_model(
             dict(legacy, self_collisions=False), dict(coherent, self_collisions=False)))
 
+    def test_changed_waist_physics_requires_dynamics_refit(self):
+        self.assertTrue(can_transfer_world_model({}, {"waist_pd_scale": 1.}))
+        self.assertFalse(can_transfer_world_model({}, {"waist_pd_scale": 3.}))
+        self.assertTrue(can_transfer_world_model(
+            {"waist_pd_scale": 3.}, {"waist_pd_scale": 3.}))
+
     def test_seeded_profiles_scale_with_robot_height(self):
         for profile in PROFILES:
             full = generate(profile, .76, 42)

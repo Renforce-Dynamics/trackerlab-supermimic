@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import json
+import math
 from pathlib import Path
 
 import torch
@@ -34,6 +35,33 @@ def command_training_metadata(checkpoint):
     }
 
 
+def command_actuator_metadata(checkpoint, spec):
+    """Require a saved nominal motor contract for changed waist dynamics."""
+    scale = checkpoint["arguments"].get("waist_pd_scale", 1.)
+    if (type(scale) not in (int, float) or not math.isfinite(scale) or scale <= 0):
+        raise ValueError("Invalid saved waist PD scale")
+    contract = checkpoint.get("simulator_contract")
+    if scale == 1. and contract is None:
+        return None
+    if (not isinstance(contract, dict)
+            or contract.get("waist_pd_scale", 1.) != scale
+            or contract.get("joint_names") != list(spec.joint_names)):
+        raise ValueError("Saved simulator contract must match waist dynamics and named joints")
+    motors = contract.get("motors_effort_velocity_kp_kd_armature")
+    if (not isinstance(motors, (tuple, list)) or len(motors) != spec.num_joints
+            or any(not isinstance(row, (tuple, list)) or len(row) != 5
+                   or any(type(value) not in (int, float) or not math.isfinite(value)
+                          or (value < 0 if index == 4 else value <= 0)
+                          for index, value in enumerate(row)) for row in motors)):
+        raise ValueError("Saved simulator contract requires finite positive motor settings "
+                         "and nonnegative armature")
+    return {"waist_pd_scale": scale, "joint_names": list(spec.joint_names),
+            "columns": ["effort_Nm", "velocity_rad_s", "kp_Nm_rad", "kd_Nm_s_rad", "armature"],
+            "nominal_motors": motors,
+            "scope": "Apply these nominal motor gains/limits with the saved position targets. "
+                     "Training domain randomization is not a runtime command."}
+
+
 class ConstrainedCommandPolicy(nn.Module):
     def __init__(self, policy, constraint, num_joints, entry_duration_s=0.):
         super().__init__()
@@ -57,6 +85,7 @@ def export(checkpoint_path, output):
         raise ValueError("Expected a command/style checkpoint")
     training_metadata = command_training_metadata(checkpoint)
     spec = get_robot(checkpoint["robot"])
+    actuator_metadata = command_actuator_metadata(checkpoint, spec)
     n, hist = spec.num_joints, checkpoint["arguments"]["hist"]
     obs_dim, goal_dim = 3 * n + 196, len(GOAL_FIELDS)
     networks.AMP_DTYPE = None
@@ -116,6 +145,8 @@ def export(checkpoint_path, output):
         actor_payload["entry_duration_s"] = checkpoint["arguments"]["entry_duration_s"]
     if checkpoint["arguments"].get("stealth_control_mode") == "wasd":
         actor_payload["stealth_control_mode"] = "wasd"
+    if actuator_metadata is not None:
+        actor_payload["actuators"] = actuator_metadata
     torch.save(actor_payload, output / "actor.pt")
     metadata = {
         "task": checkpoint["task"], "robot": spec.name, "iteration": checkpoint["iteration"],
@@ -154,6 +185,7 @@ def export(checkpoint_path, output):
         "upper_body_rate_limit": rate_limiter_config,
         "physical_domain_randomization":
             checkpoint["arguments"].get("physical_domain_randomization", False),
+        "actuators": actuator_metadata,
         "entry_duration_s": checkpoint["arguments"].get("entry_duration_s", 0.),
         "arm_entry_profile": (
             "Embedded fixed skill-entry arm waypoints; evaluated from the existing goal clock"

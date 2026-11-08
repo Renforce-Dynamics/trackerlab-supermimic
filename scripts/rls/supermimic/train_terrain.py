@@ -39,6 +39,8 @@ def parse_args(argv=None):
                                                    "velocity", "stealth"))
     parser.add_argument("--config")
     parser.add_argument("--run-dir", type=Path, required=True)
+    parser.add_argument("--stop-file", action="append", type=str, default=[],
+                        help="Additional stop marker checked each iteration; may be repeated")
     parser.add_argument("--num-envs", type=int, default=8096)
     parser.add_argument("--iterations", type=int, default=10000)
     parser.add_argument("--seed", type=int, default=42)
@@ -101,7 +103,11 @@ def parse_args(argv=None):
     parser.add_argument("--upper-body-reference", type=Path)
     parser.add_argument("--waist-entry-reference", type=Path,
                         help="Opt-in source-bound waist entry and persistent crouched posture")
+    parser.add_argument("--waist-pd-scale", type=float, default=1.,
+                        help="G1 waist-only Kp multiplier; Kd scales by its square root")
     parser.add_argument("--upper-body-residual", type=float, default=.25)
+    parser.add_argument("--upper-body-rate", type=float, default=1.2,
+                        help="Maximum scheduled/static arm target rate in rad/s")
     parser.add_argument("--upper-body-acceleration", type=float, default=0.)
     parser.add_argument("--entry-duration-s", type=float, default=0.)
     parser.add_argument("--grounded-start", action="store_true")
@@ -122,6 +128,11 @@ def parse_args(argv=None):
     parser.add_argument("--profile", action="store_true")
     apply_config(parser, argv)
     return parser.parse_args(argv)
+
+
+def training_stop_requested(run_dir, stop_files=()):
+    """Keep local and controller cancellation on the checkpoint-on-stop path."""
+    return (Path(run_dir) / "STOP").exists() or any(Path(path).exists() for path in stop_files)
 
 
 def validate_resume_objective(checkpoint, gamma):
@@ -210,6 +221,8 @@ def can_transfer_world_model(source_arguments, target_arguments):
         == target_arguments.get("solver_iterations", 50)
         and source_arguments.get("physical_domain_randomization", False)
         == target_arguments.get("physical_domain_randomization", False)
+        and source_arguments.get("waist_pd_scale", 1.)
+        == target_arguments.get("waist_pd_scale", 1.)
     )
 
 
@@ -551,7 +564,7 @@ def main():
     field = HeightField(field_data, robot_height, args.device)
     cpu_model, _, _, _, _, _, _, _, contract = build_model(
         task.robot, field_data, args.solver_iterations, self_collisions=args.self_collisions,
-        collision_mask_version=args.collision_mask_version)
+        collision_mask_version=args.collision_mask_version, waist_pd_scale=args.waist_pd_scale)
     joint_ids = torch.tensor([cpu_model.joint(name).id for name in spec.joint_names])
     qlo = torch.tensor(cpu_model.jnt_range[:, 0], dtype=torch.float32)[joint_ids].to(args.device)
     qhi = torch.tensor(cpu_model.jnt_range[:, 1], dtype=torch.float32)[joint_ids].to(args.device)
@@ -575,7 +588,8 @@ def main():
                      physical_domain_randomization=args.physical_domain_randomization,
                      grounded_start=args.grounded_start,
                      standing_joint_noise=args.standing_joint_noise,
-                     collision_mask_version=args.collision_mask_version)
+                     collision_mask_version=args.collision_mask_version,
+                     waist_pd_scale=args.waist_pd_scale)
     actor = TerrainPolicy(mdp.obs_dim, mdp.goal_dim, hist=args.hist,
                           num_joints=spec.num_joints, action_limit=args.action_limit).to(args.device)
     world = TerrainWorldModel(field, spec.num_joints).to(args.device)
@@ -612,7 +626,7 @@ def main():
         upper_body_constraint = UpperBodyConstraint(
             spec.joint_names, spec.default_q, spec.action_scale, reference,
             residual_radius_rad=args.upper_body_residual,
-            max_joint_rate_rad_s=1.2, control_dt=.02,
+            max_joint_rate_rad_s=args.upper_body_rate, control_dt=.02,
             action_limit=args.action_limit,
             max_joint_acceleration_rad_s2=args.upper_body_acceleration,
             entry_times_s=entry_times, entry_reference_q=entry_references,
@@ -760,7 +774,7 @@ def main():
             raise ValueError("Changed physical domain requires --warm-start in a new run")
         for name, default in (("entry_duration_s", 0.), ("grounded_start", False),
                               ("foot_slip_mode", "legacy"), ("standing_joint_noise", 0.),
-                              ("collision_mask_version", 1)):
+                              ("collision_mask_version", 1), ("waist_pd_scale", 1.)):
             if ck["arguments"].get(name, default) != getattr(args, name):
                 raise ValueError(f"Resume {name} differs from the saved objective")
         saved_upper_body_config = ck.get("stealth_upper_body_constraint")
@@ -832,7 +846,7 @@ def main():
                           "world_model_reset_reason": None if transfer_world else
                           ("explicit fresh dynamics for changed action distribution"
                            if args.warm_start_reset_world else
-                           "physical domain, self-contact or solver contract differs"),
+                           "physical domain, self-contact, solver or waist PD contract differs"),
                           "actor_adaptation": actor_adaptation,
                           "critic_reset": True, "actor_optimizer_reset": True,
                           "world_model_optimizer_reset": True, "critic_optimizer_reset": True,
@@ -1241,7 +1255,7 @@ def main():
                     json.dumps(probe_summary, indent=2) + "\n", encoding="utf-8")
                 print("TRAINING_SPEED_SUMMARY " + json.dumps(probe_summary), flush=True)
                 probe_started_at = None
-            stop_requested = (run / "STOP").exists()
+            stop_requested = training_stop_requested(run, args.stop_file)
             keep = (iteration + 1) % args.keep_every == 0
             if (iteration + 1) % args.ckpt_every == 0 or keep or final or stop_requested:
                 checkpoint = {"task": args.task, "iteration": iteration + 1,
@@ -1261,6 +1275,7 @@ def main():
                               "stealth_upper_body_constraint": upper_body_config,
                               "upper_body_rate_limit": rate_limiter_config,
                               "upper_body_reference_receipt": upper_body_reference_receipt,
+                              "simulator_contract": env.contract,
                               "arguments": vars(args) | {"run_dir": str(run),
                                   "amp_motion_config": str(args.amp_motion_config.resolve())}}
                 torch.save(checkpoint, run / "last.pt.tmp")

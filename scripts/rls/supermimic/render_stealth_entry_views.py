@@ -43,6 +43,16 @@ def load_trajectory(path, lane=0, seconds=6.):
         if iterations.ndim or iterations.dtype.kind not in "iu" or iterations < 1:
             raise ValueError("solver_iterations must be a positive integer")
         metadata["solver_iterations"] = int(iterations)
+        scale = archive["waist_pd_scale"] if "waist_pd_scale" in archive else np.array(1.)
+        if scale.ndim or scale.dtype.kind not in "fiu" or not np.isfinite(scale) or scale <= 0:
+            raise ValueError("waist_pd_scale must be a finite positive scalar")
+        metadata["waist_pd_scale"] = float(scale)
+        for name, default in (("self_collisions", False), ("collision_mask_version", 2)):
+            value = archive[name] if name in archive else np.array(default)
+            if value.ndim or (name == "self_collisions" and value.dtype.kind != "b") or (
+                    name == "collision_mask_version" and (value.dtype.kind not in "iu" or value not in (1, 2))):
+                raise ValueError(f"Invalid scalar {name}")
+            metadata[name] = value.item()
     metadata.update(control_dt=dt, stride=stride, last_displayed_source_frame=int(indices[-1]),
                     source_duration_s=(len(poses) - 1) * dt, requested_seconds=seconds)
     return poses, indices, metadata
@@ -96,7 +106,10 @@ def nominal_model(metadata):
     from trackerTask.supermimic.terrain import generate
 
     return build_model("g1", generate("stealth", .76, metadata["seed"]),
-                       metadata["solver_iterations"], render_size=(WIDTH, HEIGHT))
+                       metadata["solver_iterations"], render_size=(WIDTH, HEIGHT),
+                       waist_pd_scale=metadata.get("waist_pd_scale", 1.),
+                       self_collisions=metadata.get("self_collisions", False),
+                       collision_mask_version=metadata.get("collision_mask_version", 2))
 
 
 def replay_pose(model, data, pose, timestamp):
@@ -115,6 +128,14 @@ def render(trajectory, output, lane=0, seconds=6., waist_reference=None):
     trajectory, output = Path(trajectory).resolve(), Path(output).resolve()
     source_hash = digest(trajectory)
     poses, indices, metadata = load_trajectory(trajectory, lane, seconds)
+    commands = None
+    with np.load(trajectory, allow_pickle=False) as archive:
+        if "command_sequence" in archive:
+            values = archive["command_sequence"]
+            if (values.ndim != 3 or values.shape[1] <= lane or values.shape[2] != 7
+                    or len(values) < len(poses) or not np.isfinite(values[:len(poses), lane]).all()):
+                raise ValueError("Expected finite command_sequence [T, N, 7] aligned with qpos")
+            commands = values[:len(poses), lane].copy()
     model, *_, contract = nominal_model(metadata)
     xml = Path(contract["source_mjcf"]).resolve()
     target, target_info, reference_hash = waist_reference is not None, None, None
@@ -152,6 +173,10 @@ def render(trajectory, output, lane=0, seconds=6., waist_reference=None):
             title = TARGET_LABEL if target else "RECORDED PHYSICS / CPU POSE REPLAY"
             draw.rectangle((0, 0, frame_size[0], 36), fill="#8b1525" if target else "#203930")
             draw.text((16, 4), title, font=font, fill="white")
+            if commands is not None:
+                vx, vy, yaw = commands[index, 1:4]
+                draw.text((1120, 4), f"COMMAND vx={vx:+.2f} vy={vy:+.2f} m/s  yaw={yaw:+.2f} rad/s",
+                          font=small, fill="white")
             # MuJoCo azimuth 0 puts the eye at -X; +180 views the robot's +X front.
             for pane, (view, offset) in enumerate((("front", 180.), ("side", 90.))):
                 camera.azimuth = heading + offset
@@ -217,6 +242,7 @@ def render(trajectory, output, lane=0, seconds=6., waist_reference=None):
         "decode_check": {"frames": counts[-1], "completed": True},
         "pixel_nonblank": {"minimum_std_per_view": minimum_std, "completed": True},
         "model_contract": contract, "snapshots": snapshots,
+        "command_overlay": commands is not None,
         "waist_reference": str(waist_reference) if target else None,
         "waist_reference_sha256": reference_hash, "waist_target": target_info,
         "scope": TARGET_LABEL if target else "Recorded first-episode qpos; no inference, reference substitution or physics steps.",

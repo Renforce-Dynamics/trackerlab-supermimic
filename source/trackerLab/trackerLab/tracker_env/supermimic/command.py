@@ -16,6 +16,20 @@ from trackerLab.tracker_env.mdp.supermimic_terrain import (
 )
 from trackerLab.tracker_env.supermimic.terrain import TerrainSim
 from trackerTask.supermimic.gait import FOOT_BODIES, FOOT_OFFSETS
+from trackerTask.supermimic.mujoco_terrain import validate_waist_pd_scale
+
+
+CONTROL_TRACE_FIELDS = (
+    "applied_actions", "joint_targets", "joint_velocities",
+    "actuator_force", "qfrc_actuator", "qfrc_constraint", "qfrc_bias",
+)
+CONTROL_TRACE_PHASES = {
+    "capture": "after_physics_graph_before_any_reset",
+    "forces": "last_physics_substep_force_buffers_without_poststep_forward",
+    "state": "poststep_after_final_integration",
+    "commands": "held_action_and_target_for_completed_control_interval",
+    "same_time_pd_reconstruction": False,
+}
 
 
 class CommandSim(TerrainSim):
@@ -29,7 +43,8 @@ class CommandSim(TerrainSim):
                  stealth_keyboard_mode=False, self_collisions=False,
                  physical_domain_randomization=False, grounded_start=False,
                  standing_joint_noise=0., collision_mask_version=2,
-                 command_mode_set="keyboard"):
+                 command_mode_set="keyboard", waist_pd_scale=1.0):
+        waist_pd_scale = validate_waist_pd_scale(task.robot, waist_pd_scale)
         if task.profile != mdp.profile:
             raise ValueError("Command task and MDP profiles must match")
         clearance = mdp.target_clearance_m if target_clearance_m is None else target_clearance_m
@@ -78,7 +93,8 @@ class CommandSim(TerrainSim):
                          max_episode_steps, physical_ray_validation,
                          scenario_dim=SCENARIO_DIM, self_collisions=self_collisions,
                          physical_domain_randomization=physical_domain_randomization,
-                         collision_mask_version=collision_mask_version)
+                         collision_mask_version=collision_mask_version,
+                         waist_pd_scale=waist_pd_scale)
         self.curriculum = mdp.terrain_navigation
         self.contract.update(
             objective="command-driven-locomotion", objective_version=COMMAND_VERSION,
@@ -560,6 +576,43 @@ class CommandSim(TerrainSim):
         lo, hi = self.command_resample_steps
         self._command_interval[ids] = torch.randint(lo, hi + 1, (count,), device=self.device)
 
+    def set_control_trace_ids(self, record_ids=None):
+        """Opt into pre-reset snapshots for selected worlds, retaining their order."""
+        if record_ids is None:
+            self._control_trace_ids = None
+            return
+        ids = torch.as_tensor(record_ids, device=self.device)
+        if (ids.ndim != 1 or ids.numel() == 0 or ids.dtype == torch.bool
+                or ids.is_floating_point() or ids.is_complex()):
+            raise ValueError("Control trace IDs must be a nonempty integer vector")
+        ids = ids.to(dtype=torch.long)
+        if (bool(((ids < 0) | (ids >= self.num_envs)).any())
+                or ids.unique().numel() != ids.numel()):
+            raise ValueError("Control trace IDs must be unique and within num_envs")
+        self._control_trace_ids = ids.clone()
+
+    def _capture_control_trace(self, action, target, state):
+        ids = getattr(self, "_control_trace_ids", None)
+        if ids is None:
+            return None
+        trace = {
+            "recorded_env_ids": ids.clone(),
+            "phases": dict(CONTROL_TRACE_PHASES),
+            "applied_actions": action.index_select(0, ids).clone(),
+            "joint_targets": target.index_select(0, ids).clone(),
+            "joint_velocities": state[5].index_select(0, ids).clone(),
+        }
+        # mw.step retains force buffers from its final substep, while state has
+        # already been integrated. Preserve those buffers without another forward.
+        for name, indices in (
+                ("actuator_force", self._actuator_ids),
+                ("qfrc_actuator", self._qvel_ids),
+                ("qfrc_constraint", self._qvel_ids),
+                ("qfrc_bias", self._qvel_ids)):
+            values = self.wp.to_torch(getattr(self.data, name))
+            trace[name] = values.index_select(0, ids).index_select(1, indices).clone()
+        return trace
+
     @torch.no_grad()
     def step(self, action):
         S0 = self.state()
@@ -572,6 +625,7 @@ class CommandSim(TerrainSim):
             self.ctrl[:, self._actuator_ids] = target
             self.wp.capture_launch(self.physics_graph, stream=self._stream)
         S1 = self.state()
+        control_trace = self._capture_control_trace(a, target, S1)
         c1 = self.mdp.advance_command(c0, CONTROL_DT)
         self.c.copy_(c1)
         self.ep_step += 1
@@ -624,6 +678,8 @@ class CommandSim(TerrainSim):
             "ep_ret_norm": torch.where(done, self.ep_return / self.ep_step, zero),
             "term": fallen,
         }
+        if control_trace is not None:
+            transition["control_trace"] = control_trace
         if self.stealth_keyboard_mode:
             transition["stealth_mode_id"] = self._stealth_mode_ids.clone()
         self.a_prev.copy_(a)

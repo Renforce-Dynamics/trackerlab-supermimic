@@ -23,6 +23,7 @@ import trackerLab.algorithms.supermimic.networks as networks
 from trackerLab.tracker_env.mdp.supermimic import unflatten_state
 from trackerLab.tracker_env.mdp.supermimic_terrain import OBJECTIVE_VERSION, HeightField, TerrainMDP
 from trackerLab.tracker_env.supermimic.terrain import TerrainSim
+from trackerLab.tracker_env.supermimic.command import CONTROL_TRACE_FIELDS, CONTROL_TRACE_PHASES
 
 
 WASD_RELEASE_REGRESSION = (
@@ -243,8 +244,41 @@ def command_runtime_options(checkpoint):
             arguments.get("physical_domain_randomization", False),
         "grounded_start": arguments.get("grounded_start", False),
         "standing_joint_noise": arguments.get("standing_joint_noise", 0.),
+        **({"waist_pd_scale": arguments["waist_pd_scale"]}
+           if arguments.get("waist_pd_scale", 1.) != 1. else {}),
         **({"command_mode_set": "wasd"} if arguments.get("stealth_control_mode") == "wasd" else {}),
     }
+
+
+def control_trace_metadata(record_ids, joint_names):
+    return {
+        "version": 1, "recorded_env_ids": list(record_ids),
+        "joint_names": list(joint_names), "phases": dict(CONTROL_TRACE_PHASES),
+        "invalid_rows": "Initial, terminal and later-attempt rows are NaN with control_trace_valid=false",
+        "scope": ("Frozen pre-reset snapshots: last-substep force buffers and poststep state. "
+                  "Forces are not recomputed at poststep q/qd; these fields do not provide "
+                  "a same-time PD reconstruction or a four-substep force history."),
+    }
+
+
+def control_trace_frame(transition, record_ids, active):
+    """Mask frozen transition snapshots; never read post-reset simulator buffers."""
+    trace = transition.get("control_trace")
+    if trace is None:
+        raise ValueError("Control trace requires a frozen pre-reset transition snapshot")
+    captured_ids = trace["recorded_env_ids"].detach().cpu().numpy()
+    if not np.array_equal(captured_ids, np.asarray(record_ids)):
+        raise ValueError("Frozen control trace IDs differ from the recorder order")
+    if trace.get("phases") != CONTROL_TRACE_PHASES:
+        raise ValueError("Frozen control trace phase metadata differs from the capture contract")
+    active = np.asarray(active, dtype=bool)
+    if active.shape != captured_ids.shape:
+        raise ValueError("Control trace activity must match the recorded IDs")
+    valid = active & ~transition["done"][record_ids].detach().cpu().numpy()
+    result = {name: trace[name].detach().cpu().numpy().copy() for name in CONTROL_TRACE_FIELDS}
+    for value in result.values():
+        value[~valid] = np.nan
+    return {**result, "control_trace_valid": valid}
 
 
 def attach_locomotion_quality(env, kin, field, motors, checkpoint,
@@ -388,7 +422,10 @@ def main():
     parser.add_argument("--command-stage-seconds", type=float, default=3.)
     parser.add_argument("--record-env-ids", type=int, nargs="+",
                         help="Environment IDs whose first attempts are recorded")
+    parser.add_argument("--record-control-trace", action="store_true")
     args = parser.parse_args()
+    if args.record_control_trace and args.trajectory_output is None:
+        parser.error("Control traces require --trajectory-output")
     if args.num_envs < 6 or args.steps < 1:
         parser.error("Evaluation needs at least six environments and one step")
     record_ids = list(range(6)) if args.record_env_ids is None else args.record_env_ids
@@ -401,6 +438,8 @@ def main():
     networks.AMP_DTYPE = torch.bfloat16
     ck = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
     command_mode = ck.get("training_stage") == "command-style"
+    if getattr(args, "record_control_trace", False) and not command_mode:
+        parser.error("Control traces currently require a command-style checkpoint")
     from trackerLab.tracker_env.mdp.supermimic_command import stealth_keyboard_modes
     checkpoint_control_mode = ck["arguments"].get("stealth_control_mode", "fixed")
     training_metadata = command_training_metadata(ck)
@@ -424,7 +463,8 @@ def main():
     model, *_ = build_model(
         task.robot, field_data, solver_iterations,
         self_collisions=ck["arguments"].get("self_collisions", False),
-        collision_mask_version=ck["arguments"].get("collision_mask_version", 1))
+        collision_mask_version=ck["arguments"].get("collision_mask_version", 1),
+        waist_pd_scale=ck["arguments"].get("waist_pd_scale", 1.))
     joint_ids = [model.joint(name).id for name in spec.joint_names]
     limits = torch.tensor(model.jnt_range[joint_ids], device=device, dtype=torch.float32)
     if command_mode:
@@ -507,7 +547,8 @@ def main():
         kin = RobotKinematics(device, spec)
         style = AMPStyle.for_scoring(kin, ck["amp_style"], ground_sampler=field.sample)
         quality = attach_locomotion_quality(
-            env, kin, field, motors, ck, upper_body_constraint=upper_body_constraint,
+            env, kin, field, env.contract["motors_effort_velocity_kp_kd_armature"], ck,
+            upper_body_constraint=upper_body_constraint,
         )
         quality_sum = torch.zeros(5, device=device)
         style_history = style.frame_features(env.state())[:, None].expand(
@@ -524,6 +565,15 @@ def main():
         recorded_commands_last = first_commands.copy()
         first_context = env.xi[record_ids].cpu().numpy()
         recorded_commands = [first_commands.copy()]
+        recorded_control = None
+        if args.record_control_trace:
+            env.set_control_trace_ids(record_ids)
+            trace_metadata = control_trace_metadata(record_ids, spec.joint_names)
+            initial_trace = {
+                name: np.full((len(record_ids), spec.num_joints), np.nan, dtype=np.float32)
+                for name in CONTROL_TRACE_FIELDS}
+            initial_trace["control_trace_valid"] = np.zeros(len(record_ids), dtype=bool)
+            recorded_control = {name: [value] for name, value in initial_trace.items()}
     history = torch.zeros(args.num_envs, actor.hist, mdp.obs_dim, device=device)
     counts = {name: torch.zeros(6, device=device) for name in
               ("episodes", "successes", "falls", "timeouts", "return_sum", "progress_sum")}
@@ -670,6 +720,10 @@ def main():
             recorded_commands_last = freeze_recorded_commands(
                 recorded_commands_last, current_commands, recorded_active)
             recorded_commands.append(recorded_commands_last.copy())
+            if recorded_control is not None:
+                trace = control_trace_frame(tr, record_ids, recorded_active)
+                for name, value in trace.items():
+                    recorded_control[name].append(value)
         position = unflatten_state(tr["s1"])[0][:, 0] / field.scale
         progress = torch.maximum(progress, position)
         done = tr["done"].float()
@@ -695,6 +749,7 @@ def main():
               "physical_domain_randomization":
                   env.contract.get("physical_domain_randomization"),
               "entry_duration_s": ck["arguments"].get("entry_duration_s", 0.),
+              "waist_pd_scale": ck["arguments"].get("waist_pd_scale", 1.),
               "foot_slip_mode": ck["arguments"].get("foot_slip_mode", "legacy"),
               "upper_body_rate_limit": rate_limiter_config,
               "stealth_control_mode": ck["arguments"].get("stealth_control_mode", "fixed"),
@@ -726,7 +781,16 @@ def main():
                       commands=first_commands, context=first_context,
                       command_sequence=np.stack(recorded_commands),
                       recorded_env_ids=np.array(record_ids, dtype=np.int64),
+                      waist_pd_scale=np.float64(ck["arguments"].get("waist_pd_scale", 1.)),
+                      self_collisions=np.bool_(ck["arguments"].get("self_collisions", False)),
+                      collision_mask_version=np.int64(ck["arguments"].get("collision_mask_version", 1)),
+                      **({**{name: np.stack(values) for name, values in recorded_control.items()},
+                          "control_trace_metadata_json": np.array(json.dumps(trace_metadata, sort_keys=True))}
+                         if recorded_control is not None else {}),
                       solver_iterations=np.int64(solver_iterations))
+        if recorded_control is not None:
+            result["control_trace_scope"] = trace_metadata["scope"]
+            result["control_trace_metadata"] = trace_metadata
         result["demo_trajectory"] = str(args.trajectory_output.resolve())
         result["demo_selection"] = (
             f"First episode of environment IDs {record_ids}; no outcome filtering")

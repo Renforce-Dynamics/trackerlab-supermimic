@@ -60,6 +60,9 @@ class AMPStyle(nn.Module):
     Root/body linear and angular velocities are omitted. These discriminator
     features leave the caller's actor observation layout unchanged.
 
+    ``postural_end_effectors_vx`` retains that exact feature prefix and appends
+    signed root-local forward velocity divided by ``robot_height``.
+
     For LAFAN clips with zero End Sites and no thumb landmarks, hand forward
     uses a straight-hand rest convention and a model mesh-axis proxy, not a
     measured anatomical palm normal. Palm roll remains unobserved. The 6D
@@ -70,7 +73,8 @@ class AMPStyle(nn.Module):
     NORM_LIMIT = 10.0
     MIN_STD = 0.1
     CHECKPOINT_VERSION = 2
-    FEATURE_MODES = ("full", "proprioceptive", "postural", "postural_end_effectors")
+    FEATURE_MODES = ("full", "proprioceptive", "postural", "postural_end_effectors",
+                     "postural_end_effectors_vx")
 
     def __init__(
         self,
@@ -96,7 +100,8 @@ class AMPStyle(nn.Module):
         super().__init__()
         if feature_mode not in self.FEATURE_MODES:
             raise ValueError(f"feature_mode must be one of {self.FEATURE_MODES}")
-        if hand_body_names is not None and feature_mode != "postural_end_effectors":
+        if hand_body_names is not None and feature_mode not in (
+                "postural_end_effectors", "postural_end_effectors_vx"):
             raise ValueError("hand_body_names requires postural_end_effectors")
         self.feature_mode = feature_mode
         self.history_steps = _positive_int(history_steps, "history_steps")
@@ -183,7 +188,7 @@ class AMPStyle(nn.Module):
             if local_bodies.ndim != 3 or local_bodies.shape[-1] != 3 or local_bodies.shape[-2] == 0:
                 raise ValueError("Kinematics must provide tracked-body positions")
             self.num_tracked_bodies = local_bodies.shape[-2]
-        elif self.feature_mode == "postural_end_effectors":
+        elif self.feature_mode in ("postural_end_effectors", "postural_end_effectors_vx"):
             self._set_end_effector_layout(hand_body_names)
             with torch.no_grad():
                 self._validate_end_effector_fk(tuple(value[:1].detach().float() for value in states))
@@ -191,7 +196,8 @@ class AMPStyle(nn.Module):
             9 + 2 * self.num_joints if self.feature_mode == "proprioceptive" else
             4 + 2 * self.num_joints if self.feature_mode == "postural" else
             4 + 2 * self.num_joints + 3 * self.num_tracked_bodies
-            + 6 * len(self.hand_body_names) if self.feature_mode == "postural_end_effectors" else
+            + 6 * len(self.hand_body_names) + int(self.feature_mode == "postural_end_effectors_vx")
+            if self.feature_mode in ("postural_end_effectors", "postural_end_effectors_vx") else
             13 + 2 * self.num_joints + 3 * self.num_tracked_bodies)
         self.feature_dim = self.history_steps * self.frame_dim
         self.norm = RunningNorm(self.frame_dim, eps=self.MIN_STD).to(device)
@@ -311,7 +317,7 @@ class AMPStyle(nn.Module):
                 "joint_names": list(getattr(self.kin, "joint_names", ())),
                 "default_q": self._default_q.cpu().tolist(),
             }
-        if self.feature_mode in ("postural", "postural_end_effectors"):
+        if self.feature_mode in ("postural", "postural_end_effectors", "postural_end_effectors_vx"):
             layout = {
                 "version": 1,
                 "feature_mode": self.feature_mode,
@@ -327,7 +333,7 @@ class AMPStyle(nn.Module):
                 "joint_names": list(getattr(self.kin, "joint_names", ())),
                 "default_q": self._default_q.cpu().tolist(),
             }
-            if self.feature_mode == "postural_end_effectors":
+            if self.feature_mode in ("postural_end_effectors", "postural_end_effectors_vx"):
                 layout["frame"].append(
                     ["root_local_tracked_position/robot_height", 3 * self.num_tracked_bodies])
                 if self.hand_body_names:
@@ -343,6 +349,8 @@ class AMPStyle(nn.Module):
                     hand_rotation_frame="model_body_axes",
                     rotation_6d_convention="first_two_columns_row_major",
                 )
+                if self.feature_mode == "postural_end_effectors_vx":
+                    layout["frame"].append(["root_local_forward_velocity/robot_height", 1])
             return layout
         return {
             "version": 1,
@@ -432,19 +440,21 @@ class AMPStyle(nn.Module):
             ground = torch.zeros_like(p[..., 2])
             if not reference and self.ground_sampler is not None:
                 ground = self.ground_sampler(p[..., :2]).to(p).reshape(p.shape[:-1])
-            if self.feature_mode in ("postural", "postural_end_effectors"):
+            if self.feature_mode in ("postural", "postural_end_effectors", "postural_end_effectors_vx"):
                 components = (
                     -R[..., 2, :],
                     ((p[..., 2] - ground) / self.robot_height).unsqueeze(-1),
                     q - self._default_q,
                     qd * 0.05,
                 )
-                if self.feature_mode == "postural_end_effectors":
+                if self.feature_mode in ("postural_end_effectors", "postural_end_effectors_vx"):
                     positions, rotations = self._local_kinematics(state)[:2]
                     components += ((positions / self.robot_height).flatten(-2),)
                     if self.hand_body_names:
                         components += (mat_to_6d(
                             rotations[..., self.hand_tracked_indices, :, :]).flatten(-2),)
+                    if self.feature_mode == "postural_end_effectors_vx":
+                        components += ((Rt @ v.unsqueeze(-1)).squeeze(-1)[..., :1] / self.robot_height,)
                 return torch.cat(components, -1)
             return torch.cat((
                 ((p[..., 2] - ground) / self.robot_height).unsqueeze(-1),
@@ -742,6 +752,21 @@ class AMPStyle(nn.Module):
         history = checkpoint.get("history_steps")
         if type(history) is not int or history < 2:
             raise ValueError("Missing or invalid AMP history length")
+        layout = checkpoint.get("feature_layout")
+        if (checkpoint.get("feature_mode") == "postural_end_effectors_vx"
+                or isinstance(layout, dict) and layout.get("feature_mode") == "postural_end_effectors_vx"):
+            if (not isinstance(layout, dict)
+                    or checkpoint.get("feature_mode") != layout.get("feature_mode")):
+                raise ValueError("AMP checkpoint feature layout differs from feature mode")
+            dimension = checkpoint.get("feature_dim")
+            if type(dimension) is not int or dimension <= 0 or dimension % history:
+                raise ValueError("Invalid AMP feature dimension")
+            frame = layout.get("frame")
+            if (not isinstance(frame, list) or any(
+                    not isinstance(block, list) or len(block) != 2
+                    or not isinstance(block[0], str) or type(block[1]) is not int or block[1] <= 0
+                    for block in frame) or sum(block[1] for block in frame) != dimension // history):
+                raise ValueError("Invalid AMP feature layout dimensions")
         if checkpoint.get("optimizer_name") not in ("Adam", "AdamW"):
             raise ValueError("Missing or invalid AMP optimizer metadata")
         if checkpoint.get("gradient_penalty_scope") not in ("expert", "both"):
@@ -830,11 +855,12 @@ class AMPStyle(nn.Module):
             raise ValueError("Invalid AMP proprioceptive feature dimension")
         elif mode == "postural" and frame_dim != 4 + 2 * joints:
             raise ValueError("Invalid AMP postural feature dimension")
-        elif mode == "postural_end_effectors":
+        elif mode in ("postural_end_effectors", "postural_end_effectors_vx"):
             scorer._set_end_effector_layout(layout.get("hand_names"))
-            expected = 4 + 2 * joints + 3 * scorer.num_tracked_bodies + 6 * len(scorer.hand_body_names)
+            expected = (4 + 2 * joints + 3 * scorer.num_tracked_bodies + 6 * len(scorer.hand_body_names)
+                        + int(mode == "postural_end_effectors_vx"))
             if frame_dim != expected:
-                raise ValueError("Invalid AMP postural_end_effectors feature dimension")
+                raise ValueError(f"Invalid AMP {mode} feature dimension")
             with torch.no_grad():
                 p = scorer._default_q.new_zeros(1, 3)
                 q = scorer._default_q[None]

@@ -87,7 +87,7 @@ def parse_args(argv=None):
                         help="Explicit full-state legacy-to-WASD-v2 reward trial in a new run")
     parser.add_argument("--wasd-reward-version", type=int, choices=(1, 2), default=1)
     parser.add_argument("--style-feature-mode", choices=("full", "proprioceptive", "postural",
-                                                       "postural_end_effectors"),
+                                                       "postural_end_effectors", "postural_end_effectors_vx"),
                         default="proprioceptive")
     parser.add_argument("--reference-reset-probability", type=float, default=.7)
     parser.add_argument("--foot-slide-weight", type=float, default=.008)

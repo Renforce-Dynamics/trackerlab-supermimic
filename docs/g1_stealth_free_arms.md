@@ -70,9 +70,11 @@ bash scripts/rls/supermimic/run_g1_stealth_free_arms.sh \
 
 The repository GPU lock covers cooperating local runners. Exclusive admission
 is the default. An optional explicit shared-capacity mode waits for at least
-17,000 MiB free and caps this trainer's PyTorch CUDA allocator at 60% of total
-GPU memory. The previous same-size run reserved 13.455 GiB; the observed 24 GiB
-GPU had 17,199 MiB free with the unrelated job running. Sharing can lower speed.
+21,000 MiB free and caps this trainer's PyTorch CUDA allocator at 60% of total
+GPU memory. The previous same-size run reserved 13.455 GiB in PyTorch, but the
+first free-arm actor updates used approximately 17,925 MiB for the whole process.
+This measured total supersedes the original 17,000 MiB admission estimate.
+Sharing can lower speed.
 The allocator cap excludes MuJoCo/Warp and other non-PyTorch allocations, so
 the runner also watches total free memory and requests its own checkpointed
 stop after two consecutive readings below 1,536 MiB.
@@ -80,7 +82,19 @@ stop after two consecutive readings below 1,536 MiB.
 An external scheduler's lifetime singleton lock is not an automatic per-job
 handoff. It is only acquired when explicitly supplied for exclusive admission;
 the capacity-sharing mode makes no exclusivity claim. A waiting controller is
-not an active trainer. This experiment does not stop or change unrelated jobs.
+not an active trainer. This experiment does not issue stop/cancel commands to
+unrelated jobs. The host's idle scheduler can voluntarily checkpoint/requeue
+its own job when another process grows by more than 2 GiB, independently of
+available memory. This occurred during the initial 680-iteration segment.
+
+The initial segment completed 500 WM-only and 180 actor-enabled iterations,
+then saved a full checkpoint for the updated resource admission. Set
+`RESUME_CHECKPOINT` to that immutable checkpoint and use a fresh run directory
+to continue to the same cumulative 20,000-iteration target. The runner reads its
+saved iteration on CPU and uses full `--resume`, retaining all learned models,
+normalization and optimizer states. Passed milestones are skipped; an exact
+milestone checkpoint is recorded before progressing. No arm reset or WM-only
+warmup is repeated.
 
 Each milestone records all nine commands plus release/change sequences and
 renders first attempts with front/side views. Preserve early falls. Inspect

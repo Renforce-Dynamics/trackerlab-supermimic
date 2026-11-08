@@ -15,7 +15,7 @@ RUNNER = REPO / "scripts/rls/supermimic/run_g1_stealth_free_arms.sh"
 GPU_MOCK = r'''
 nvidia-smi() {
     case "$*" in
-        *--query-gpu=memory.free,*) printf '20000, 0\n' ;;
+        *--query-gpu=memory.free,*) printf '23000, 0\n' ;;
         *--query-gpu=memory.free*)
             if [ -e "$TEST_ROOT/low-memory" ]; then printf '1000\n'; else printf '20000\n'; fi ;;
         *--query-compute-apps=*) ;;
@@ -25,6 +25,11 @@ nvidia-smi() {
 '''
 FAKE_PYTHON = r'''#!/usr/bin/env bash
 set -euo pipefail
+if [ "$1" = - ]; then
+    cat > /dev/null
+    printf '%s\n' "${TEST_RESUME_ITERATION:-680}"
+    exit 0
+fi
 mode=unknown
 run_dir=
 iteration=
@@ -90,7 +95,8 @@ def case(tmp_path, bash):
     mock.write_text(MOCK_ENV + GPU_MOCK, encoding="ascii", newline="\n")
     env = os.environ.copy()
     for key in ("SHARED_GPU_LOCK", "GPU_ADMISSION", "GPU_MIN_FREE_MIB", "PARENT_STOP_FILE",
-                "TEST_CHILD_MODE", "TEST_STOP_AFTER", "TEST_FAIL_AT"):
+                "TEST_CHILD_MODE", "TEST_STOP_AFTER", "TEST_FAIL_AT",
+                "RESUME_CHECKPOINT", "TEST_RESUME_ITERATION"):
         env.pop(key, None)
     env.update(BASH_ENV=mock.as_posix(), TEST_ROOT=root.as_posix(), TEST_RUN=run.as_posix())
     command = [bash, RUNNER.as_posix(), fake.as_posix(), run.as_posix(),
@@ -172,3 +178,25 @@ def test_stop_between_review_stages_preserves_checkpoint(case):
     calls = (case.root / "calls").read_text(encoding="utf-8").splitlines()
     assert [call.split("|")[0] for call in calls] == ["train", "evaluate"]
     assert (case.run / "training/iteration_002000.pt").exists()
+
+
+@pytest.mark.parametrize("iteration,expected", [
+    (680, ["2000", "5000", "10000", "15000", "20000"]),
+    (5000, ["10000", "15000", "20000"]),
+    (7000, ["10000", "15000", "20000"]),
+])
+def test_full_checkpoint_handoff_never_repeats_warm_start(case, iteration, expected):
+    saved = case.root / "saved-full.pt"
+    saved.write_bytes(b"saved state")
+    case.env.update(RESUME_CHECKPOINT=saved.as_posix(), TEST_RESUME_ITERATION=str(iteration))
+    with running_runner(case) as process:
+        output, errors = process.communicate(timeout=20)
+        assert process.returncode == 0, (output, errors)
+    calls = (case.root / "calls").read_text(encoding="utf-8").splitlines()
+    training = [call.split("|") for call in calls if call.startswith("train|")]
+    assert [row[1] for row in training] == expected
+    assert all(row[2].startswith("--resume=") for row in training)
+    assert training[0][2].endswith(saved.as_posix())
+    assert (case.run / "starting_iteration").read_text().strip() == str(iteration)
+    if iteration == 5000:
+        assert calls[0].startswith("evaluate|")

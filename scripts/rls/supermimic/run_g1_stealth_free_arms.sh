@@ -13,11 +13,11 @@ waist=$5
 repo=$(git rev-parse --show-toplevel)
 config=$repo/scripts/rls/supermimic/configs/command_stealth_free_arms.json
 admission=${GPU_ADMISSION:-exclusive}
-minimum_free=${GPU_MIN_FREE_MIB:-17000}
+minimum_free=${GPU_MIN_FREE_MIB:-21000}
 case "$admission" in
     exclusive) memory_args=() ;;
     shared_capacity)
-        [[ "$minimum_free" =~ ^[0-9]+$ ]] && [ "$minimum_free" -ge 17000 ]
+        [[ "$minimum_free" =~ ^[0-9]+$ ]] && [ "$minimum_free" -ge 21000 ]
         test -z "${SHARED_GPU_LOCK:-}"
         memory_args=(--cuda-memory-fraction 0.60)
         ;;
@@ -27,6 +27,29 @@ test -x "$python"
 for input in "$pool/train.json" "$pool/manifest.json" "$source" "$waist" "$config"; do
     test -f "$input"
 done
+resume_iteration=0
+resume_inputs=()
+if [ -n "${RESUME_CHECKPOINT:-}" ]; then
+    test -f "$RESUME_CHECKPOINT"
+    resume_iteration=$(CUDA_VISIBLE_DEVICES='' "$python" - "$RESUME_CHECKPOINT" <<'PY'
+import sys
+import torch
+checkpoint = torch.load(sys.argv[1], map_location="cpu", weights_only=False)
+if (checkpoint.get("task") != "locomotion/g1/stealth"
+        or checkpoint.get("training_stage") != "command-style"
+        or checkpoint["arguments"].get("entry_duration_s") != 1.21
+        or checkpoint.get("stealth_upper_body_constraint") is not None
+        or checkpoint.get("upper_body_rate_limit") is None):
+    raise ValueError("Resume requires a checkpoint from the free-arm 1.21-second recipe")
+iteration = checkpoint["iteration"]
+if type(iteration) is not int or not 0 < iteration < 20000:
+    raise ValueError("Resume iteration must be between 1 and 19999")
+print(iteration)
+PY
+)
+    [[ "$resume_iteration" =~ ^[0-9]+$ ]]
+    resume_inputs=("$RESUME_CHECKPOINT")
+fi
 mkdir -p "$run" "$repo/logs"
 exec 8>"$run/controller.lock"
 flock -n -E 75 8
@@ -87,7 +110,7 @@ git diff --exit-code
 git diff --cached --exit-code
 test -z "$(git ls-files --others --exclude-standard)"
 git rev-parse HEAD > "$run/code.receipt"
-sha256sum "$source" "$pool/manifest.json" "$pool/train.json" "$waist" "$config" \
+sha256sum "$source" "$pool/manifest.json" "$pool/train.json" "$waist" "$config" "${resume_inputs[@]}" \
     > "$run/input.receipt"
 if [ -n "${SHARED_GPU_LOCK:-}" ]; then
     exec 10>>"$SHARED_GPU_LOCK"
@@ -165,22 +188,32 @@ stop_watch() {
     fi
 }
 initialization=(--warm-start "$source")
+if [ "$resume_iteration" -gt 0 ]; then
+    initialization=(--resume "$RESUME_CHECKPOINT")
+    printf '%s\n' "$RESUME_CHECKPOINT" > "$run/resume_checkpoint.receipt"
+    printf '%s\n' "$resume_iteration" > "$run/starting_iteration"
+fi
 for milestone in 2000 5000 10000 15000 20000; do
+    if [ "$milestone" -lt "$resume_iteration" ]; then continue; fi
     wait_for_gpu
     start_watch
     label=$(printf '%06d' "$milestone")
     stage=$run/milestones/$label
     mkdir -p "$stage"
-    set_phase "training_to_$milestone"
-    "$python" -u scripts/rls/supermimic/train_terrain.py \
-        --task locomotion/g1/stealth --config "$config" --run-dir "$run/training" \
-        "${initialization[@]}" --amp-motion-config "$pool/train.json" \
-        --waist-entry-reference "$waist" "${stop_args[@]}" "${memory_args[@]}" \
-        --iterations "$milestone" --buffer-steps 500 \
-        --keep-every 1000 --ckpt-every 250 --log-every 25 \
-        > "$stage/train.stdout.log" 2>&1
-    check_stop
-    checkpoint=$run/training/iteration_$label.pt
+    if [ "$milestone" -gt "$resume_iteration" ]; then
+        set_phase "training_to_$milestone"
+        "$python" -u scripts/rls/supermimic/train_terrain.py \
+            --task locomotion/g1/stealth --config "$config" --run-dir "$run/training" \
+            "${initialization[@]}" --amp-motion-config "$pool/train.json" \
+            --waist-entry-reference "$waist" "${stop_args[@]}" "${memory_args[@]}" \
+            --iterations "$milestone" --buffer-steps 500 \
+            --keep-every 1000 --ckpt-every 250 --log-every 25 \
+            > "$stage/train.stdout.log" 2>&1
+        check_stop
+        checkpoint=$run/training/iteration_$label.pt
+    else
+        checkpoint=$RESUME_CHECKPOINT
+    fi
     test -f "$checkpoint"
     sha256sum "$checkpoint" > "$stage/checkpoint.receipt"
     for receipt in run_config.json run_summary.json training_speed_summary.json; do

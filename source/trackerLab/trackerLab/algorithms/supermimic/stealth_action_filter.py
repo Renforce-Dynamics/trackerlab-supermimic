@@ -72,9 +72,11 @@ class UpperBodyRateLimiter(nn.Module):
         self,
         raw_action: torch.Tensor,
         previous_applied_action: torch.Tensor,
-        previous_previous_action: torch.Tensor,
+        previous_previous_action: Optional[torch.Tensor],
         entry_time: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
+        if previous_previous_action is None:
+            raise ValueError("Learned arm rate limiting requires two executed-action history frames")
         if not torch.jit.is_tracing():
             if (raw_action.ndim < 1 or raw_action.shape[-1] != self.num_joints
                     or previous_applied_action.shape != raw_action.shape

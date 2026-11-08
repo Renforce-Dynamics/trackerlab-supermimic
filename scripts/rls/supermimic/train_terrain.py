@@ -45,6 +45,8 @@ def parse_args(argv=None):
     parser.add_argument("--iterations", type=int, default=10000)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", default="cuda:0")
+    parser.add_argument("--cuda-memory-fraction", type=float,
+                        help="Optional per-process PyTorch CUDA allocator fraction for shared GPUs")
     parser.add_argument("--buffer-steps", type=int, default=1000)
     parser.add_argument("--utd", type=float, default=.4)
     parser.add_argument("--horizon", type=int, default=32)
@@ -107,8 +109,9 @@ def parse_args(argv=None):
                         help="G1 waist-only Kp multiplier; Kd scales by its square root")
     parser.add_argument("--upper-body-residual", type=float, default=.25)
     parser.add_argument("--upper-body-rate", type=float, default=1.2,
-                        help="Maximum scheduled/static arm target rate in rad/s")
-    parser.add_argument("--upper-body-acceleration", type=float, default=0.)
+                        help="Maximum fixed or learned arm target rate in rad/s")
+    parser.add_argument("--upper-body-acceleration", type=float, default=0.,
+                        help="Arm target acceleration in rad/s2; zero retains each controller's default")
     parser.add_argument("--entry-duration-s", type=float, default=0.)
     parser.add_argument("--grounded-start", action="store_true")
     parser.add_argument("--standing-joint-noise", type=float, default=0.)
@@ -128,6 +131,43 @@ def parse_args(argv=None):
     parser.add_argument("--profile", action="store_true")
     apply_config(parser, argv)
     return parser.parse_args(argv)
+
+
+def validate_upper_body_options(args, task):
+    if args.stealth_upper_body_constraint and (task.robot, task.profile) != ("g1", "stealth"):
+        raise ValueError("The static upper-body constraint is currently calibrated for G1 stealth")
+    if args.upper_body_rate_limit and (
+            (task.robot, task.profile) != ("g1", "stealth") or args.stealth_upper_body_constraint):
+        raise ValueError("The G1 stealth rate limiter requires learnable upper-body actions")
+    if (args.upper_body_reference or args.upper_body_residual != .25
+            ) and not args.stealth_upper_body_constraint:
+        raise ValueError("Upper-body reference and residual require the upper-body constraint")
+    if args.upper_body_acceleration and not (
+            args.stealth_upper_body_constraint or args.upper_body_rate_limit):
+        raise ValueError("Upper-body acceleration requires a fixed or learned arm controller")
+    if not math.isfinite(args.upper_body_rate) or args.upper_body_rate <= 0:
+        raise ValueError("Upper-body rate must be finite and positive")
+    if not math.isfinite(args.upper_body_acceleration) or args.upper_body_acceleration < 0:
+        raise ValueError("Upper-body acceleration must be finite and nonnegative")
+
+
+def build_upper_body_rate_limiter(args, spec):
+    """Keep legacy learned-arm limits when no explicit acceleration is supplied."""
+    if not args.upper_body_rate_limit:
+        return None
+    from trackerLab.algorithms.supermimic.stealth_action_filter import UpperBodyRateLimiter
+    return UpperBodyRateLimiter(
+        spec.joint_names, spec.action_scale, max_joint_rate_rad_s=args.upper_body_rate,
+        max_joint_acceleration_rad_s2=args.upper_body_acceleration or 3., control_dt=.02,
+        action_limit=args.action_limit)
+
+
+def configure_cuda_memory(fraction, device):
+    if fraction is None:
+        return
+    if isinstance(fraction, bool) or not math.isfinite(fraction) or not 0 < fraction <= 1:
+        raise ValueError("CUDA memory fraction must be finite and in (0, 1]")
+    torch.cuda.set_per_process_memory_fraction(fraction, device=device)
 
 
 def training_stop_requested(run_dir, stop_files=()):
@@ -477,13 +517,9 @@ def main():
         raise SystemExit("Keyboard command modes are only available for stealth tasks")
     try:
         validate_command_curriculum_options(args)
+        validate_upper_body_options(args, task)
     except ValueError as error:
         raise SystemExit(str(error)) from error
-    if args.stealth_upper_body_constraint and (task.robot, task.profile) != ("g1", "stealth"):
-        raise SystemExit("The static upper-body constraint is currently calibrated for G1 stealth")
-    if args.upper_body_rate_limit and (
-            (task.robot, task.profile) != ("g1", "stealth") or args.stealth_upper_body_constraint):
-        raise SystemExit("The G1 stealth rate limiter requires learnable upper-body actions")
     if (args.warm_start_reset_arms or args.warm_start_reset_world
             or args.warm_start_normalizer_prior_count) and not (args.warm_start or args.resume):
         raise SystemExit("Warm-start adaptation options require --warm-start or --resume")
@@ -492,9 +528,6 @@ def main():
         raise SystemExit("Recovery preservation options require a transferred checkpoint")
     if args.freeze_actor_normalization and args.warm_start_normalizer_prior_count:
         raise SystemExit("Frozen actor normalization cannot reopen its prior count")
-    if (args.upper_body_reference or args.upper_body_acceleration or args.upper_body_residual != .25
-            ) and not args.stealth_upper_body_constraint:
-        raise SystemExit("Upper-body settings require the upper-body constraint")
     if min(args.num_envs, args.iterations, args.horizon, args.hist, args.wm_batches,
            args.wm_batch, args.pi_batch, args.log_every, args.ckpt_every, args.keep_every,
            args.critic_epochs, args.critic_minibatches, args.speed_probe_updates) < 1:
@@ -547,6 +580,7 @@ def main():
     reference_receipt = validate_style_references(args.amp_motion_config, task.robot)
     if not torch.cuda.is_available():
         raise RuntimeError("Terrain training requires CUDA")
+    configure_cuda_memory(args.cuda_memory_fraction, args.device)
     run = args.run_dir.resolve()
     if args.resume and args.warm_start:
         raise SystemExit("Choose resume or a command/style warm start")
@@ -637,13 +671,9 @@ def main():
     upper_body_config = (
         upper_body_constraint.to_dict() if upper_body_constraint is not None else None
     )
-    upper_body_rate_limiter = None
-    if args.upper_body_rate_limit:
-        from trackerLab.algorithms.supermimic.stealth_action_filter import UpperBodyRateLimiter
-        upper_body_rate_limiter = UpperBodyRateLimiter(
-            spec.joint_names, spec.action_scale, max_joint_rate_rad_s=1.2,
-            max_joint_acceleration_rad_s2=3., control_dt=.02,
-            action_limit=args.action_limit).to(args.device)
+    upper_body_rate_limiter = build_upper_body_rate_limiter(args, spec)
+    if upper_body_rate_limiter is not None:
+        upper_body_rate_limiter = upper_body_rate_limiter.to(args.device)
     rate_limiter_config = (
         upper_body_rate_limiter.to_dict() if upper_body_rate_limiter is not None else None)
     action_constraint = upper_body_constraint or upper_body_rate_limiter

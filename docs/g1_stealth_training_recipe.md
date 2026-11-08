@@ -1,5 +1,10 @@
 # G1 Stealth Training Recipe
 
+The November 8 owner update supersedes the pending comparison below with the
+[free-arm 20,000-iteration experiment](g1_stealth_free_arms.md): 1.21-second
+entry fade, natural-arm expert pool, learned arms and retained actor normalization.
+The remainder describes the preserved fixed-arm predecessor for comparison.
+
 Recipe inspected November 8, 2026. Source synchronization does not constitute
 new training or visual acceptance. The completed waist-pilot iteration1500
 remains rejected; the new entry/velocity comparison is pending physical runs.

@@ -13,6 +13,13 @@ yaw but retains joint, posture and endpoint histories. A negative velocity
 goal therefore supplies no demonstrated reverse swing pattern.
 This is a missing-data hypothesis, not proof that it explains every failure.
 
+A forward-only motion prior can permit a learned reverse gait when its feature
+invariances, task objective and physical exploration allow sufficient variation.
+The absence of reverse demonstrations does not establish impossibility. The
+current failed foot-lift measurements diagnose these policies, not all
+forward-only AMP training. Data changes and velocity features remain separate
+hypotheses requiring physical comparison.
+
 The initial seed-101 release attempt has root Euler pitch from -8.17 to
 +1.78 degrees over entry seconds [0, 4.84], followed by a minimum of
 -14.44 degrees before second 6. Pitch is measured in the robot's forward/up
@@ -165,6 +172,10 @@ scalar can associate backward translation with the demonstrated reverse
 joint history. This is a testable hypothesis motivated by OpenLegged's
 velocity-bearing AMP, not a guaranteed repair. It also exposes the difference
 between expert speed (about -0.50 m/s median) and the -0.20 m/s task goal.
+With a forward-only expert pool, adding signed velocity can instead penalize
+reverse motion more strongly. The prepared mode is therefore intended for
+comparison with the explicit backward pool, not as a generic cure for a
+forward-only prior.
 
 Changing feature width requires a newly initialized/refit discriminator,
 normalization and discriminator optimizer. It is not an admissible silent

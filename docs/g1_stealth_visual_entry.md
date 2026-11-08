@@ -64,6 +64,12 @@ waist outputs after entry. This is explicit persistent waist posture control,
 not learned waist motion or a recorded standing-to-crouch demonstration.
 All twelve leg channels remain learned. Physical offsets, tracking errors,
 base tilt and whole-body balance are still determined by the simulator.
+The forward expert's actual nearest-median waist sample is yaw -0.0309,
+roll -0.0204, pitch +0.52 rad. The yaw/roll remain near neutral while the
+source-derived forward bend supplies the requested entry cue. This is the
+expert's ongoing walking pose; it is not a measured entry-transition clip.
+Holding it during turns is also an explicit behavior tradeoff under visual
+test.
 
 The waist controller composes with the existing arm controller in collection,
 imagined rollouts, evaluation and actor export. The actor/world-model/critic
@@ -76,7 +82,10 @@ waypoints, 4.84-second command/height ramp, physical randomization and
 normalization settings unchanged. The optional signed-vx AMP feature remains
 inactive. The existing recovery warm-start path inherits actor/WM weights,
 resets critic and optimizers, and restores AMP only for matching experts.
-These transfers remain explicit in its initialization receipt.
+The WM receives the executed constrained action in both physical collection
+and imagined rollouts; the action distribution changes, while its numerical
+meaning is preserved. The initial 500 WM-only iterations fit this new
+distribution. These transfers remain explicit in its initialization receipt.
 
 ## Bounded Pilot And Visual Hold
 
@@ -105,3 +114,38 @@ Kinematic target previews carry a persistent red
 for the recorded-physics trial and cannot satisfy physical/visual acceptance.
 Even a physically tested pilot remains rejected until its actual front and
 side motion looks natural. Preserve all failed predecessors and receipts.
+
+## First Physical Pilot Result
+
+The pilot actually ran at `57e8b7b2322a0150a2ad69049ee8694282330778`,
+completed all 1500 iterations (500 WM-only, 1000 actor), evaluated both seeds,
+rendered all 18 first-start front/side videos and exited zero. Its terminal
+phase is `awaiting_visual_entry_review_no_extension`. There is no queued
+continuation or exported pilot policy.
+
+```text
+/root/gpufree-data/runs/g1-stealth-visual-waist-pilot-20261108/training/iteration_001500.pt
+SHA256 896cf1d3da76eb529b241d8bc986e35d66f4e02e7e9d730f7e8c8b0de685e8f6
+```
+
+The saved initialization verifies actor and WM weight transfer, matching AMP
+restoration, frozen actor normalization and the explicit new waist constraint.
+An intermediate suggestion to reset the WM was withdrawn before deployment:
+the model receives executed actions, so waist-target changes alter the
+training distribution rather than the model input's meaning. No claimed
+reset-WM rerun occurred. The original reference file and hash remain in use.
+
+The gross approximately 116-degree chest twist is reduced in the held-forward
+first attempt. The first entry's torso relative-heading maximum is about
+9.68 degrees for seed101 and 13.44 degrees for seed103. That isolated change
+does not qualify the animation: hand raising still follows the slow 4.82-second
+arm path, some turning/reverse-arc starts retain lateral sway, and backward
+feet still lack sustained lifts in the recorded 5--8-second interval.
+The eight-second evaluations contain no completed 20-second episodes and
+must not be reported as an episode success rate.
+
+The pilot remains a visual-review candidate with no full locomotion approval.
+Local evidence is under `artifacts/g1-stealth-entry-visual-20261108/actual-pilot-v1/`
+and `pilot1500-audit/`. Actual policy videos carry the recorded-physics label;
+the earlier target-only preview is a separate artifact and never counts as a
+trained result. Full CPU tests passed 745 cases with three optional skips.

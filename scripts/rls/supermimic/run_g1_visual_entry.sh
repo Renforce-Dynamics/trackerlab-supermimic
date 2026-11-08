@@ -31,14 +31,21 @@ sha256sum "$source" "$pool/manifest.json" "$arms" "$waist" "$config" > "$run/inp
 # The unrelated shared-GPU queue uses another lock; admit this bounded job only
 # after three successive idle observations, without stopping any other job.
 printf 'waiting_for_idle_gpu\n' > "$run/controller.phase"
+queue=/root/gpufree-data/ultra_ipingpong/queue
 quiet=0
 while [ "$quiet" -lt 3 ]; do
     test ! -e "$run/STOP"
     compute=$(nvidia-smi --query-compute-apps=pid --format=csv,noheader)
+    queued=""
+    if [ -d "$queue/pending" ] && [ -d "$queue/running" ]; then
+        queued=$(find "$queue/pending" "$queue/running" -maxdepth 1 \
+            -type f -name '*.job' -print -quit)
+    fi
     IFS=',' read -r used utilization < <(
         nvidia-smi --query-gpu=memory.used,utilization.gpu --format=csv,noheader,nounits -i 0
     )
-    if [ -z "$compute" ] && [ "$used" -lt 1024 ] && [ "$utilization" -lt 10 ]; then
+    if [ -z "$queued" ] && [ -z "$compute" ] \
+            && [ "$used" -lt 1024 ] && [ "$utilization" -lt 10 ]; then
         quiet=$((quiet + 1))
     else
         quiet=0

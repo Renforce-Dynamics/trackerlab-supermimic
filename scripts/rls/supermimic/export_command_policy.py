@@ -65,6 +65,7 @@ def export(checkpoint_path, output):
                           action_limit=action_limit).eval()
     actor.load_state_dict(checkpoint["actor"])
     policy = actor
+    constraint = None
     upper_body_config = checkpoint.get("stealth_upper_body_constraint")
     if upper_body_config is not None:
         constraint = UpperBodyConstraint.from_dict(upper_body_config).eval()
@@ -76,6 +77,12 @@ def export(checkpoint_path, output):
             raise ValueError("Checkpoint cannot combine static arms and a separate arm rate limiter")
         from trackerLab.algorithms.supermimic.stealth_action_filter import UpperBodyRateLimiter
         constraint = UpperBodyRateLimiter.from_dict(rate_limiter_config).eval()
+        policy = ConstrainedCommandPolicy(
+            actor, constraint, n, checkpoint["arguments"].get("entry_duration_s", 0.)).eval()
+    waist_config = checkpoint.get("stealth_waist_constraint")
+    if waist_config is not None:
+        from trackerLab.algorithms.supermimic.stealth_waist_entry import compose_entry_waist_constraint
+        constraint = compose_entry_waist_constraint(constraint, waist_config, device="cpu").eval()
         policy = ConstrainedCommandPolicy(
             actor, constraint, n, checkpoint["arguments"].get("entry_duration_s", 0.)).eval()
     if any(not bool(torch.isfinite(value).all()) for value in policy.state_dict().values()):
@@ -101,6 +108,8 @@ def export(checkpoint_path, output):
     }
     if upper_body_config is not None:
         actor_payload["stealth_upper_body_constraint"] = upper_body_config
+    if waist_config is not None:
+        actor_payload["stealth_waist_constraint"] = waist_config
     if rate_limiter_config is not None:
         actor_payload["upper_body_rate_limit"] = rate_limiter_config
     if checkpoint["arguments"].get("entry_duration_s", 0.):
@@ -137,6 +146,11 @@ def export(checkpoint_path, output):
             wasd_keyboard_metadata()
             if checkpoint["arguments"].get("stealth_control_mode") == "wasd" else None),
         "stealth_upper_body_constraint": upper_body_config,
+        "stealth_waist_constraint": waist_config,
+        "waist_control_scope": (
+            "Explicit source-derived waist target ramp followed by persistent crouched hold; "
+            "waist channels are constrained, legs remain policy controlled"
+            if waist_config is not None else None),
         "upper_body_rate_limit": rate_limiter_config,
         "physical_domain_randomization":
             checkpoint["arguments"].get("physical_domain_randomization", False),

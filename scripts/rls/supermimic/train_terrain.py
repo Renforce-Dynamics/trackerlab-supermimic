@@ -99,6 +99,8 @@ def parse_args(argv=None):
     parser.add_argument("--stealth-upper-body-constraint", action="store_true")
     parser.add_argument("--upper-body-rate-limit", action="store_true")
     parser.add_argument("--upper-body-reference", type=Path)
+    parser.add_argument("--waist-entry-reference", type=Path,
+                        help="Opt-in source-bound waist entry and persistent crouched posture")
     parser.add_argument("--upper-body-residual", type=float, default=.25)
     parser.add_argument("--upper-body-acceleration", type=float, default=0.)
     parser.add_argument("--entry-duration-s", type=float, default=0.)
@@ -631,6 +633,41 @@ def main():
     rate_limiter_config = (
         upper_body_rate_limiter.to_dict() if upper_body_rate_limiter is not None else None)
     action_constraint = upper_body_constraint or upper_body_rate_limiter
+    waist_config = None
+    waist_reference_receipt = None
+    if args.waist_entry_reference:
+        from trackerLab.algorithms.supermimic.stealth_waist_entry import (
+            WaistEntryConstraint, compose_entry_waist_constraint,
+        )
+        if (task.robot, task.profile) != ("g1", "stealth") or not args.entry_duration_s:
+            raise ValueError("Waist entry currently requires G1 stealth with an entry clock")
+        payload = args.waist_entry_reference.read_bytes()
+        document = json.loads(payload)
+        if document.get("schema") != "g1-stealth-waist-entry-v1":
+            raise ValueError("Expected a source-bound G1 waist entry document")
+        from prepare_stealth_waist_entry import prepare as prepare_waist_entry
+        expected_reference = prepare_waist_entry(args.amp_motion_config.resolve().parent)
+        if (document.get("constraint") != expected_reference["constraint"]
+                or document.get("source") != expected_reference["source"]):
+            raise ValueError("Waist entry differs from the verified forward expert and target bounds")
+        waist = WaistEntryConstraint.from_dict(document["constraint"])
+        waist_config = waist.to_dict()
+        if (waist_config["joint_names"] != list(spec.joint_names)
+                or waist_config["default_q"] != torch.tensor(spec.default_q).tolist()
+                or waist_config["action_scale"] != torch.tensor(spec.action_scale).tolist()
+                or waist_config["action_limit"] != args.action_limit
+                or waist_config["ramp_duration_s"] > args.entry_duration_s):
+            raise ValueError("Waist reference differs from robot/action/entry contract")
+        for name, value in waist_config["reference_q"].items():
+            index = spec.joint_names.index(name)
+            if not float(qlo[index]) <= value <= float(qhi[index]):
+                raise ValueError(f"Waist reference exceeds {name} joint limits")
+        action_constraint = compose_entry_waist_constraint(
+            action_constraint, waist_config, device=args.device)
+        waist_reference_receipt = {
+            "sha256": hashlib.sha256(payload).hexdigest(),
+            "source": document.get("source"), "scope": document.get("scope"),
+        }
     from trackerLab.algorithms.supermimic.locomotion_quality import LocomotionQuality
     from command_envelope import fixed_command_envelope, reference_envelope
     quality = LocomotionQuality(
@@ -729,6 +766,8 @@ def main():
         saved_upper_body_config = ck.get("stealth_upper_body_constraint")
         if saved_upper_body_config != upper_body_config:
             raise ValueError("Resume upper-body constraint differs from the saved objective")
+        if ck.get("stealth_waist_constraint") != waist_config:
+            raise ValueError("Resume waist constraint differs; use an explicit warm start")
         if ck.get("upper_body_rate_limit") != rate_limiter_config:
             raise ValueError("Resume upper-body rate limiter differs from the saved objective")
         actor.load_state_dict(ck["actor"])
@@ -800,6 +839,9 @@ def main():
                           "style_optimizer_restored": restore_style,
                           "actor_normalization_frozen": args.freeze_actor_normalization,
                           "warm_start_control_match_required": args.warm_start_require_control_match,
+                          "source_waist_constraint": ck.get("stealth_waist_constraint"),
+                          "target_waist_constraint": waist_config,
+                          "waist_constraint_changed": ck.get("stealth_waist_constraint") != waist_config,
                           "runtime_motion_reference": False}
     if args.freeze_actor_normalization and any(
             norm.count.item() <= 0 for norm in (actor.obs_norm, actor.goal_norm)):
@@ -817,6 +859,8 @@ def main():
                    "training_reference_resets": env.contract.get("reference_resets"),
                    "style_reference_validation": reference_receipt,
                    "stealth_upper_body_constraint": upper_body_config,
+                   "stealth_waist_constraint": waist_config,
+                   "waist_reference_receipt": waist_reference_receipt,
                    "upper_body_rate_limit": rate_limiter_config,
                    "upper_body_reference_receipt": upper_body_reference_receipt,
                    "command_envelope": command_envelope,
@@ -1212,6 +1256,8 @@ def main():
                               "critic": critic.state_dict(), "opt_wm": opt_wm.state_dict(),
                               "opt_pi": opt_pi.state_dict(), "opt_v": opt_v.state_dict(),
                               "amp_style": style.checkpoint(),
+                              "stealth_waist_constraint": waist_config,
+                              "waist_reference_receipt": waist_reference_receipt,
                               "stealth_upper_body_constraint": upper_body_config,
                               "upper_body_rate_limit": rate_limiter_config,
                               "upper_body_reference_receipt": upper_body_reference_receipt,

@@ -495,6 +495,10 @@ def main():
             raise ValueError("Checkpoint cannot combine static arms and a separate arm rate limiter")
         from trackerLab.algorithms.supermimic.stealth_action_filter import UpperBodyRateLimiter
         action_constraint = UpperBodyRateLimiter.from_dict(rate_limiter_config).to(device).eval()
+    if ck.get("stealth_waist_constraint") is not None:
+        from trackerLab.algorithms.supermimic.stealth_waist_entry import compose_entry_waist_constraint
+        action_constraint = compose_entry_waist_constraint(
+            action_constraint, ck["stealth_waist_constraint"], device=device).eval()
     style = None
     style_sum = torch.zeros(2, device=device)
     if command_mode:

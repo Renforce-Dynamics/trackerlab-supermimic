@@ -55,16 +55,38 @@ Original and failed checkpoints, data and evidence remain preserved.
 
 ## Execution And Review
 
-`run_g1_gait_restore.sh PYTHON RUN INITIAL POOL BASELINE SOURCE_COMMIT`
-uses `command_stealth_gait_restore.json`. It runs1000then2000 total new iterations,
-including500 WM-only warmup, and records forward/all-nine/release videos.
-It owns both GPU and stopped-scheduler locks and honors STOP while training.
-It neither exports a policy nor trains beyond2000.
+The initial recovery stopped at1000 total iterations:500 WM-only and only500
+actor updates. Held-forward speed was.17487m/s, with0/24falls; the six recorded
+first attempts had median sustained lift counts5.5left/0right versus5/3.5 at
+original10k. This is an early regression observation, not a completed adaptation.
+
+The owner's subsequent instruction on November9 requires at least5000 iterations
+before judging this recovery. That instruction supersedes the early quality stop.
+
+`run_g1_gait_restore.sh PYTHON RUN INITIAL POOL BASELINE SOURCE_COMMIT [RESUME]`
+uses `command_stealth_gait_restore.json`. With the saved1000 checkpoint it
+restores actor/world/critic/AMP and all optimizer states, trains to3000 for an
+intermediate review, then to6000. This adds exactly5000 actor-enabled iterations,
+without repeating warmup or resetting networks/optimizers.
+Fresh runs instead use500 WM-only plus5000 actor-enabled iterations to5500.
+The budget is saved in `training_budget.json`.
+
+All-nine commands, old motion pool, physical randomization, control mappings,
+normalizers, learning rates and rewards are unchanged by this continuation.
+Repeatedly resetting or changing objectives would prevent measuring whether
+the existing adaptation recovers its stepping after adequate training.
 
 `check_stealth_step_retention.py` supplements the existing speed/fall check:
 retain at least half of each foot's median sustained-lift count and at least
 75% of the baseline's bilateral-stepping fraction across the fixed recordings.
 Counts use whole sole above2cm for at least80ms. Early-ending first attempts
-count as zero. A failed guard prevents the next training stage after preserving
-the current recordings. These are regression barriers; human visual review of
-entry, gait, hands, turning and release remains necessary.
+count as zero. Its `--diagnostic-only` mode retains failed quality verdicts in
+the receipt while continuing the authorized budget. Malformed evidence,
+different evaluation protocols, trainer/runtime errors and explicit STOP still
+stop the controller. Quality failure is never relabeled as a pass.
+
+Each milestone records held-forward24worlds, all-nine90worlds and42-second
+release18worlds, plus original front/side videos. The controller owns both GPU
+and paused-scheduler locks. It ends at the saved target, without exporting or
+claiming visual acceptance. Entry, gait, hands, turning and release still need
+visual review.

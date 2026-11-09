@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
-if [ "$#" -ne 6 ]; then
-    printf 'usage: run_g1_gait_restore.sh PYTHON RUN INITIAL POOL BASELINE SOURCE_COMMIT\n' >&2
+if [ "$#" -lt 6 ] || [ "$#" -gt 7 ]; then
+    printf 'usage: run_g1_gait_restore.sh PYTHON RUN INITIAL POOL BASELINE SOURCE_COMMIT [RESUME]\n' >&2
     exit 2
 fi
 python=$1
@@ -10,6 +10,7 @@ initial=$3
 pool=$4
 baseline=$5
 pin=$6
+resume=${7:-}
 repo=$(git rev-parse --show-toplevel)
 config=$repo/scripts/rls/supermimic/configs/command_stealth_gait_restore.json
 test "$(git rev-parse HEAD)" = "$pin"
@@ -43,17 +44,27 @@ check_stop() {
 }
 printf '%s\n' "$BASHPID" > "$run/controller.pid"
 printf '%s\n' "$pin" > "$run/code.receipt"
-printf '2000\n' > "$run/target_iterations"
+plan_options=()
+if [ -n "$resume" ]; then plan_options=(--resume "$resume"); fi
+budget=$("$python" scripts/rls/supermimic/gait_restore_budget.py \
+    "${plan_options[@]}" --output "$run/training_budget.json")
+read -r start final midpoint end <<< "$budget"
+test "$end" = "$final"
+printf '%s\n' "$start" > "$run/starting_iteration"
+printf '%s\n' "$final" > "$run/target_iterations"
+printf '5000\n' > "$run/additional_actor_updates"
 sha256sum "$initial" "$pool/manifest.json" "$pool/train.json" \
     "$pool/upper-body-reference.json" "$config" \
     "$baseline/evaluation.json" "$baseline/trajectories.npz" > "$run/input.receipt"
+if [ -n "$resume" ]; then sha256sum "$resume" >> "$run/input.receipt"; fi
 test -z "$(nvidia-smi --query-compute-apps=pid --format=csv,noheader)"
 export OMP_NUM_THREADS=8 MKL_NUM_THREADS=8 MKL_THREADING_LAYER=SEQUENTIAL MUJOCO_GL=egl
 set_phase checking_original_stepping
 "$python" scripts/rls/supermimic/check_stealth_step_retention.py \
     --baseline "$baseline" --candidate "$baseline" --output "$run/baseline-gate.json"
 source=(--warm-start "$initial")
-for target in 1000 2000; do
+if [ -n "$resume" ]; then source=(--resume "$resume"); fi
+for target in "$midpoint" "$final"; do
     check_stop
     test "$(git rev-parse HEAD)" = "$pin"
     test -z "$(git status --porcelain)"
@@ -85,10 +96,9 @@ for target in 1000 2000; do
     "$python" scripts/rls/supermimic/render_stealth_entry_views.py \
         --trajectory "$review/forward/trajectories.npz" --lane 0 --seconds 20 \
         --output "$review/forward/views" > "$review/forward/render.stdout.log" 2>&1
-    gate_passed=true
     "$python" scripts/rls/supermimic/check_stealth_step_retention.py \
         --baseline "$baseline" --candidate "$review/forward" \
-        --output "$stage/step-retention.json" || gate_passed=false
+        --output "$stage/step-retention.json" --diagnostic-only
     "$python" scripts/rls/supermimic/evaluate_terrain.py \
         --checkpoint "$checkpoint" --seed 101 --num-envs 90 --steps 1000 \
         --mode-layout cycle --record-env-ids 0 1 2 3 4 5 6 7 8 --record-control-trace \
@@ -113,11 +123,7 @@ for target in 1000 2000; do
         --output "$review/release/views" > "$review/release/render.stdout.log" 2>&1
     check_stop
     printf '%s\n' "$target" > "$run/completed_iterations"
-    if [ "$gate_passed" != true ]; then
-        set_phase "step_retention_failed_$target"
-        exit 2
-    fi
     printf 'recorded_awaiting_visual_review\n' > "$stage/status"
     source=(--resume "$checkpoint")
 done
-set_phase completed_2000_awaiting_visual_review
+set_phase "completed_${final}_awaiting_visual_review"

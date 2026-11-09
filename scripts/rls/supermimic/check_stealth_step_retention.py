@@ -7,7 +7,22 @@ from pathlib import Path
 import numpy as np
 
 from audit_stealth_trajectory import g1_geometry, load_record, measure_poses, sha256
-from check_wasd_recovery import evaluate_recovery
+from check_wasd_recovery import PROTOCOL_FIELDS, _same_value, evaluate_recovery
+
+
+def valid_speed_evidence(speed):
+    """A valid weak result can be observed through an authorized training budget."""
+    before = speed["observed"]["baseline"]
+    after = speed["observed"]["candidate"]
+    return bool(before is not None and after is not None and all(
+        _same_value(before["protocol"][field], after["protocol"][field])
+        for field in PROTOCOL_FIELDS))
+
+
+def review_exit_code(result, diagnostic_only=False):
+    if type(result.get("passed")) is not bool or type(result.get("valid_evidence")) is not bool:
+        return 2
+    return 0 if result["valid_evidence"] and (result["passed"] or diagnostic_only) else 2
 
 
 def compare_steps(baseline, candidate):
@@ -83,7 +98,8 @@ def check(baseline_evaluation, candidate_evaluation, baseline_trajectory, candid
     if before["recorded_env_ids"] != after["recorded_env_ids"]:
         raise ValueError("Baseline and candidate must use the same recorded environment IDs")
     lifts = compare_steps(before["counts"], after["counts"])
-    return {"passed": speed["passed"] and lifts["passed"], "speed": speed, "lifts": lifts,
+    return {"passed": speed["passed"] and lifts["passed"],
+            "valid_evidence": valid_speed_evidence(speed), "speed": speed, "lifts": lifts,
             "baseline": before, "candidate": after, "model": geometry[-1],
             "scope": "forward regression barrier only; visual entry/style and all WASD modes remain unqualified",
             "window_s": [5, 18], "lift_definition": "whole sole above 2cm for at least 80ms"}
@@ -94,6 +110,8 @@ def main():
     parser.add_argument("--baseline", type=Path, required=True)
     parser.add_argument("--candidate", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--diagnostic-only", action="store_true",
+                        help="Preserve failed quality results without shortening an authorized budget")
     args = parser.parse_args()
     try:
         result = check(
@@ -101,10 +119,12 @@ def main():
             json.loads((args.candidate / "evaluation.json").read_text(encoding="utf-8")),
             args.baseline / "trajectories.npz", args.candidate / "trajectories.npz")
     except (ValueError, KeyError, OSError) as error:
-        result = {"passed": False, "error": str(error), "scope": "invalid regression evidence"}
+        result = {"passed": False, "valid_evidence": False,
+                  "error": str(error), "scope": "invalid regression evidence"}
+    result["diagnostic_only"] = args.diagnostic_only
     args.output.write_text(json.dumps(result, indent=2, allow_nan=False) + "\n", encoding="utf-8")
     print(json.dumps({"passed": result["passed"], "output": str(args.output)}))
-    raise SystemExit(0 if result["passed"] else 2)
+    raise SystemExit(review_exit_code(result, args.diagnostic_only))
 
 
 if __name__ == "__main__":

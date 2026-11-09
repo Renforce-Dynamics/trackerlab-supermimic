@@ -89,6 +89,10 @@ def parse_args(argv=None):
     parser.add_argument("--allow-command-sampling-change", action="store_true")
     parser.add_argument("--allow-command-reward-change", action="store_true",
                         help="Explicit full-state legacy-to-WASD-v2 reward trial in a new run")
+    parser.add_argument("--allow-style-feature-change", action="store_true",
+                        help="Explicit G1 posture AMP to signed-vx adaptation in a fresh run")
+    parser.add_argument("--style-bootstrap-updates", type=int, default=200,
+                        help="Real-data AMP-only updates before an explicit feature adaptation")
     parser.add_argument("--wasd-reward-version", type=int, choices=(1, 2), default=1)
     parser.add_argument("--style-feature-mode", choices=("full", "proprioceptive", "postural",
                                                        "postural_end_effectors", "postural_end_effectors_vx"),
@@ -499,6 +503,17 @@ def migrate_terrain_checkpoint(checkpoint, model_indices,
 
 
 def main():
+    args = parse_args()
+    task = get_task(args.task)
+    if args.task_profile and args.task_profile != task.profile:
+        raise SystemExit("--task_profile differs from the selected task")
+    if args.describe:
+        print(json.dumps({
+            "task": task.describe(), "algorithm": "supermimic-command-amp",
+            "iterations": args.iterations, "perception_rays": 187,
+            "runtime_motion_reference": False, "style_reference_training_only": True,
+        }, indent=2))
+        return
     from trackerLab.algorithms.supermimic.amp_style import AMPStyle
     from trackerLab.kinematics.supermimic.robot import RobotKinematics
     from trackerLab.motion_buffer.motion_lib.supermimic import MotionLib
@@ -507,10 +522,6 @@ def main():
     )
     from trackerLab.tracker_env.supermimic.command import CommandSim
 
-    args = parse_args()
-    task = get_task(args.task)
-    if args.task_profile and args.task_profile != task.profile:
-        raise SystemExit("--task_profile differs from the selected task")
     if args.stealth_command is not None and task.profile != "stealth":
         raise SystemExit("--stealth-command is only valid for a stealth task")
     if args.stealth_control_mode in ("keyboard", "wasd") and task.profile != "stealth":
@@ -528,6 +539,9 @@ def main():
         raise SystemExit("Recovery preservation options require a transferred checkpoint")
     if args.freeze_actor_normalization and args.warm_start_normalizer_prior_count:
         raise SystemExit("Frozen actor normalization cannot reopen its prior count")
+    if args.allow_style_feature_change and (
+            not args.resume or args.warm_start or args.style_bootstrap_updates < 1):
+        raise SystemExit("Style adaptation requires full --resume and positive AMP bootstrap updates")
     if min(args.num_envs, args.iterations, args.horizon, args.hist, args.wm_batches,
            args.wm_batch, args.pi_batch, args.log_every, args.ckpt_every, args.keep_every,
            args.critic_epochs, args.critic_minibatches, args.speed_probe_updates) < 1:
@@ -545,13 +559,6 @@ def main():
             or (args.actor_lr is not None
                 and (not math.isfinite(args.actor_lr) or args.actor_lr <= 0))):
         raise SystemExit("Invalid discount, GAE lambda or learning rate")
-    if args.describe:
-        print(json.dumps({
-            "task": task.describe(), "algorithm": "supermimic-command-amp",
-            "iterations": args.iterations, "perception_rays": 187,
-            "runtime_motion_reference": False, "style_reference_training_only": True,
-        }, indent=2))
-        return
     if args.gait_warm_start or args.gait_quality:
         raise SystemExit("Tracking foundations are retired for this command/style objective")
     if args.amp_motion_config is None or not args.amp_motion_config.is_file():
@@ -780,6 +787,7 @@ def main():
     start_it = 0
     initialization = None
     resume_receipt = None
+    style_adaptation = None
     if args.resume:
         ck = resume_checkpoint
         if ck["task"] != args.task:
@@ -793,7 +801,7 @@ def main():
             raise ValueError("A reward adaptation requires a new run directory")
         validate_actor_normalization_resume(ck, args.freeze_actor_normalization)
         for name in ("gamma", "hist", "amp_weight", "clearance_ratio",
-                     "style_feature_mode", "amp_history", "command_range_mode",
+                     "amp_history", "command_range_mode",
                      "jump_height", "jump_probability", "action_limit", "stealth_command",
                      "foot_slide_weight", "feet_close_weight",
                      "self_collisions", "reference_reset_probability"):
@@ -825,7 +833,9 @@ def main():
         opt_pi.load_state_dict(ck["opt_pi"])
         opt_wm.load_state_dict(ck["opt_wm"])
         opt_v.load_state_dict(ck["opt_v"])
-        style.restore(ck["amp_style"])
+        from style_adaptation import restore_resume_style
+        style_adaptation = restore_resume_style(
+            style, ck, motion, allow_feature_change=args.allow_style_feature_change, run_dir=run)
         for optimizer in (opt_wm, opt_pi, opt_v):
             for group in optimizer.param_groups:
                 group["fused"] = args.fused_optimizers
@@ -842,8 +852,11 @@ def main():
         initialization = ck.get("initialization")
         resume_receipt = {
             "checkpoint": str(args.resume.resolve()), "iteration": start_it,
-            "actor_world_critic_style_restored": True,
-            "optimizer_states_restored": True,
+            "actor_world_critic_style_restored": style_adaptation is None,
+            "optimizer_states_restored": style_adaptation is None,
+            "actor_world_critic_restored": True,
+            "actor_world_critic_optimizers_restored": True,
+            "style_adaptation": style_adaptation,
             "command_margin_steps_before": previous_command_margin,
             "command_margin_steps_after": args.command_margin_steps,
             "sampling_filter_changed": previous_command_margin != args.command_margin_steps,
@@ -917,6 +930,11 @@ def main():
                              "training_only": True, "weight": args.amp_weight,
                              "feature_mode": args.style_feature_mode,
                              "discriminator_data": "real simulator transitions and expert clips"},
+                   "world_model_metrics": {
+                       "csv_wm_loss": "masked normalized state MSE summed over wm_window",
+                       "stdout_wm_per_step": "csv_wm_loss divided by wm_window",
+                       "optimized_objective_changed": False,
+                   },
                    "jump_commands": {"height_m": args.jump_height,
                                      "probability": args.jump_probability,
                                      "duration_seconds": .8},
@@ -1000,7 +1018,7 @@ def main():
         env.entry_upper_body_reward_fn = entry_upper_body_reward
 
     @torch.no_grad()
-    def collect(steps):
+    def collect(steps, *, update_world_normalization=True):
         nonlocal obs_hist, style_hist
         outcomes = {key: torch.zeros((), dtype=torch.int64, device=args.device)
                     for key in ("episodes", "successes", "falls", "timeouts")}
@@ -1034,9 +1052,10 @@ def main():
             style_hist = torch.cat((style_hist[:, 1:], style_frame_fn(s1)[:, None]), 1)
             style.observe_window(style_hist, valid=(~transition["done"]) & (
                 transition["ep_step"] >= style.history_steps - 2))
-            world.in_norm.update(world.inputs(s0, transition["a"], normalize_xi(transition["xi"])))
-            world.out_norm.update(world.targets(s0, s1))
-            world.update_terrain_norm(s0)
+            if update_world_normalization:
+                world.in_norm.update(world.inputs(s0, transition["a"], normalize_xi(transition["xi"])))
+                world.out_norm.update(world.targets(s0, s1))
+                world.update_terrain_norm(s0)
         return outcomes
 
     def wm_update():
@@ -1187,6 +1206,17 @@ def main():
 
     log_path = run / "train_log.csv"
     collect(max(args.warmup_steps, args.wm_window))
+    if style_adaptation is not None:
+        from style_adaptation import bootstrap_adapted_style
+        bootstrap_receipt = bootstrap_adapted_style(
+            style, args.style_bootstrap_updates, args.amp_batch,
+            lambda steps: collect(steps, update_world_normalization=False),
+            lambda: training_stop_requested(run, args.stop_file))
+        amp_updates_total += bootstrap_receipt["optimizer_updates"]
+        style_adaptation["bootstrap"] = bootstrap_receipt
+        (run / "style_adaptation.json").write_text(
+            json.dumps(style_adaptation, indent=2) + "\n", encoding="utf-8")
+        print("STYLE_ADAPTATION " + json.dumps(style_adaptation), flush=True)
     with log_path.open("a", newline="", encoding="utf-8") as stream:
         writer = csv.writer(stream)
         if stream.tell() == 0:
@@ -1254,6 +1284,7 @@ def main():
                                  f"{torch.cuda.max_memory_allocated() / 2**30:.4f}"))
                 stream.flush()
                 print(f"iteration={iteration + 1} speed={ips:.3f} it/s wm={means[0]:.5f} "
+                      f"wm_per_step={means[0] / args.wm_window:.5f} "
                       f"actor={means[1]:.5f} critic={means[2]:.5f} "
                       f"amp={means[5]:.3f} disc={means[7]:.3f}/{means[8]:.3f} "
                       f"level={env.levels.float().mean().item():.2f}", flush=True)

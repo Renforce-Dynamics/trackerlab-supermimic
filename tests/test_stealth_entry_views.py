@@ -92,6 +92,29 @@ class EntrySelectionTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             views.load_trajectory(self.path)
 
+    def test_existing_output_directory_is_never_overwritten(self):
+        output = self.path.parent / "already-exists"
+        output.mkdir()
+        protected = output / "entry-front-side.mp4"
+        protected.write_bytes(b"preserve this file")
+        with patch.dict(sys.modules, {"imageio_ffmpeg": None, "mujoco": None, "PIL": None}), \
+                patch.object(views, "load_trajectory", side_effect=AssertionError("source loaded")), \
+                patch.object(views, "nominal_model", side_effect=AssertionError("model loaded")), \
+                patch.object(views.subprocess, "Popen", side_effect=AssertionError("encoder opened")):
+            with self.assertRaises(FileExistsError) as error:
+                views.render(self.path, output)
+        self.assertEqual(error.exception.filename, str(output.resolve()))
+        self.assertEqual(protected.read_bytes(), b"preserve this file")
+        self.assertEqual(set(output.iterdir()), {protected})
+
+    def test_existing_output_file_is_preserved_without_render_dependencies(self):
+        output = self.path.parent / "already-exists"
+        output.write_bytes(b"preserve this file")
+        with patch.dict(sys.modules, {"imageio_ffmpeg": None, "mujoco": None, "PIL": None}):
+            with self.assertRaises(FileExistsError):
+                views.render(self.path, output)
+        self.assertEqual(output.read_bytes(), b"preserve this file")
+
 
 class WaistTargetTests(unittest.TestCase):
     def test_quintic_replaces_exactly_three_waist_entries(self):
@@ -151,21 +174,6 @@ class PoseReplayTests(unittest.TestCase):
             mujoco.mjv_updateScene(model, data, option, None, camera, mujoco.mjtCatBit.mjCAT_ALL, scene)
             forward = np.array([np.cos(np.deg2rad(heading)), np.sin(np.deg2rad(heading))])
             self.assertGreater(np.dot(scene.camera[0].pos[:2], forward), 2.7)
-
-    def test_existing_output_directory_is_never_overwritten(self):
-        with tempfile.TemporaryDirectory() as directory:
-            source = Path(directory) / "source.npz"
-            np.savez(source, **record())
-            output = Path(directory) / "already-exists"
-            output.mkdir()
-            protected = output / "entry-front-side.mp4"
-            protected.write_bytes(b"preserve this file")
-            with patch.object(views, "nominal_model", return_value=(None, {"source_mjcf": str(source)})), \
-                    patch.object(views.subprocess, "Popen", side_effect=AssertionError("encoder opened")):
-                with self.assertRaises(FileExistsError):
-                    views.render(source, output)
-            self.assertEqual(protected.read_bytes(), b"preserve this file")
-            self.assertEqual(set(output.iterdir()), {protected})
 
     def test_pose_assignment_does_not_step_physics(self):
         import mujoco

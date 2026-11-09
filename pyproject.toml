@@ -17,6 +17,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+test = ["pytest>=8.3,<9", "bvh==0.3"]
 render = ["matplotlib==3.10.3", "pillow==11.3.0", "imageio-ffmpeg==0.6.0", "opencv-python-headless==4.11.0.86"]
 
 [project.urls]

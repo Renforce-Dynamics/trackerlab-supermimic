@@ -1,6 +1,7 @@
 """Local CPU FK replay of the first recorded G1 entry, with heading-follow views."""
 
 import argparse
+import errno
 import hashlib
 import json
 import math
@@ -121,11 +122,14 @@ def replay_pose(model, data, pose, timestamp):
 
 
 def render(trajectory, output, lane=0, seconds=6., waist_reference=None):
+    trajectory, output = Path(trajectory).resolve(), Path(output).resolve()
+    if output.exists():
+        raise FileExistsError(errno.EEXIST, os.strerror(errno.EEXIST), str(output))
+
     import imageio_ffmpeg
     import mujoco
     from PIL import Image, ImageDraw, ImageFont
 
-    trajectory, output = Path(trajectory).resolve(), Path(output).resolve()
     source_hash = digest(trajectory)
     poses, indices, metadata = load_trajectory(trajectory, lane, seconds)
     commands = None

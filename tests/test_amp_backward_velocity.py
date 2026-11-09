@@ -6,6 +6,7 @@ from io import BytesIO
 import json
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -25,33 +26,118 @@ from train_terrain import parse_args
 MODE = "postural_end_effectors_vx"
 BASE_MODE = "postural_end_effectors"
 VX_LABEL = "root_local_forward_velocity/robot_height"
-# Captured before this experiment, using the same synthetic CPU fixture.
+# Frozen legacy contracts for the exact-arithmetic fixture below. The independent
+# reference frames also check feature contents, including their canonical bytes.
 LEGACY_FINGERPRINTS = {
     (2, "full"): (
-        "55997820d81ab3823d2cc7fbf63afed0602254224782cf3950b65f8c3d93fc7f",
-        "3390757bdc8c9685d139bf0a2a8a3f02b4ca2f17df837701d264f4b6136d7b2d"),
+        "a57f83e2985450e37a4c085d4e9eece473d983404c63b29334382c24eb931c37",
+        "cf6eabc68b2cd89ae3fbdf878dd299370252cc0d1864b0ecee97b445910406fc"),
     (2, "proprioceptive"): (
-        "a720b5be6030f0053cdc364f2ac37e5e701d7bacae5163a10f48b7dde57d518c",
-        "730e64a0e800e92a24470db654643551913cb778633a04af523b68c16c545411"),
+        "cb8112ca802aaae58c849b64c1c39183df5ab67edf94293149627ea999ef6abc",
+        "da0aec9ebd261e615d20ecf1b0b3a21692aed8c67c745bbbd4046fa96382543f"),
     (2, "postural"): (
-        "7627b521cff4d7dabe853745e81fc177f7179411fd29303fd81bad1709d4e196",
-        "87a6862d04bcf969c52f63861935e5fbfb335a6c8d5b5e28ae2dd8ba2e869701"),
+        "3ab47dfa795f5ffa93f4edffec26ccf3b43a6f6be789093b2aa0848a55aae209",
+        "17ab4e3d8362a90a48f82e730c54a18f8b38e73dfac970d94e7916e637bb00e4"),
     (2, BASE_MODE): (
-        "7e43f588231a642f6c8224777212f855f3d01538cd0c10e766860915ccc1276f",
-        "e2a46a21b37a285eb1c7d26e91737ac189508439911b5c0cc555592ebe2de68d"),
+        "b562de5d14fa43aa741bcd0eae9d2762a8f7835b96c1501335f1dbf4e19bb816",
+        "3ec2d28111b8612e324a3c6fc7fb10c61d43eb7fe28cf72e9be82527759dfb93"),
     (10, "full"): (
-        "63a0579be83dce881aec37eddc1bebb7755da1a96475be8c3e01376f2692b035",
-        "06d054b27e767089a881bba796ffd6cdfa5ff2f8ed7386ee933caa1422551680"),
+        "39118e1f1131cef1d758757c338c21753c4502c7ae315033732d62ffe604cabe",
+        "c883598145f18f82709fb69c6f2c6fa7c7abceee8d855e2c81a085c47e7ebcd7"),
     (10, "proprioceptive"): (
-        "b1271bef4d6db9eeb0fe53ec441be83435bdf6bfb7f3909076847b424184a66b",
-        "e76da45fa7e6a5b7b4e3edc1f144751a41149b4f37d64a4d4413c01c54cd9355"),
+        "5d95a9b3a27083dbf2605f8e565832c004709cd74e881b67744a06b92e28ca2f",
+        "6199ec95026f2e9a2ed1735ef2c757becd16430d7769320de6d81ff258e276a0"),
     (10, "postural"): (
-        "dda5906c08e1c0a2c8e3cd1333c6165a288e5a6fe88c0390ee0ff6932ae816fa",
-        "a5de6610385859238cc5b0e79df261b520e79dce3bedddba9dc727f9c697af61"),
+        "b98151a397d4e3a84daab60f053d770b57bb87099b3105007cc2b5d6dd4f4ce2",
+        "96fca53d732fcab9656bc64106dead6f1d19ca0af3231c2bf4106d3381009454"),
     (10, BASE_MODE): (
-        "059bec6516b09fd803556f1bf05049a0b2b0681e28177a918544b98d64870dc1",
-        "adc0add349f0a71b4166923c5c7190b5644f2ff6d64f43111512fe131b4ddc5d"),
+        "6d1a755270adbe7bef0ee0c5e42f4a4fb495f4d0d1f36bde1764b8c9acd09959",
+        "4ec97321a276327e2ce8862662a60436be6434c82a28eed894f3ff8d4659efdf"),
 }
+
+
+class FingerprintKinematics(WristKinematics):
+    """Dyadic prismatic geometry with distinct, exact hand orientations."""
+
+    robot = SimpleNamespace(default_q=(.125, -.125, 0., 0., .0625, -.0625))
+
+    def forward(self, p, R, v, w, q, qd):
+        zero = torch.zeros_like(q[..., 0])
+
+        def point(x, y, z):
+            return torch.stack((x, zero + y, zero + z), -1)
+
+        local_p = torch.stack((
+            point(zero, 0., 0.), point(q[..., 4], .125, -.75),
+            point(q[..., 5], -.125, -.75), point(q[..., 0] + q[..., 2], .25, .5),
+            point(q[..., 1] + q[..., 3], -.25, .5),
+        ), -2)
+        local_R = q.new_tensor((
+            ((1, 0, 0), (0, 1, 0), (0, 0, 1)),
+            ((1, 0, 0), (0, 1, 0), (0, 0, 1)),
+            ((1, 0, 0), (0, 1, 0), (0, 0, 1)),
+            ((1, 0, 0), (0, 0, -1), (0, 1, 0)),
+            ((0, -1, 0), (1, 0, 0), (0, 0, 1)),
+        ))
+        positions = p[..., None, :] + (R[..., None, :, :] @ local_p[..., None]).squeeze(-1)
+        rotations = R[..., None, :, :] @ local_R
+        return positions, rotations, torch.zeros_like(positions), torch.zeros_like(positions)
+
+
+def fingerprint_motion():
+    """All inputs and feature results are exactly representable in FP32."""
+    t = torch.arange(25, dtype=torch.float32)
+    joints = t[:, None] + torch.arange(6, dtype=torch.float32)[None]
+    rotations = torch.tensor((
+        ((1, 0, 0), (0, 1, 0), (0, 0, 1)),
+        ((1, 0, 0), (0, 0, -1), (0, 1, 0)),
+    ), dtype=torch.float32)
+    return SimpleNamespace(
+        root_p=torch.stack((t / 8, -t / 16, 1 + (t % 4) / 8), -1),
+        root_R=rotations[t.long() % 2],
+        root_v=torch.stack(((t + 1) / 8, (t + 2) / 16, (t + 3) / 32), -1),
+        root_w=torch.stack((-(t + 2) / 32, (t + 4) / 16, (t + 5) / 8), -1),
+        q=(joints - 12) / 16,
+        # Multiplication by the legacy FP32 0.05 rounds these to exact integers.
+        qd=20 * (joints % 5 - 2),
+        clip_start=torch.tensor([0, 12]), clip_end=torch.tensor([11, 24]),
+        clip_len=torch.tensor([12, 13]), clip_id=torch.tensor([0] * 12 + [1] * 13),
+        names=["dyadic-left", "dyadic-right"],
+    )
+
+
+def legacy_reference_frames(mode):
+    """Scalar legacy oracle, independent of AMP, FK and rotation helpers."""
+    frames = []
+    for i in range(25):
+        height = [1 + (i % 4) / 8]
+        gravity = [-0., -1., -0.] if i % 2 else [-0., -0., -1.]
+        rotation = [1., 0., 0., 0., 0., 1.] if i % 2 else [1., 0., 0., 1., 0., 0.]
+        velocity = [(i + 1) / 8, (i + 2) / 16, (i + 3) / 32]
+        angular = [-(i + 2) / 32, (i + 4) / 16, (i + 5) / 8]
+        if i % 2:
+            velocity = [velocity[0], velocity[2], -velocity[1]]
+            angular = [angular[0], angular[2], -angular[1]]
+        q = [(i + j - 12) / 16 for j in range(6)]
+        centered = [q[0] - .125, q[1] + .125, q[2], q[3], q[4] - .0625, q[5] + .0625]
+        rate = [float((i + j) % 5 - 2) for j in range(6)]
+        positions = [
+            0., 0., 0., (i - 8) / 16, .125, -.75, (i - 7) / 16, -.125, -.75,
+            (2 * i - 22) / 16, .25, .5, (2 * i - 20) / 16, -.25, .5,
+        ]
+        hands = [1., 0., 0., 0., 0., 1., 0., -1., 1., 0., 0., 0.]
+        if mode == "full":
+            frame = height + rotation + velocity + angular + q + rate + positions
+        elif mode == "proprioceptive":
+            frame = gravity + centered + rate + velocity + angular
+        elif mode == "postural":
+            frame = gravity + height + centered + rate
+        elif mode == BASE_MODE:
+            frame = gravity + height + centered + rate + positions + hands
+        else:
+            raise AssertionError(f"Unknown legacy mode: {mode}")
+        frames.append(frame)
+    return torch.tensor(frames, dtype=torch.float32)
 
 
 class AMPBackwardVelocityTests(unittest.TestCase):
@@ -389,21 +475,28 @@ class AMPBackwardVelocityTests(unittest.TestCase):
         self.assert_tree_equal(learner.checkpoint(), checkpoint)
 
     def test_all_legacy_layout_and_expert_fingerprints_and_header_fallback_are_unchanged(self):
+        kin, motion = FingerprintKinematics(), fingerprint_motion()
+        states = recorded(motion, torch.arange(25))
         for (history, mode), (expert_hash, layout_hash) in LEGACY_FINGERPRINTS.items():
             with self.subTest(mode=mode, history=history):
-                learner = self.learner(mode, history_steps=history)
+                learner = AMPStyle(kin, motion, 1., hidden=(16, 8), replay_capacity=16,
+                                   feature_mode=mode, history_steps=history)
                 layout = json.dumps(learner.feature_layout, sort_keys=True, separators=(",", ":")).encode()
+                expected = legacy_reference_frames(mode)
+                torch.testing.assert_close(learner._expert_frames, expected, atol=0, rtol=0)
+                reference = hashlib.sha256(layout + b"[[0,12],[11,24]]"
+                                           + expected.numpy().astype("<f4", copy=False).tobytes())
                 self.assertEqual(hashlib.sha256(layout).hexdigest(), layout_hash)
+                self.assertEqual(reference.hexdigest(), expert_hash)
                 self.assertEqual(learner.expert_hash, expert_hash)
                 checkpoint = learner.checkpoint()
                 checkpoint.pop("feature_mode")
-                scorer = AMPStyle.for_scoring(self.kin, checkpoint)
+                scorer = AMPStyle.for_scoring(kin, checkpoint)
                 self.assertEqual(scorer.feature_mode, mode)
                 self.assertEqual(scorer.feature_layout, learner.feature_layout)
-                torch.testing.assert_close(scorer.frame_features(self.states()[0]),
-                                           learner.frame_features(self.states()[0]), atol=0, rtol=0)
+                torch.testing.assert_close(scorer.frame_features(states), expected, atol=0, rtol=0)
                 if mode == "full":
-                    self.learner(mode, history_steps=history).restore(checkpoint)
+                    learner.restore(checkpoint)
                 else:
                     with self.assertRaisesRegex(ValueError, "feature layout"):
                         learner.restore(checkpoint)

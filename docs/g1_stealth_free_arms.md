@@ -101,3 +101,26 @@ renders first attempts with front/side views. Preserve early falls. Inspect
 forward entry, torso lean, arm expression, reverse foot lift, sliding, pivots,
 combined commands and crouched release. The full 20,000 budget is authorized;
 videos do not automatically grant visual acceptance or policy export.
+
+## November 9 Recovery
+
+The 2,000-iteration segment and its recordings completed. The next segment
+started at 01:55:45; the external idle scheduler launched another workload
+during graph compilation at 01:57:10. The trainer exited at 01:58:24 with
+`Warp CUDA error 2: out of memory`, before writing further checkpointed
+progress. The previous controller then exited and required explicit recovery.
+The external scheduler does not honor this repository's GPU lock; admission
+sampling cannot grant an atomic reservation against that scheduler.
+
+The controller now retries only recognized allocator/OOM failures, with three
+retries by default (`OOM_RETRIES`). Every failed stdout is preserved. A current
+`last.pt` is copied and hashed as an immutable retry checkpoint; subsequent
+attempts use full resume after a cancellable 60-second cooldown and another
+GPU admission check. Other errors still exit with their actual failure code.
+This changes process recovery, leaving the training objective and preset intact.
+
+For an exact already-recorded checkpoint, `COMPLETED_REVIEW_DIR` can identify
+the previous milestone directory. Its recorded status and checkpoint SHA256
+must match the resume checkpoint. The controller then reuses that evidence
+without repeating the same GPU evaluations/rendering. Passed iterations remain
+counted toward the cumulative 20,000 target.

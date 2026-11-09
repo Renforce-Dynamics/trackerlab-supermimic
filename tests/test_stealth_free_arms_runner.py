@@ -67,8 +67,16 @@ if [ "$mode" = train ]; then
         exit 98
     fi
     if [ "${TEST_FAIL_AT:-}" = "$iteration" ]; then exit 42; fi
+    if [ "${TEST_OOM_ALWAYS:-}" = "$iteration" ] || {
+        [ "${TEST_OOM_ONCE:-}" = "$iteration" ] && [ ! -e "$TEST_ROOT/oom-happened" ];
+    }; then
+        : > "$TEST_ROOT/oom-happened"
+        printf 'Warp CUDA error 2: out of memory\n' >&2
+        exit 1
+    fi
     printf -v label '%06d' "$iteration"
     printf 'checkpoint-%s\n' "$iteration" > "$run_dir/iteration_$label.pt"
+    cp "$run_dir/iteration_$label.pt" "$run_dir/last.pt"
     printf '{}\n' > "$run_dir/run_summary.json"
 elif [ "$mode" = "${TEST_STOP_AFTER:-}" ]; then
     : > "$TEST_RUN/STOP"
@@ -96,7 +104,8 @@ def case(tmp_path, bash):
     env = os.environ.copy()
     for key in ("SHARED_GPU_LOCK", "GPU_ADMISSION", "GPU_MIN_FREE_MIB", "PARENT_STOP_FILE",
                 "TEST_CHILD_MODE", "TEST_STOP_AFTER", "TEST_FAIL_AT",
-                "RESUME_CHECKPOINT", "TEST_RESUME_ITERATION"):
+                "RESUME_CHECKPOINT", "TEST_RESUME_ITERATION", "COMPLETED_REVIEW_DIR",
+                "OOM_RETRIES", "TEST_OOM_ONCE", "TEST_OOM_ALWAYS"):
         env.pop(key, None)
     env.update(BASH_ENV=mock.as_posix(), TEST_ROOT=root.as_posix(), TEST_RUN=run.as_posix())
     command = [bash, RUNNER.as_posix(), fake.as_posix(), run.as_posix(),
@@ -200,3 +209,67 @@ def test_full_checkpoint_handoff_never_repeats_warm_start(case, iteration, expec
     assert (case.run / "starting_iteration").read_text().strip() == str(iteration)
     if iteration == 5000:
         assert calls[0].startswith("evaluate|")
+
+
+def test_gpu_oom_preserves_failed_log_and_resumes_last_complete_checkpoint(case):
+    case.env["TEST_OOM_ONCE"] = "5000"
+    with running_runner(case) as process:
+        output, errors = process.communicate(timeout=25)
+        assert process.returncode == 0, (output, errors)
+    training = [call.split("|") for call in
+                (case.root / "calls").read_text(encoding="utf-8").splitlines()
+                if call.startswith("train|")]
+    assert [row[1] for row in training] == ["2000", "5000", "5000", "10000", "15000", "20000"]
+    retry = case.run / "milestones/005000/retries/checkpoint_attempt_1.pt"
+    assert training[2][2] == f"--resume={retry.as_posix()}"
+    assert retry.read_text().strip() == "checkpoint-2000"
+    assert (case.run / "milestones/005000/train.stdout.log").read_text().endswith("out of memory\n")
+    assert (case.run / "milestones/005000/retries/train_attempt_2.stdout.log").exists()
+    assert (case.run / "controller.exit").read_text().strip() == "0"
+
+
+def test_repeated_gpu_oom_respects_retry_budget_and_preserves_errors(case):
+    case.env.update(TEST_OOM_ALWAYS="5000", OOM_RETRIES="1")
+    with running_runner(case) as process:
+        _, errors = process.communicate(timeout=20)
+        assert process.returncode == 1, errors
+    assert (case.run / "controller.phase").read_text().strip() == "failed:training_to_5000"
+    calls = (case.root / "calls").read_text(encoding="utf-8").splitlines()
+    assert sum(call.startswith("train|5000|") for call in calls) == 2
+    assert (case.run / "training/iteration_002000.pt").exists()
+
+
+def test_owner_stop_during_oom_cooldown_prevents_another_attempt(case):
+    case.env["TEST_OOM_ONCE"] = "5000"
+    with running_runner(case) as process:
+        wait_for_file(case.run / "milestones/005000/retries/events.log", process)
+        (case.run / "STOP").touch()
+        assert_stopped(case, process)
+    calls = (case.root / "calls").read_text(encoding="utf-8").splitlines()
+    assert sum(call.startswith("train|5000|") for call in calls) == 1
+    assert (case.run / "training/iteration_002000.pt").exists()
+
+
+@pytest.mark.parametrize("matches", [True, False])
+def test_completed_review_reused_only_for_the_same_checkpoint(case, matches):
+    import hashlib
+    saved = case.root / "saved2000.pt"
+    saved.write_bytes(b"saved-2000")
+    review = case.root / "completed-review"
+    review.mkdir()
+    (review / "status").write_text("recorded_awaiting_visual_review\n", encoding="ascii")
+    digest = hashlib.sha256(saved.read_bytes()).hexdigest() if matches else "0" * 64
+    (review / "checkpoint.receipt").write_text(f"{digest}  original2000.pt\n", encoding="ascii")
+    case.env.update(RESUME_CHECKPOINT=saved.as_posix(), TEST_RESUME_ITERATION="2000",
+                    COMPLETED_REVIEW_DIR=review.as_posix())
+    with running_runner(case) as process:
+        output, errors = process.communicate(timeout=20)
+        if not matches:
+            assert process.returncode != 0, (output, errors)
+            assert not (case.root / "calls").exists()
+            return
+        assert process.returncode == 0, (output, errors)
+    calls = (case.root / "calls").read_text(encoding="utf-8").splitlines()
+    assert calls[0].startswith("train|5000|")
+    assert sum(call.startswith("evaluate|") for call in calls) == 8
+    assert (case.run / "reused_review.receipt").exists()

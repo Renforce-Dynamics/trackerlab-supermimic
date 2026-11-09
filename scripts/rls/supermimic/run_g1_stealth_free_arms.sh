@@ -14,6 +14,9 @@ repo=$(git rev-parse --show-toplevel)
 config=$repo/scripts/rls/supermimic/configs/command_stealth_free_arms.json
 admission=${GPU_ADMISSION:-exclusive}
 minimum_free=${GPU_MIN_FREE_MIB:-21000}
+oom_retries=${OOM_RETRIES:-3}
+[[ "$oom_retries" =~ ^[0-9]+$ ]]
+completed_review=${COMPLETED_REVIEW_DIR:-}
 case "$admission" in
     exclusive) memory_args=() ;;
     shared_capacity)
@@ -49,6 +52,14 @@ PY
 )
     [[ "$resume_iteration" =~ ^[0-9]+$ ]]
     resume_inputs=("$RESUME_CHECKPOINT")
+fi
+if [ -n "$completed_review" ]; then
+    test "$resume_iteration" -gt 0
+    test "$(cat "$completed_review/status")" = recorded_awaiting_visual_review
+    read -r review_hash _ < "$completed_review/checkpoint.receipt"
+    read -r resume_hash _ < <(sha256sum "$RESUME_CHECKPOINT")
+    test "$review_hash" = "$resume_hash"
+    resume_inputs+=("$completed_review/status" "$completed_review/checkpoint.receipt")
 fi
 mkdir -p "$run" "$repo/logs"
 exec 8>"$run/controller.lock"
@@ -195,21 +206,57 @@ if [ "$resume_iteration" -gt 0 ]; then
 fi
 for milestone in 2000 5000 10000 15000 20000; do
     if [ "$milestone" -lt "$resume_iteration" ]; then continue; fi
+    if [ "$milestone" -eq "$resume_iteration" ] && [ -n "$completed_review" ]; then
+        printf '%s\n' "$completed_review" > "$run/reused_review.receipt"
+        printf '%s\n' "$milestone" > "$run/completed_iterations"
+        continue
+    fi
     wait_for_gpu
     start_watch
     label=$(printf '%06d' "$milestone")
     stage=$run/milestones/$label
     mkdir -p "$stage"
     if [ "$milestone" -gt "$resume_iteration" ]; then
-        set_phase "training_to_$milestone"
-        "$python" -u scripts/rls/supermimic/train_terrain.py \
-            --task locomotion/g1/stealth --config "$config" --run-dir "$run/training" \
-            "${initialization[@]}" --amp-motion-config "$pool/train.json" \
-            --waist-entry-reference "$waist" "${stop_args[@]}" "${memory_args[@]}" \
-            --iterations "$milestone" --buffer-steps 500 \
-            --keep-every 1000 --ckpt-every 250 --log-every 25 \
-            > "$stage/train.stdout.log" 2>&1
-        check_stop
+        attempt=0
+        training_log=$stage/train.stdout.log
+        while true; do
+            attempt=$((attempt + 1))
+            set_phase "training_to_$milestone"
+            if "$python" -u scripts/rls/supermimic/train_terrain.py \
+                --task locomotion/g1/stealth --config "$config" --run-dir "$run/training" \
+                "${initialization[@]}" --amp-motion-config "$pool/train.json" \
+                --waist-entry-reference "$waist" "${stop_args[@]}" "${memory_args[@]}" \
+                --iterations "$milestone" --buffer-steps 500 \
+                --keep-every 1000 --ckpt-every 250 --log-every 25 \
+                > "$training_log" 2>&1; then
+                training_status=0
+            else
+                training_status=$?
+            fi
+            check_stop
+            if [ "$training_status" -eq 0 ]; then break; fi
+            if [ "$attempt" -gt "$oom_retries" ] || ! grep -qiE \
+                'out of memory|CUDA_ERROR_OUT_OF_MEMORY|cudaErrorMemoryAllocation|Failed to allocate' \
+                "$training_log"; then
+                exit "$training_status"
+            fi
+            stop_watch
+            mkdir -p "$stage/retries"
+            printf '%s exit=%s log=%s\n' "$(date -Is)" "$training_status" "$training_log" \
+                >> "$stage/retries/events.log"
+            if [ -f "$run/training/last.pt" ]; then
+                retry_checkpoint=$stage/retries/checkpoint_attempt_$attempt.pt
+                test ! -e "$retry_checkpoint"
+                cp "$run/training/last.pt" "$retry_checkpoint"
+                sha256sum "$retry_checkpoint" > "$retry_checkpoint.receipt"
+                initialization=(--resume "$retry_checkpoint")
+            fi
+            set_phase "retrying_gpu_memory_$milestone"
+            for ((cooldown=0; cooldown<60; cooldown++)); do check_stop; sleep 1; done
+            wait_for_gpu
+            start_watch
+            training_log=$stage/retries/train_attempt_$((attempt + 1)).stdout.log
+        done
         checkpoint=$run/training/iteration_$label.pt
     else
         checkpoint=$RESUME_CHECKPOINT

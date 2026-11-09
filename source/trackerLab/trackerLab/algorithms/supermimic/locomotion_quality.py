@@ -40,10 +40,13 @@ class LocomotionQuality:
     world-down pole, including angular motion, and uses signed left/right spacing
     for the feet-close reward. This approximates support on a static heightfield;
     it is not a force/contact sensor or a terrain-normal friction measurement.
+    ``differentiate_support=True`` enables experimental support-weight gradients
+    in sole mode, preserving the forward measurements and rewards.
     """
 
     def __init__(self, kin, field, motors, *, foot_slide_weight=.008,
-                 feet_close_weight=.008, foot_slip_mode="legacy"):
+                 feet_close_weight=.008, foot_slip_mode="legacy",
+                 differentiate_support=False):
         for name, value in (("foot_slide_weight", foot_slide_weight),
                             ("feet_close_weight", feet_close_weight)):
             if (isinstance(value, bool) or not isinstance(value, (int, float))
@@ -51,10 +54,15 @@ class LocomotionQuality:
                 raise ValueError(f"{name} must be finite and nonnegative")
         if foot_slip_mode not in ("legacy", "g1_sole"):
             raise ValueError("foot_slip_mode must be 'legacy' or 'g1_sole'")
+        if not isinstance(differentiate_support, bool):
+            raise ValueError("differentiate_support must be a bool")
+        if differentiate_support and foot_slip_mode != "g1_sole":
+            raise ValueError("differentiate_support requires foot_slip_mode='g1_sole'")
         if foot_slip_mode == "g1_sole" and kin.robot.name != "g1":
             raise ValueError("g1_sole is supported only for G1")
         self.kin, self.field = kin, field
         self.foot_slip_mode = foot_slip_mode
+        self.differentiate_support = differentiate_support
         self.foot_slide_weight = float(foot_slide_weight)
         self.feet_close_weight = float(feet_close_weight)
         spec = kin.robot
@@ -122,10 +130,12 @@ class LocomotionQuality:
             points, point_velocity = self._sole_state(position, rotation, velocity, angular)
             height = points[..., 2] - self.field.sample(points[..., :2])
             # Full support at/below terrain, exactly zero at 2 scale-cm clearance.
-            # Detach both numerator and denominator gates to remove the actor's
-            # direct reward gradient for lifting/sloping a foot out of support.
+            # Default: detach numerator and denominator support gates. The
+            # experimental opt-in retains their smooth height/slope gradients.
             fraction = (1 - height / (.02 * scale)).clamp(0, 1)
-            point_support = (fraction.square() * (3 - 2 * fraction)).detach()
+            point_support = fraction.square() * (3 - 2 * fraction)
+            if not getattr(self, "differentiate_support", False):
+                point_support = point_support.detach()
             mass = point_support.sum((-1, -2))
             speed = torch.linalg.vector_norm(point_velocity[..., :2], dim=-1) / scale
             # A conditional mean has no discount for a single weakly supported

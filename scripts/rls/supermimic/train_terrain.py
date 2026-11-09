@@ -101,6 +101,10 @@ def parse_args(argv=None):
     parser.add_argument("--foot-slide-weight", type=float, default=.008)
     parser.add_argument("--feet-close-weight", type=float, default=.008)
     parser.add_argument("--foot-slip-mode", choices=("legacy", "g1_sole"), default="legacy")
+    parser.add_argument("--differentiate-support", action="store_true",
+                        help="Experimental G1 sole-support gradient; forward rewards unchanged")
+    parser.add_argument("--allow-support-gradient-change", action="store_true",
+                        help="Explicit fresh-directory full resume with changed support gradient")
     parser.add_argument("--self-collisions", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--collision-mask-version", type=int, choices=(1, 2), default=2)
     parser.add_argument("--physical-domain-randomization", action="store_true")
@@ -312,6 +316,19 @@ def update_collection_normalizers(actor, observations, goals, *, frozen=False):
 def validate_actor_normalization_resume(checkpoint, frozen):
     if checkpoint["arguments"].get("freeze_actor_normalization", False) != frozen:
         raise ValueError("Resume actor normalization mode differs; use a new warm-start run")
+
+
+def validate_support_gradient_resume(checkpoint, args, run):
+    old_support = checkpoint["arguments"].get("differentiate_support", False)
+    if old_support != args.differentiate_support:
+        if (not args.allow_support_gradient_change or old_support
+                or checkpoint["task"] != "locomotion/g1/stealth"
+                or checkpoint["arguments"].get("foot_slip_mode") != "g1_sole"
+                or (Path(run) / "last.pt").exists()):
+            raise ValueError("Support-gradient adaptation requires a fresh G1 stealth resume")
+    elif args.allow_support_gradient_change:
+        raise ValueError("Support-gradient adaptation requires a changed support objective")
+    return (old_support != args.differentiate_support)
 
 
 def validate_warm_start_control(checkpoint, upper_body_config, rate_limiter_config, reset_arms):
@@ -542,6 +559,13 @@ def main():
     if args.allow_style_feature_change and (
             not args.resume or args.warm_start or args.style_bootstrap_updates < 1):
         raise SystemExit("Style adaptation requires full --resume and positive AMP bootstrap updates")
+    if args.differentiate_support and (task.robot, task.profile, args.foot_slip_mode) != (
+            "g1", "stealth", "g1_sole"):
+        raise SystemExit("Differentiable sole support requires G1 stealth and g1_sole")
+    if args.allow_support_gradient_change and (not args.resume or args.warm_start
+                                                or not args.differentiate_support
+                                                or args.allow_style_feature_change):
+        raise SystemExit("Support-gradient adaptation requires full --resume only in a new G1 run")
     if min(args.num_envs, args.iterations, args.horizon, args.hist, args.wm_batches,
            args.wm_batch, args.pi_batch, args.log_every, args.ckpt_every, args.keep_every,
            args.critic_epochs, args.critic_minibatches, args.speed_probe_updates) < 1:
@@ -724,7 +748,8 @@ def main():
     quality = LocomotionQuality(
         kin, field, contract["motors_effort_velocity_kp_kd_armature"],
         foot_slide_weight=args.foot_slide_weight,
-        feet_close_weight=args.feet_close_weight, foot_slip_mode=args.foot_slip_mode)
+        feet_close_weight=args.feet_close_weight, foot_slip_mode=args.foot_slip_mode,
+        differentiate_support=args.differentiate_support)
     quality.calibrate(motion)
     command_envelope = None
     if task.profile == "stealth" and args.stealth_control_mode in ("keyboard", "wasd"):
@@ -810,6 +835,7 @@ def main():
         if (ck["arguments"].get("physical_domain_randomization", False)
                 != args.physical_domain_randomization):
             raise ValueError("Changed physical domain requires --warm-start in a new run")
+        support_changed = validate_support_gradient_resume(ck, args, run)
         for name, default in (("entry_duration_s", 0.), ("grounded_start", False),
                               ("foot_slip_mode", "legacy"), ("standing_joint_noise", 0.),
                               ("collision_mask_version", 1), ("waist_pd_scale", 1.)):
@@ -857,6 +883,10 @@ def main():
             "actor_world_critic_restored": True,
             "actor_world_critic_optimizers_restored": True,
             "style_adaptation": style_adaptation,
+            "support_gradient_adaptation": {
+                "source": False, "target": True, "forward_reward_values_unchanged": True,
+                "actor_world_critic_style_and_optimizers_restored": True,
+            } if support_changed else None,
             "command_margin_steps_before": previous_command_margin,
             "command_margin_steps_after": args.command_margin_steps,
             "sampling_filter_changed": previous_command_margin != args.command_margin_steps,
@@ -925,6 +955,7 @@ def main():
                                           "foot_slide_weight": quality.foot_slide_weight,
                                           "feet_close_weight": quality.feet_close_weight,
                                           "foot_slip_mode": quality.foot_slip_mode,
+                                          "differentiate_support": quality.differentiate_support,
                                           "sole_height": quality.sole_height.cpu().tolist()},
                    "style": {"motion_config": str(args.amp_motion_config.resolve()),
                              "training_only": True, "weight": args.amp_weight,

@@ -289,7 +289,8 @@ def attach_locomotion_quality(env, kin, field, motors, checkpoint,
         kin, field, motors,
         foot_slide_weight=checkpoint.get("arguments", {}).get("foot_slide_weight", .008),
         feet_close_weight=checkpoint.get("arguments", {}).get("feet_close_weight", .008),
-        foot_slip_mode=checkpoint.get("arguments", {}).get("foot_slip_mode", "legacy"))
+        foot_slip_mode=checkpoint.get("arguments", {}).get("foot_slip_mode", "legacy"),
+        differentiate_support=checkpoint.get("arguments", {}).get("differentiate_support", False))
     sole_height = torch.as_tensor(
         checkpoint["quality_sole_height"], device=kin.device, dtype=quality.sole_height.dtype)
     if sole_height.shape != quality.sole_height.shape or not bool(torch.isfinite(sole_height).all()):
@@ -751,6 +752,7 @@ def main():
               "entry_duration_s": ck["arguments"].get("entry_duration_s", 0.),
               "waist_pd_scale": ck["arguments"].get("waist_pd_scale", 1.),
               "foot_slip_mode": ck["arguments"].get("foot_slip_mode", "legacy"),
+              "differentiate_support": ck["arguments"].get("differentiate_support", False),
               "upper_body_rate_limit": rate_limiter_config,
               "stealth_control_mode": ck["arguments"].get("stealth_control_mode", "fixed"),
               **training_metadata,

@@ -98,13 +98,23 @@ prototype is integrated. Endpoint AMP remains responsible for stepping style.
 
 ## Run And Review
 
-`run_g1_stealth_combined.sh PYTHON RUN SOURCE NATURAL_POOL SOURCE_COMMIT`
-uses `command_stealth_combined.json`:5500total iterations,500WM-only plus
-5000actor-enabled. It records2500and5500milestones, each with24held-forward
-worlds,90allninecommand worlds and18release-sequence worlds. Videos preserve
-the first attempts, including failures, with front/side views.
+The owner's November10 extension requests50,000 cumulative actor updates.
+This supersedes the initial5,000-actor-update plan.
 
-The full actor budget continues through valid quality regressions. Runtime
+`run_g1_stealth_combined.sh PYTHON RUN SOURCE NATURAL_POOL SOURCE_COMMIT [RESUME]`
+uses `command_stealth_combined.json`:50,500total iterations,500WM-only plus
+50,000actor-enabled. OptionalRESUME restores the complete matching checkpoint;
+it neither repeats the arm initialization nor resets learned models or optimizers.
+The stored plan counts updates already completed and remaining. A partial
+warmup resume completes only its remaining warmup.
+
+Review iterations are2500,5500,10500,20500,30500,40500and50500, omitting
+already completed milestones when resuming into a fresh continuation directory.
+Each review uses24held-forwardworlds,90allninecommandworlds and18release-sequence
+worlds. Videos preserve the first attempts, including failures, with front/side
+views. Full checkpoints remain every250iterations, immutable copies every500.
+
+The full50,000actor budget continues through valid quality regressions. Runtime
 errors, source/input changes and explicitSTOP stop with receipts. No policy
 export or quality claim is automatic. Validate forward/backward whole-sole
 lift, sliding, asymmetry, hopping, startup lean, arms and release visually.

@@ -35,11 +35,11 @@ def test_combined_changes_only_amp_and_entry_cost_and_keeps_all_joint_gradients(
     prior = parse_args([*BASE, "--config", str(CONFIGS / "command_stealth_autonomous.json")])
     changed = {name for name in vars(prior)
                if getattr(prior, name) != getattr(combined, name)}
-    assert changed == {"config", "style_feature_mode", "entry_style_weight"}
+    assert changed == {"config", "iterations", "style_feature_mode", "entry_style_weight"}
     assert combined.style_feature_mode == "postural_end_effectors_vx"
     assert combined.entry_style_weight == .008
     assert combined.entry_duration_s == 1.21
-    assert combined.iterations - combined.wm_only_iters >= 5000
+    assert combined.iterations - combined.wm_only_iters == 50000
     assert combined.foot_slide_weight == .04 and combined.feet_close_weight == .08
     assert combined.foot_slip_mode == "g1_sole" and not combined.differentiate_support
     assert not combined.stealth_upper_body_constraint

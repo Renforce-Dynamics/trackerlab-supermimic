@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
-if [ "$#" -ne 5 ]; then
-    printf 'usage: run_g1_stealth_combined.sh PYTHON RUN SOURCE NATURAL_POOL SOURCE_COMMIT\n' >&2
+if [ "$#" -lt 5 ] || [ "$#" -gt 6 ]; then
+    printf 'usage: run_g1_stealth_combined.sh PYTHON RUN SOURCE NATURAL_POOL SOURCE_COMMIT [RESUME]\n' >&2
     exit 2
 fi
 python=$1
@@ -9,6 +9,7 @@ run=$2
 initial=$3
 pool=$4
 pin=$5
+resume=${6:-}
 repo=$(git rev-parse --show-toplevel)
 config=$repo/scripts/rls/supermimic/configs/command_stealth_combined.json
 test "$(git rev-parse HEAD)" = "$pin"
@@ -40,9 +41,21 @@ check_stop() {
 }
 printf '%s\n' "$BASHPID" > "$run/controller.pid"
 printf '%s\n' "$pin" > "$run/code.receipt"
-printf '5500\n' > "$run/target_iterations"
-printf '5000\n' > "$run/actor_update_budget"
+plan_options=()
+if [ -n "$resume" ]; then plan_options=(--resume "$resume"); fi
+budget=$(CUDA_VISIBLE_DEVICES='' "$python" scripts/rls/supermimic/combined_training_budget.py \
+    "${plan_options[@]}" --output "$run/training_budget.json")
+read -r -a budget_values <<< "$budget"
+start=${budget_values[0]}
+final=${budget_values[1]}
+milestones=("${budget_values[@]:2}")
+test "$final" = 50500
+test "${#milestones[@]}" -gt 0
+printf '%s\n' "$start" > "$run/starting_iteration"
+printf '%s\n' "$final" > "$run/target_iterations"
+printf '50000\n' > "$run/actor_update_budget"
 sha256sum "$initial" "$pool/manifest.json" "$pool/train.json" "$config" > "$run/input.receipt"
+if [ -n "$resume" ]; then sha256sum "$resume" >> "$run/input.receipt"; fi
 set_phase waiting_gpu
 while true; do
     check_stop
@@ -53,7 +66,8 @@ while true; do
 done
 export OMP_NUM_THREADS=8 MKL_NUM_THREADS=8 MKL_THREADING_LAYER=SEQUENTIAL MUJOCO_GL=egl
 source=(--warm-start "$initial")
-for target in 2500 5500; do
+if [ -n "$resume" ]; then source=(--resume "$resume"); fi
+for target in "${milestones[@]}"; do
     check_stop
     test "$(git rev-parse HEAD)" = "$pin"
     test -z "$(git status --porcelain)"
@@ -110,4 +124,4 @@ for target in 2500 5500; do
     printf 'recorded_awaiting_visual_review\n' > "$stage/status"
     source=(--resume "$checkpoint")
 done
-set_phase completed_5500_awaiting_visual_review
+set_phase "completed_${final}_awaiting_visual_review"

@@ -2,7 +2,7 @@
   "task": "command",
   "task_profile": "stealth",
   "num_envs": 1024,
-  "iterations": 5500,
+  "iterations": 50500,
   "seed": 42,
   "utd": 0.4,
   "horizon": 32,

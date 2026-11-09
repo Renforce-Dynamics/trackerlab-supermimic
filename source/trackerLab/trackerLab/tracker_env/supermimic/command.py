@@ -652,6 +652,10 @@ class CommandSim(TerrainSim):
             penalty = self.entry_upper_body_reward_fn(S1, c1)
             reward = reward + penalty
             reward_terms["entry_upper_body"] = penalty
+        if hasattr(self, "entry_style_reward_fn"):
+            penalty = self.entry_style_reward_fn(S1, c1)
+            reward = reward + penalty
+            reward_terms["entry_style"] = penalty
         terminal_reward = self.mdp.terminal_reward(success, fallen)
         reward_terms["terminal"] = terminal_reward
         reward = torch.nan_to_num(reward + terminal_reward, nan=-FALL_PENALTY,

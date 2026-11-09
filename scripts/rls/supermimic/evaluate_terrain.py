@@ -551,6 +551,14 @@ def main():
             env, kin, field, env.contract["motors_effort_velocity_kp_kd_armature"], ck,
             upper_body_constraint=upper_body_constraint,
         )
+        entry_style_config = ck.get("entry_style_guidance")
+        if entry_style_config is not None:
+            from trackerLab.algorithms.supermimic.stealth_entry_style import EntryStyleGuidance
+            if (entry_style_config.get("duration") != mdp.entry_duration_s
+                    or entry_style_config.get("weight") != ck["arguments"].get("entry_style_weight")
+                    or entry_style_config.get("expert_hash") != ck["amp_style"]["expert_hash"]):
+                raise ValueError("Saved entry style guidance differs from checkpoint objective")
+            env.entry_style_reward_fn = EntryStyleGuidance(kin, entry_style_config).reward
         quality_sum = torch.zeros(5, device=device)
         style_history = style.frame_features(env.state())[:, None].expand(
             -1, style.history_steps, -1).clone()
@@ -753,6 +761,7 @@ def main():
               "waist_pd_scale": ck["arguments"].get("waist_pd_scale", 1.),
               "foot_slip_mode": ck["arguments"].get("foot_slip_mode", "legacy"),
               "differentiate_support": ck["arguments"].get("differentiate_support", False),
+              "entry_style_guidance": ck.get("entry_style_guidance"),
               "upper_body_rate_limit": rate_limiter_config,
               "stealth_control_mode": ck["arguments"].get("stealth_control_mode", "fixed"),
               **training_metadata,
@@ -769,6 +778,8 @@ def main():
             command_sum, command_count, motion_sum, style_sum, quality_sum,
             ck.get("command_envelope"), keyboard_mode_sums,
             episode_mode_sums, episode_total_sums, episode_attribution))
+        if ck.get("entry_style_guidance") is not None:
+            result["task_return_definition"]["components"].append("entry_style_guidance")
     if upper_body_sums is not None:
         count = upper_body_sums[2].clamp_min(1) * len(upper_body_constraint.upper_joint_names)
         result["upper_body_metrics"] = {

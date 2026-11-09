@@ -121,6 +121,8 @@ def parse_args(argv=None):
     parser.add_argument("--upper-body-acceleration", type=float, default=0.,
                         help="Arm target acceleration in rad/s2; zero retains each controller's default")
     parser.add_argument("--entry-duration-s", type=float, default=0.)
+    parser.add_argument("--entry-style-weight", type=float, default=0.,
+                        help="Opt-in training-only torso entry cost with autonomous joints")
     parser.add_argument("--grounded-start", action="store_true")
     parser.add_argument("--standing-joint-noise", type=float, default=0.)
     parser.add_argument("--clearance-ratio", type=float, default=1.)
@@ -157,6 +159,12 @@ def validate_upper_body_options(args, task):
         raise ValueError("Upper-body rate must be finite and positive")
     if not math.isfinite(args.upper_body_acceleration) or args.upper_body_acceleration < 0:
         raise ValueError("Upper-body acceleration must be finite and nonnegative")
+    if (not math.isfinite(args.entry_style_weight) or not 0 <= args.entry_style_weight <= .04):
+        raise ValueError("Entry style weight must be finite and in [0, .04]")
+    if args.entry_style_weight and (
+            (task.robot, task.profile) != ("g1", "stealth") or args.entry_duration_s <= 0
+            or args.waist_entry_reference or args.stealth_upper_body_constraint):
+        raise ValueError("Entry style guidance requires G1 stealth, a positive clock and autonomous joints")
 
 
 def build_upper_body_rate_limiter(args, spec):
@@ -795,6 +803,28 @@ def main():
     resume_checkpoint = (
         torch.load(args.resume.resolve(), map_location=args.device, weights_only=False)
         if args.resume else None)
+    entry_style_config = None
+    entry_style_guidance = None
+    if args.entry_style_weight:
+        from trackerLab.algorithms.supermimic.stealth_entry_style import (
+            EntryStyleGuidance, calibrate_entry_config,
+        )
+        if resume_checkpoint is not None:
+            entry_style_config = resume_checkpoint.get("entry_style_guidance")
+            if (not isinstance(entry_style_config, dict)
+                    or entry_style_config.get("weight") != args.entry_style_weight
+                    or entry_style_config.get("duration") != args.entry_duration_s
+                    or entry_style_config.get("expert_hash") != style.expert_hash):
+                raise ValueError("Resume entry style guidance differs from saved objective/source")
+        else:
+            from prepare_stealth_waist_entry import prepare as prepare_entry_reference
+            reference = prepare_entry_reference(args.amp_motion_config.resolve().parent)
+            entry_style_config = calibrate_entry_config(
+                kin, motion, reference, weight=args.entry_style_weight,
+                duration=args.entry_duration_s, expert_hash=style.expert_hash)
+        entry_style_guidance = EntryStyleGuidance(kin, entry_style_config)
+    elif resume_checkpoint is not None and resume_checkpoint.get("entry_style_guidance") is not None:
+        raise ValueError("Resume cannot remove saved entry style guidance")
     previous_command_margin = (
         resume_checkpoint["arguments"].get("command_margin_steps")
         if resume_checkpoint is not None else None)
@@ -966,6 +996,7 @@ def main():
                        "stdout_wm_per_step": "csv_wm_loss divided by wm_window",
                        "optimized_objective_changed": False,
                    },
+                   "entry_style_guidance": entry_style_config,
                    "jump_commands": {"height_m": args.jump_height,
                                      "probability": args.jump_probability,
                                      "duration_seconds": .8},
@@ -1015,6 +1046,7 @@ def main():
 
     style_reward_fn = style.reward_from_features
     style_frame_fn = style.frame_features
+    entry_style_reward_fn = entry_style_guidance.reward if entry_style_guidance else None
     if upper_body_constraint is None or args.entry_duration_s:
         regularization_reward_fn = quality.reward
     else:
@@ -1034,12 +1066,16 @@ def main():
         collect_actor = torch.compile(actor, mode="reduce-overhead")
         style_reward_fn = torch.compile(style_reward_fn)
         style_frame_fn = torch.compile(style_frame_fn)
+        if entry_style_reward_fn is not None:
+            entry_style_reward_fn = torch.compile(entry_style_reward_fn)
         regularization_reward_fn = torch.compile(regularization_reward_fn)
         command_outputs_fn = torch.compile(command_outputs_fn)
     else:
         collect_actor = actor
     env.locomotion_reward_fn = regularization_reward_fn
     env.command_outputs_fn = command_outputs_fn
+    if entry_style_reward_fn is not None:
+        env.entry_style_reward_fn = entry_style_reward_fn
     if upper_body_constraint is not None and args.entry_duration_s:
         def entry_upper_body_reward(state, c):
             if upper_body_constraint.entry_duration_s:
@@ -1167,6 +1203,9 @@ def main():
             xi.unsqueeze(0).expand(args.horizon, -1, -1).flatten(0, 1))
         if upper_body_constraint is not None and getattr(args, "entry_duration_s", 0.):
             reward = reward + entry_upper_body_reward(
+                tuple(value.flatten(0, 1) for value in states), flat_c)
+        if entry_style_reward_fn is not None:
+            reward = reward + entry_style_reward_fn(
                 tuple(value.flatten(0, 1) for value in states), flat_c)
         style_frames = style_frame_fn(states)
         style_windows = style.rollout_features(style_history, style_frames).flatten(0, 1)
@@ -1362,6 +1401,7 @@ def main():
                               "critic": critic.state_dict(), "opt_wm": opt_wm.state_dict(),
                               "opt_pi": opt_pi.state_dict(), "opt_v": opt_v.state_dict(),
                               "amp_style": style.checkpoint(),
+                              "entry_style_guidance": entry_style_config,
                               "stealth_waist_constraint": waist_config,
                               "waist_reference_receipt": waist_reference_receipt,
                               "stealth_upper_body_constraint": upper_body_config,

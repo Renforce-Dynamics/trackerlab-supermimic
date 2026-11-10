@@ -290,7 +290,9 @@ def attach_locomotion_quality(env, kin, field, motors, checkpoint,
         foot_slide_weight=checkpoint.get("arguments", {}).get("foot_slide_weight", .008),
         feet_close_weight=checkpoint.get("arguments", {}).get("feet_close_weight", .008),
         foot_slip_mode=checkpoint.get("arguments", {}).get("foot_slip_mode", "legacy"),
-        differentiate_support=checkpoint.get("arguments", {}).get("differentiate_support", False))
+        differentiate_support=checkpoint.get("arguments", {}).get("differentiate_support", False),
+        stealth_gait_weight=checkpoint.get("arguments", {}).get("stealth_gait_weight", 0.),
+        entry_duration_s=checkpoint.get("arguments", {}).get("entry_duration_s", 0.))
     sole_height = torch.as_tensor(
         checkpoint["quality_sole_height"], device=kin.device, dtype=quality.sole_height.dtype)
     if sole_height.shape != quality.sole_height.shape or not bool(torch.isfinite(sole_height).all()):
@@ -305,6 +307,8 @@ def attach_locomotion_quality(env, kin, field, motors, checkpoint,
                 upper_body_constraint.posture_reward(state)
             )
         env.locomotion_reward_fn = reward
+    if quality.stealth_gait_weight:
+        env.command_locomotion_reward_fn = quality.command_reward
     if upper_body_constraint is not None and duration:
         from trackerLab.tracker_env.mdp.supermimic_command import entry_blend
         def entry_reward(state, c):

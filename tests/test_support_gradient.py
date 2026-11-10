@@ -31,6 +31,8 @@ def point_quality(differentiate_support=False):
     quality.field = Plane()
     quality.foot_slip_mode = "g1_sole"
     quality.differentiate_support = differentiate_support
+    quality.stealth_gait_weight = 0.
+    quality.entry_duration_s = 0.
     quality.biped = True
     quality.sole_centers = torch.zeros(2, 1, 3, dtype=torch.float64)
     quality.sole_radii = torch.zeros(2, 1, dtype=torch.float64)

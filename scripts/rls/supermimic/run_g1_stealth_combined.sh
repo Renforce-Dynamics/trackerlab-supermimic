@@ -11,7 +11,16 @@ pool=$4
 pin=$5
 resume=${6:-}
 repo=$(git rev-parse --show-toplevel)
-config=$repo/scripts/rls/supermimic/configs/command_stealth_combined.json
+recipe=${SUPERMIMIC_STEALTH_RECIPE:-combined}
+budget_recipe=()
+case "$recipe" in
+    combined) config=$repo/scripts/rls/supermimic/configs/command_stealth_combined.json ;;
+    velocity-led)
+        config=$repo/scripts/rls/supermimic/configs/command_stealth_velocity_led.json
+        budget_recipe=(--recipe velocity-led)
+        ;;
+    *) printf 'unknown stealth recipe: %s\n' "$recipe" >&2; exit 2 ;;
+esac
 test "$(git rev-parse HEAD)" = "$pin"
 test -z "$(git status --porcelain)"
 test ! -e "$run/controller.phase"
@@ -44,7 +53,7 @@ printf '%s\n' "$pin" > "$run/code.receipt"
 plan_options=()
 if [ -n "$resume" ]; then plan_options=(--resume "$resume"); fi
 budget=$(CUDA_VISIBLE_DEVICES='' "$python" scripts/rls/supermimic/combined_training_budget.py \
-    "${plan_options[@]}" --output "$run/training_budget.json")
+    "${plan_options[@]}" "${budget_recipe[@]}" --output "$run/training_budget.json")
 read -r -a budget_values <<< "$budget"
 start=${budget_values[0]}
 final=${budget_values[1]}

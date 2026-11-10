@@ -126,6 +126,21 @@ class CommandEvaluationTests(unittest.TestCase):
                         [(20., 12., 25., .5, .01)] * 4, {"quality_sole_height": heights})
                 self.assertFalse(hasattr(sim, "locomotion_reward_fn"))
 
+    def test_command_quality_receives_poststep_command_without_double_regularization(self):
+        sim = CpuCommandSim(max_episode_steps=1)
+        seen = []
+        def command_quality(previous, state, action, xi, command):
+            seen.append(command.clone())
+            return -.02 * torch.ones_like(command[:, 0])
+        def old_quality(*args):
+            raise AssertionError("command quality already contains base regularization")
+        sim.command_locomotion_reward_fn = command_quality
+        sim.locomotion_reward_fn = old_quality
+        transition = sim.step(torch.zeros(1, 4))
+        torch.testing.assert_close(seen[0], transition["c1"])
+        torch.testing.assert_close(transition["reward_terms"]["locomotion_regularization"],
+                                   torch.tensor([-.02]))
+
     def test_report_preserves_motion_evidence_and_separates_amp_from_task_return(self):
         result = command_evaluation_summary(
             torch.tensor([.08, .18, .02]), torch.tensor(2.),

@@ -644,8 +644,10 @@ class CommandSim(TerrainSim):
         terminated = fallen | success
         if not self.mdp.terrain_navigation:
             success = timeout & ~fallen & (fraction >= .8) & (self.ep_step >= self.min_success_steps)
-        if hasattr(self, "locomotion_reward_fn"):
-            penalty = self.locomotion_reward_fn(S0, S1, a, self.xi)
+        if hasattr(self, "command_locomotion_reward_fn") or hasattr(self, "locomotion_reward_fn"):
+            penalty = (self.command_locomotion_reward_fn(S0, S1, a, self.xi, c1)
+                       if hasattr(self, "command_locomotion_reward_fn") else
+                       self.locomotion_reward_fn(S0, S1, a, self.xi))
             reward = reward + penalty
             reward_terms["locomotion_regularization"] = penalty
         if hasattr(self, "entry_upper_body_reward_fn"):

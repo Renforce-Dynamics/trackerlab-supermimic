@@ -46,9 +46,12 @@ class LocomotionQuality:
 
     def __init__(self, kin, field, motors, *, foot_slide_weight=.008,
                  feet_close_weight=.008, foot_slip_mode="legacy",
-                 differentiate_support=False):
+                 differentiate_support=False, stealth_gait_weight=0.,
+                 entry_duration_s=0.):
         for name, value in (("foot_slide_weight", foot_slide_weight),
-                            ("feet_close_weight", feet_close_weight)):
+                            ("feet_close_weight", feet_close_weight),
+                            ("stealth_gait_weight", stealth_gait_weight),
+                            ("entry_duration_s", entry_duration_s)):
             if (isinstance(value, bool) or not isinstance(value, (int, float))
                     or not math.isfinite(value) or value < 0):
                 raise ValueError(f"{name} must be finite and nonnegative")
@@ -60,11 +63,15 @@ class LocomotionQuality:
             raise ValueError("differentiate_support requires foot_slip_mode='g1_sole'")
         if foot_slip_mode == "g1_sole" and kin.robot.name != "g1":
             raise ValueError("g1_sole is supported only for G1")
+        if stealth_gait_weight and (foot_slip_mode != "g1_sole" or stealth_gait_weight > .04):
+            raise ValueError("Gait shaping requires g1_sole and a weight at most .04")
         self.kin, self.field = kin, field
         self.foot_slip_mode = foot_slip_mode
         self.differentiate_support = differentiate_support
         self.foot_slide_weight = float(foot_slide_weight)
         self.feet_close_weight = float(feet_close_weight)
+        self.stealth_gait_weight = float(stealth_gait_weight)
+        self.entry_duration_s = float(entry_duration_s)
         spec = kin.robot
         tracked = [kin.body_names[index] for index in kin.tracked_idx]
         self.feet = [tracked.index(name) for name in FOOT_BODIES[spec.name]]
@@ -145,6 +152,9 @@ class LocomotionQuality:
             slip = (speed * weights).sum((-1, -2))
             support = point_support.amax(-1)
             extra["sole_support_heuristic"] = point_support
+            if self.stealth_gait_weight:
+                extra["sole_point_height_m"] = height
+                extra["sole_point_velocity_m_s"] = point_velocity
         else:
             height = position[..., 2] - self.field.sample(position[..., :2]) - self.sole_height
             support = torch.sigmoid((.02 * scale - height) / (.01 * scale))
@@ -174,6 +184,18 @@ class LocomotionQuality:
 
     def reward(self, previous_state, state, action, xi):
         metrics = self.measurements(state, previous_state)
+        return self._reward_from_measurements(state, action, xi, metrics)
+
+    def command_reward(self, previous_state, state, action, xi, command):
+        from .stealth_gait import command_gait_penalty
+        metrics = self.measurements(state, previous_state)
+        penalty = command_gait_penalty(
+            metrics["sole_point_height_m"], metrics["sole_point_velocity_m_s"], command,
+            scale=self.field.scale, weight=self.stealth_gait_weight,
+            foot_slide_weight=self.foot_slide_weight, entry_duration_s=self.entry_duration_s)
+        return self._reward_from_measurements(state, action, xi, metrics) + penalty
+
+    def _reward_from_measurements(self, state, action, xi, metrics):
         target = (self.default_q + xi[..., 1:-3] + action * self.action_scale).clamp(
             self.qlo, self.qhi)
         torque = (self.kp * (target - state[4]) - self.kd * state[5]).clamp(

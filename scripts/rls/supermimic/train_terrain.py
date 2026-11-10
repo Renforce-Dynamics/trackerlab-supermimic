@@ -93,13 +93,15 @@ def parse_args(argv=None):
                         help="Explicit G1 posture AMP to signed-vx adaptation in a fresh run")
     parser.add_argument("--style-bootstrap-updates", type=int, default=200,
                         help="Real-data AMP-only updates before an explicit feature adaptation")
-    parser.add_argument("--wasd-reward-version", type=int, choices=(1, 2), default=1)
+    parser.add_argument("--wasd-reward-version", type=int, choices=(1, 2, 3), default=1)
     parser.add_argument("--style-feature-mode", choices=("full", "proprioceptive", "postural",
                                                        "postural_end_effectors", "postural_end_effectors_vx"),
                         default="proprioceptive")
     parser.add_argument("--reference-reset-probability", type=float, default=.7)
     parser.add_argument("--foot-slide-weight", type=float, default=.008)
     parser.add_argument("--feet-close-weight", type=float, default=.008)
+    parser.add_argument("--stealth-gait-weight", type=float, default=0.,
+                        help="Optional command-gated whole-sole swing/support shaping for G1 stealth")
     parser.add_argument("--foot-slip-mode", choices=("legacy", "g1_sole"), default="legacy")
     parser.add_argument("--differentiate-support", action="store_true",
                         help="Experimental G1 sole-support gradient; forward rewards unchanged")
@@ -165,6 +167,8 @@ def validate_upper_body_options(args, task):
             (task.robot, task.profile) != ("g1", "stealth") or args.entry_duration_s <= 0
             or args.waist_entry_reference or args.stealth_upper_body_constraint):
         raise ValueError("Entry style guidance requires G1 stealth, a positive clock and autonomous joints")
+    if args.stealth_gait_weight and args.stealth_upper_body_constraint:
+        raise ValueError("Gait shaping requires learned arm actions")
 
 
 def build_upper_body_rate_limiter(args, spec):
@@ -247,8 +251,8 @@ def validate_command_curriculum_options(args):
     if reward == "wasd" and args.stealth_control_mode != "wasd":
         raise ValueError("WASD rewards require WASD control")
     effective = reward or ("wasd" if args.stealth_control_mode == "wasd" else "legacy")
-    if args.wasd_reward_version == 2 and effective != "wasd":
-        raise ValueError("WASD reward version 2 requires WASD rewards")
+    if args.wasd_reward_version >= 2 and effective != "wasd":
+        raise ValueError("WASD reward versions 2 and 3 require WASD rewards")
     if args.allow_command_sampling_change and not args.resume:
         raise ValueError("Explicit command-sampling adaptation requires full --resume")
     if args.allow_command_reward_change:
@@ -616,6 +620,11 @@ def main():
     if (isinstance(args.feet_close_weight, bool)
             or not math.isfinite(args.feet_close_weight) or args.feet_close_weight < 0):
         raise SystemExit("Feet-close weight must be finite and nonnegative")
+    if (not math.isfinite(args.stealth_gait_weight) or not 0 <= args.stealth_gait_weight <= .04
+            or args.stealth_gait_weight and (
+                (task.robot, task.profile, args.foot_slip_mode, args.wasd_reward_version)
+                != ("g1", "stealth", "g1_sole", 3))):
+        raise SystemExit("Gait shaping requires G1 stealth, g1_sole, WASD-v3 and a weight in [0, .04]")
     reference_receipt = validate_style_references(args.amp_motion_config, task.robot)
     if not torch.cuda.is_available():
         raise RuntimeError("Terrain training requires CUDA")
@@ -757,7 +766,8 @@ def main():
         kin, field, contract["motors_effort_velocity_kp_kd_armature"],
         foot_slide_weight=args.foot_slide_weight,
         feet_close_weight=args.feet_close_weight, foot_slip_mode=args.foot_slip_mode,
-        differentiate_support=args.differentiate_support)
+        differentiate_support=args.differentiate_support,
+        stealth_gait_weight=args.stealth_gait_weight, entry_duration_s=args.entry_duration_s)
     quality.calibrate(motion)
     command_envelope = None
     if task.profile == "stealth" and args.stealth_control_mode in ("keyboard", "wasd"):
@@ -862,6 +872,8 @@ def main():
                      "self_collisions", "reference_reset_probability"):
             if ck["arguments"].get(name) != getattr(args, name):
                 raise ValueError(f"Resume {name} differs from the saved objective")
+        if ck["arguments"].get("stealth_gait_weight", 0.) != args.stealth_gait_weight:
+            raise ValueError("Resume gait shaping differs; use --warm-start in a new run")
         if (ck["arguments"].get("physical_domain_randomization", False)
                 != args.physical_domain_randomization):
             raise ValueError("Changed physical domain requires --warm-start in a new run")
@@ -986,6 +998,7 @@ def main():
                                           "feet_close_weight": quality.feet_close_weight,
                                           "foot_slip_mode": quality.foot_slip_mode,
                                           "differentiate_support": quality.differentiate_support,
+                                          "stealth_gait_weight": quality.stealth_gait_weight,
                                           "sole_height": quality.sole_height.cpu().tolist()},
                    "style": {"motion_config": str(args.amp_motion_config.resolve()),
                              "training_only": True, "weight": args.amp_weight,
@@ -1055,6 +1068,7 @@ def main():
                 upper_body_constraint.posture_reward(state)
             )
     command_outputs_fn = mdp.transition_outputs
+    command_regularization_fn = quality.command_reward if args.stealth_gait_weight else None
     from warp_runtime.critic_runtime import make_critic_minibatch_loss
     critic_loss_fn = make_critic_minibatch_loss(
         critic, compile_enabled=args.compile and args.compile_critic)
@@ -1069,10 +1083,14 @@ def main():
         if entry_style_reward_fn is not None:
             entry_style_reward_fn = torch.compile(entry_style_reward_fn)
         regularization_reward_fn = torch.compile(regularization_reward_fn)
+        if command_regularization_fn is not None:
+            command_regularization_fn = torch.compile(command_regularization_fn)
         command_outputs_fn = torch.compile(command_outputs_fn)
     else:
         collect_actor = actor
     env.locomotion_reward_fn = regularization_reward_fn
+    if command_regularization_fn is not None:
+        env.command_locomotion_reward_fn = command_regularization_fn
     env.command_outputs_fn = command_outputs_fn
     if entry_style_reward_fn is not None:
         env.entry_style_reward_fn = entry_style_reward_fn
@@ -1197,10 +1215,14 @@ def main():
                                    torch.stack(previous).flatten(0, 1), flat_c)
         preceding = tuple(torch.cat((initial[i][None], states[i][:-1]), 0).flatten(0, 1)
                           for i in range(6))
-        reward = reward + regularization_reward_fn(
+        regularization_inputs = (
             preceding, tuple(value.flatten(0, 1) for value in states),
             torch.stack(actions).flatten(0, 1),
             xi.unsqueeze(0).expand(args.horizon, -1, -1).flatten(0, 1))
+        if command_regularization_fn is not None:
+            reward = reward + command_regularization_fn(*regularization_inputs, flat_c)
+        else:
+            reward = reward + regularization_reward_fn(*regularization_inputs)
         if upper_body_constraint is not None and getattr(args, "entry_duration_s", 0.):
             reward = reward + entry_upper_body_reward(
                 tuple(value.flatten(0, 1) for value in states), flat_c)

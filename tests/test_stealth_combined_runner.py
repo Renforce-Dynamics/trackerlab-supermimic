@@ -121,3 +121,14 @@ def test_owner_stop_during_resumed_training_keeps_latest_checkpoint(case):
     assert calls(case, "train")[0]["resume"] == case.resume.as_posix()
     assert not calls(case, "evaluate")
     assert_inputs_preserved(case)
+
+
+def test_velocity_led_selects_new_preset_with_same_preserved_review_budget(case):
+    configure(case)
+    preset = case.root / "scripts/rls/supermimic/configs/command_stealth_velocity_led.json"
+    preset.write_text("{}\n", encoding="ascii")
+    case.env["SUPERMIMIC_STEALTH_RECIPE"] = "velocity-led"
+    run_to_exit(case)
+    assert len(calls(case, "train")) == 7
+    assert len(calls(case, "evaluate")) == 21
+    assert "command_stealth_velocity_led.json" in (case.run / "input.receipt").read_text()

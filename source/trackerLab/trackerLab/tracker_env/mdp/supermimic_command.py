@@ -24,6 +24,7 @@ CONTROL_DT = .02
 JUMP_DURATION = .8
 ACTION_LIMIT = 4.
 COMMAND_MAX_STEP_REWARD = .152
+WASD_V3_MAX_STEP_REWARD = .312
 COMMAND_FIELDS = (
     "lane_center_world_y", "body_vx", "body_vy", "body_wz",
     "target_clearance_m", "jump_height_m", "jump_elapsed_seconds",
@@ -216,9 +217,9 @@ class CommandMDP(TerrainMDP):
             raise ValueError("reward_control_mode must be legacy or wasd")
         if reward_control_mode == "wasd" and control_mode != "wasd":
             raise ValueError("WASD rewards require WASD control")
-        if (type(wasd_reward_version) is not int or wasd_reward_version not in (1, 2)
-                or (wasd_reward_version == 2 and control_mode != "wasd")):
-            raise ValueError("Reward version 2 requires WASD; supported versions are 1 and 2")
+        if (type(wasd_reward_version) is not int or wasd_reward_version not in (1, 2, 3)
+                or (wasd_reward_version >= 2 and control_mode != "wasd")):
+            raise ValueError("Reward versions 2 and 3 require WASD; supported versions are 1, 2 and 3")
         super().__init__(field, default_q, qlo, qhi, gamma)
         self.profile = profile
         self.control_mode = control_mode
@@ -246,7 +247,9 @@ class CommandMDP(TerrainMDP):
         """Replace the lost task and bounded AMP continuation at terrain goals."""
         if not math.isfinite(weight) or weight < 0:
             raise ValueError("Style weight must be finite and nonnegative")
-        maximum = COMMAND_MAX_STEP_REWARD + weight
+        task_maximum = (WASD_V3_MAX_STEP_REWARD if self.wasd_reward_version == 3
+                        else COMMAND_MAX_STEP_REWARD)
+        maximum = task_maximum + weight
         success = SUCCESS_BONUS + self.gamma * maximum / (1 - self.gamma)
         if not math.isfinite(success):
             raise ValueError("Style weight produces a nonfinite terminal payout")
@@ -320,6 +323,20 @@ class CommandMDP(TerrainMDP):
             projected = projected / speed.clamp_min(.01)
             dont_wait = (-.01 * (speed > .15).to(ev.dtype)
                          * torch.sigmoid((.1 - projected) / .03))
+            if self.wasd_reward_version == 3:
+                # Task compliance must outweigh a high-scoring static motion prior.
+                velocity_reward = .12 * torch.exp(-ev / torch.where(
+                    speed > .1, WASD_VELOCITY_TOLERANCE,
+                    WASD_STATIONARY_VELOCITY_TOLERANCE).square())
+                yaw_reward = .08 * torch.exp(-ew / .35**2)
+                translating = (speed > .1).to(ev.dtype)
+                turning = (c[..., 3].abs() > .1).to(ev.dtype)
+                directed_yaw = w_body[..., 2] * torch.sign(c[..., 3])
+                dont_wait = -.04 * (
+                    translating * torch.sigmoid((.5 * speed - projected) / .04)
+                    + turning * torch.sigmoid((.5 * c[..., 3].abs() - directed_yaw) / .08)
+                )
+                progress = .04 * translating * (projected / speed.clamp_min(.01)).clamp(0., 1.)
         values = (
             velocity_reward, yaw_reward,
             torch.full_like(ev, .06), -.06 * (1 - R[..., 2, 2]),

@@ -79,3 +79,14 @@ def test_only_complete_matching_checkpoint_can_resume():
             checkpoint_start(ck)
     with pytest.raises(ValueError, match="saved"):
         checkpoint_start(checkpoint(0))
+
+
+def test_velocity_led_resume_rejects_original_combined_recipe():
+    ck = checkpoint(5500)
+    with pytest.raises(ValueError, match="matching"):
+        checkpoint_start(ck, "velocity-led")
+    ck["arguments"].update(entry_duration_s=.60, wasd_reward_version=3,
+                           stealth_gait_weight=.02, amp_weight=.05)
+    assert checkpoint_start(ck, "velocity-led") == 5500
+    with pytest.raises(ValueError, match="matching"):
+        checkpoint_start(ck)

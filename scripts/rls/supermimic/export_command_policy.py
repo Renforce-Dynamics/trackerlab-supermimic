@@ -29,10 +29,14 @@ def command_training_metadata(checkpoint):
     if reward_mode not in ("legacy", "wasd"):
         raise ValueError("command_reward_mode must be 'legacy' or 'wasd'")
     training_modes = arguments.get("command_training_modes")
-    return {
+    metadata = {
         "command_reward_mode": reward_mode,
         "training_command_modes": None if training_modes is None else list(training_modes),
     }
+    if arguments.get("wasd_reward_version", 1) >= 3:
+        metadata["wasd_reward_version"] = arguments["wasd_reward_version"]
+        metadata["stealth_gait_weight"] = arguments.get("stealth_gait_weight", 0.)
+    return metadata
 
 
 def command_actuator_metadata(checkpoint, spec):

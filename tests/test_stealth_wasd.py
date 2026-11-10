@@ -78,7 +78,7 @@ class StealthWasdTests(unittest.TestCase):
             exact[2][:, :2], exact[3][:, 2] = commands[:, 1:3], commands[:, 3]
             reward = mdp.reward(exact, action, action, commands)
             self.assertTrue(bool((reward <= COMMAND_MAX_STEP_REWARD).all()))
-        for version in (0, 3, True, "2"):
+        for version in (0, 4, True, "2"):
             with self.subTest(version=version), self.assertRaises(ValueError):
                 wasd_mdp(wasd_reward_version=version)
         with self.assertRaises(ValueError):

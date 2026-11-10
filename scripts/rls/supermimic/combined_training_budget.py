@@ -29,7 +29,7 @@ def plan(start_iteration=0):
     }
 
 
-def checkpoint_start(checkpoint):
+def checkpoint_start(checkpoint, recipe="combined"):
     args = checkpoint.get("arguments", {})
     expected = {
         "wm_only_iters": WARMUP_ITERATIONS,
@@ -40,6 +40,11 @@ def checkpoint_start(checkpoint):
         "waist_pd_scale": 1.,
         "freeze_actor_normalization": True,
     }
+    if recipe == "velocity-led":
+        expected.update(entry_duration_s=.60, wasd_reward_version=3,
+                        stealth_gait_weight=.02, amp_weight=.05)
+    elif recipe != "combined":
+        raise ValueError("Unknown stealth recipe")
     if (checkpoint.get("task") != "locomotion/g1/stealth"
             or checkpoint.get("training_stage") != "command-style"
             or not isinstance(args, dict)
@@ -62,12 +67,14 @@ def checkpoint_start(checkpoint):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--resume", type=Path)
+    parser.add_argument("--recipe", choices=("combined", "velocity-led"), default="combined")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     start = 0
     if args.resume is not None:
         import torch
-        start = checkpoint_start(torch.load(args.resume, map_location="cpu", weights_only=False))
+        start = checkpoint_start(
+            torch.load(args.resume, map_location="cpu", weights_only=False), args.recipe)
     result = plan(start)
     with args.output.open("x", encoding="utf-8") as stream:
         json.dump(result, stream, indent=2)

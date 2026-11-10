@@ -40,9 +40,9 @@ def checkpoint_start(checkpoint, recipe="combined"):
         "waist_pd_scale": 1.,
         "freeze_actor_normalization": True,
     }
-    if recipe == "velocity-led":
+    if recipe in ("velocity-led", "shared-aim"):
         expected.update(entry_duration_s=.60, wasd_reward_version=3,
-                        stealth_gait_weight=.02, amp_weight=.05)
+                        stealth_gait_weight=.02, amp_weight=.1 if recipe == "shared-aim" else .05)
     elif recipe != "combined":
         raise ValueError("Unknown stealth recipe")
     if (checkpoint.get("task") != "locomotion/g1/stealth"
@@ -54,6 +54,8 @@ def checkpoint_start(checkpoint, recipe="combined"):
             or not isinstance(checkpoint.get("upper_body_rate_limit"), dict)
             or not isinstance(checkpoint.get("entry_style_guidance"), dict)):
         raise ValueError("Resume requires the matching autonomous combined-stealth checkpoint")
+    if recipe == "shared-aim" and not isinstance(checkpoint.get("aim_style_guidance"), dict):
+        raise ValueError("Shared aim resume requires saved aim guidance")
     for key in ("actor", "world", "critic", "opt_pi", "opt_wm", "opt_v", "amp_style"):
         if not isinstance(checkpoint.get(key), dict):
             raise ValueError(f"Full combined resume is missing {key}")
@@ -67,7 +69,7 @@ def checkpoint_start(checkpoint, recipe="combined"):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--resume", type=Path)
-    parser.add_argument("--recipe", choices=("combined", "velocity-led"), default="combined")
+    parser.add_argument("--recipe", choices=("combined", "velocity-led", "shared-aim"), default="combined")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     start = 0

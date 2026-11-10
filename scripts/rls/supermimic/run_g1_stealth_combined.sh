@@ -13,11 +13,18 @@ resume=${6:-}
 repo=$(git rev-parse --show-toplevel)
 recipe=${SUPERMIMIC_STEALTH_RECIPE:-combined}
 budget_recipe=()
+aim_options=()
 case "$recipe" in
     combined) config=$repo/scripts/rls/supermimic/configs/command_stealth_combined.json ;;
     velocity-led)
         config=$repo/scripts/rls/supermimic/configs/command_stealth_velocity_led.json
         budget_recipe=(--recipe velocity-led)
+        ;;
+    shared-aim)
+        config=$repo/scripts/rls/supermimic/configs/command_stealth_shared_aim.json
+        budget_recipe=(--recipe shared-aim)
+        test -f "$pool/aim-style-reference.json"
+        aim_options=(--aim-style-reference "$pool/aim-style-reference.json")
         ;;
     *) printf 'unknown stealth recipe: %s\n' "$recipe" >&2; exit 2 ;;
 esac
@@ -64,6 +71,7 @@ printf '%s\n' "$start" > "$run/starting_iteration"
 printf '%s\n' "$final" > "$run/target_iterations"
 printf '50000\n' > "$run/actor_update_budget"
 sha256sum "$initial" "$pool/manifest.json" "$pool/train.json" "$config" > "$run/input.receipt"
+if [ "$recipe" = shared-aim ]; then sha256sum "$pool/aim-style-reference.json" >> "$run/input.receipt"; fi
 if [ -n "$resume" ]; then sha256sum "$resume" >> "$run/input.receipt"; fi
 set_phase waiting_gpu
 while true; do
@@ -88,6 +96,7 @@ for target in "${milestones[@]}"; do
     "$python" -u scripts/rls/supermimic/train_terrain.py \
         --task locomotion/g1/stealth --config "$config" --run-dir "$run/training" \
         "${source[@]}" --amp-motion-config "$pool/train.json" \
+        "${aim_options[@]}" \
         --iterations "$target" --buffer-steps 500 --keep-every 500 --ckpt-every 250 \
         --log-every 25 --stop-file "$run/STOP" > "$stage/train.stdout.log" 2>&1
     check_stop

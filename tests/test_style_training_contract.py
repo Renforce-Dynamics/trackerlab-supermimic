@@ -411,6 +411,7 @@ class StyleTrainingContractTests(unittest.TestCase):
             "command_regularization_fn": None,
             "upper_body_constraint": None,
             "entry_style_reward_fn": None,
+            "aim_style_reward_fn": None,
             "action_constraint": None,
             "mdp": mdp, "advance_command": advance_command,
             "normalize_xi": normalize_xi, "unflatten_state": unflatten_state,

@@ -545,6 +545,7 @@ def main():
         action_constraint = compose_entry_waist_constraint(
             action_constraint, ck["stealth_waist_constraint"], device=device).eval()
     style = None
+    aim_guidance, aim_metric_sums, aim_mode_sums = None, None, None
     style_sum = torch.zeros(2, device=device)
     if command_mode:
         from trackerLab.algorithms.supermimic.amp_style import AMPStyle
@@ -555,6 +556,14 @@ def main():
             env, kin, field, env.contract["motors_effort_velocity_kp_kd_armature"], ck,
             upper_body_constraint=upper_body_constraint,
         )
+        if ck.get("aim_style_guidance") is not None:
+            from trackerLab.algorithms.supermimic.stealth_aim_style import AimStyleGuidance
+            aim_guidance = AimStyleGuidance(kin, ck["aim_style_guidance"])
+            if aim_guidance.duration != mdp.entry_duration_s:
+                raise ValueError("Saved aim guidance differs from entry duration")
+            env.aim_style_reward_fn = aim_guidance.reward
+            aim_metric_sums = {}
+            aim_mode_sums = {}
         entry_style_config = ck.get("entry_style_guidance")
         if entry_style_config is not None:
             from trackerLab.algorithms.supermimic.stealth_entry_style import EntryStyleGuidance
@@ -664,6 +673,20 @@ def main():
             clearance_error = ((p[:, 2] - field.sample(p[:, :2])
                                 - target_clearance(evaluated_command)) / field.scale).square()
             valid = ~tr["done"] & (tr["ep_step"] >= 10)
+            if aim_guidance is not None:
+                aim_valid = valid & (tr["c1"][:, 6] >= aim_guidance.duration)
+                aim_metrics = aim_guidance.metrics(unflatten_state(tr["s1"]))
+                for name, metric in aim_metrics.items():
+                    if name not in aim_metric_sums:
+                        aim_metric_sums[name] = torch.zeros(2, device=device)
+                    aim_metric_sums[name] += torch.stack((metric[aim_valid].sum(), aim_valid.sum()))
+                    if keyboard_mode_sums is not None:
+                        if name not in aim_mode_sums:
+                            aim_mode_sums[name] = torch.zeros(
+                                len(keyboard_mode_sums["modes"]), 2, device=device)
+                        ids = tr["stealth_mode_id"][aim_valid]
+                        aim_mode_sums[name][:, 0].scatter_add_(0, ids, metric[aim_valid])
+                        aim_mode_sums[name][:, 1].scatter_add_(0, ids, torch.ones_like(metric[aim_valid]))
             command_sum += torch.stack((velocity_error[valid].sum(), yaw_error[valid].sum(),
                                         clearance_error[valid].sum()))
             command_count += valid.sum()
@@ -766,6 +789,7 @@ def main():
               "foot_slip_mode": ck["arguments"].get("foot_slip_mode", "legacy"),
               "differentiate_support": ck["arguments"].get("differentiate_support", False),
               "entry_style_guidance": ck.get("entry_style_guidance"),
+              "aim_style_guidance": ck.get("aim_style_guidance"),
               "upper_body_rate_limit": rate_limiter_config,
               "stealth_control_mode": ck["arguments"].get("stealth_control_mode", "fixed"),
               **training_metadata,
@@ -784,6 +808,17 @@ def main():
             episode_mode_sums, episode_total_sums, episode_attribution))
         if ck.get("entry_style_guidance") is not None:
             result["task_return_definition"]["components"].append("entry_style_guidance")
+        if aim_metric_sums is not None:
+            result["task_return_definition"]["components"].append("aim_style_guidance")
+            result["aim_style_metrics"] = {
+                name: float((value[0]/value[1].clamp_min(1)).item())
+                for name, value in aim_metric_sums.items()}
+            if keyboard_mode_sums is not None:
+                result["aim_style_metrics_by_mode"] = [
+                    {"name": mode["name"], **{
+                        name: float((value[i, 0]/value[i, 1].clamp_min(1)).item())
+                        for name, value in aim_mode_sums.items()}}
+                    for i, mode in enumerate(keyboard_mode_sums["modes"])]
     if upper_body_sums is not None:
         count = upper_body_sums[2].clamp_min(1) * len(upper_body_constraint.upper_joint_names)
         result["upper_body_metrics"] = {

@@ -125,6 +125,8 @@ def parse_args(argv=None):
     parser.add_argument("--entry-duration-s", type=float, default=0.)
     parser.add_argument("--entry-style-weight", type=float, default=0.,
                         help="Opt-in training-only torso entry cost with autonomous joints")
+    parser.add_argument("--aim-style-reference", type=Path,
+                        help="Training-only source-bound aim pose shared by every command")
     parser.add_argument("--grounded-start", action="store_true")
     parser.add_argument("--standing-joint-noise", type=float, default=0.)
     parser.add_argument("--clearance-ratio", type=float, default=1.)
@@ -169,6 +171,11 @@ def validate_upper_body_options(args, task):
         raise ValueError("Entry style guidance requires G1 stealth, a positive clock and autonomous joints")
     if args.stealth_gait_weight and args.stealth_upper_body_constraint:
         raise ValueError("Gait shaping requires learned arm actions")
+    if args.aim_style_reference and (
+            (task.robot, task.profile) != ("g1", "stealth")
+            or args.stealth_upper_body_constraint or args.waist_entry_reference
+            or args.entry_duration_s <= 0):
+        raise ValueError("Shared aim requires G1 stealth, learned joints and a positive entry clock")
 
 
 def build_upper_body_rate_limiter(args, spec):
@@ -193,6 +200,25 @@ def configure_cuda_memory(fraction, device):
 def training_stop_requested(run_dir, stop_files=()):
     """Keep local and controller cancellation on the checkpoint-on-stop path."""
     return (Path(run_dir) / "STOP").exists() or any(Path(path).exists() for path in stop_files)
+
+
+def load_shared_aim_reference(reference_path, motion_config):
+    """Bind the explicit reward target to the same immutable AMP pool."""
+    motion_config, reference_path = Path(motion_config).resolve(), Path(reference_path).resolve()
+    motion = json.loads(motion_config.read_text(encoding="utf-8"))
+    root = (motion_config.parent / motion["root"]).resolve()
+    manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+    auxiliary = manifest.get("auxiliary_files", {}).get("aim_style")
+    if (not isinstance(auxiliary, dict) or auxiliary.get("file") != "aim-style-reference.json"
+            or reference_path != root / auxiliary["file"]):
+        raise ValueError("Shared aim reference must be the AMP pool's declared auxiliary file")
+    payload = reference_path.read_bytes()
+    document = json.loads(payload)
+    if (hashlib.sha256(payload).hexdigest() != auxiliary.get("sha256")
+            or document != manifest.get("recipe", {}).get("guidance")
+            or document.get("source") != manifest.get("recipe", {}).get("source")):
+        raise ValueError("Shared aim reference hash or source differs from the AMP pool recipe")
+    return document
 
 
 def validate_resume_objective(checkpoint, gamma):
@@ -835,6 +861,19 @@ def main():
         entry_style_guidance = EntryStyleGuidance(kin, entry_style_config)
     elif resume_checkpoint is not None and resume_checkpoint.get("entry_style_guidance") is not None:
         raise ValueError("Resume cannot remove saved entry style guidance")
+    aim_style_guidance, aim_style_config = None, None
+    if args.aim_style_reference is not None:
+        from trackerLab.algorithms.supermimic.stealth_aim_style import AimStyleGuidance
+        aim_style_config = load_shared_aim_reference(
+            args.aim_style_reference, args.amp_motion_config)
+        aim_style_guidance = AimStyleGuidance(kin, aim_style_config)
+        aim_style_config = aim_style_guidance.to_dict()
+        if aim_style_config["duration"] != args.entry_duration_s or aim_style_config["weight"] > .04:
+            raise ValueError("Shared aim duration or weight differs from its training contract")
+        if resume_checkpoint is not None and resume_checkpoint.get("aim_style_guidance") != aim_style_config:
+            raise ValueError("Resume shared aim target differs from saved objective")
+    elif resume_checkpoint is not None and resume_checkpoint.get("aim_style_guidance") is not None:
+        raise ValueError("Resume cannot remove saved shared aim guidance")
     previous_command_margin = (
         resume_checkpoint["arguments"].get("command_margin_steps")
         if resume_checkpoint is not None else None)
@@ -1010,6 +1049,7 @@ def main():
                        "optimized_objective_changed": False,
                    },
                    "entry_style_guidance": entry_style_config,
+                   "aim_style_guidance": aim_style_config,
                    "jump_commands": {"height_m": args.jump_height,
                                      "probability": args.jump_probability,
                                      "duration_seconds": .8},
@@ -1060,6 +1100,7 @@ def main():
     style_reward_fn = style.reward_from_features
     style_frame_fn = style.frame_features
     entry_style_reward_fn = entry_style_guidance.reward if entry_style_guidance else None
+    aim_style_reward_fn = aim_style_guidance.reward if aim_style_guidance else None
     if upper_body_constraint is None or args.entry_duration_s:
         regularization_reward_fn = quality.reward
     else:
@@ -1082,6 +1123,8 @@ def main():
         style_frame_fn = torch.compile(style_frame_fn)
         if entry_style_reward_fn is not None:
             entry_style_reward_fn = torch.compile(entry_style_reward_fn)
+        if aim_style_reward_fn is not None:
+            aim_style_reward_fn = torch.compile(aim_style_reward_fn)
         regularization_reward_fn = torch.compile(regularization_reward_fn)
         if command_regularization_fn is not None:
             command_regularization_fn = torch.compile(command_regularization_fn)
@@ -1094,6 +1137,8 @@ def main():
     env.command_outputs_fn = command_outputs_fn
     if entry_style_reward_fn is not None:
         env.entry_style_reward_fn = entry_style_reward_fn
+    if aim_style_reward_fn is not None:
+        env.aim_style_reward_fn = aim_style_reward_fn
     if upper_body_constraint is not None and args.entry_duration_s:
         def entry_upper_body_reward(state, c):
             if upper_body_constraint.entry_duration_s:
@@ -1228,6 +1273,9 @@ def main():
                 tuple(value.flatten(0, 1) for value in states), flat_c)
         if entry_style_reward_fn is not None:
             reward = reward + entry_style_reward_fn(
+                tuple(value.flatten(0, 1) for value in states), flat_c)
+        if aim_style_reward_fn is not None:
+            reward = reward + aim_style_reward_fn(
                 tuple(value.flatten(0, 1) for value in states), flat_c)
         style_frames = style_frame_fn(states)
         style_windows = style.rollout_features(style_history, style_frames).flatten(0, 1)
@@ -1424,6 +1472,7 @@ def main():
                               "opt_pi": opt_pi.state_dict(), "opt_v": opt_v.state_dict(),
                               "amp_style": style.checkpoint(),
                               "entry_style_guidance": entry_style_config,
+                              "aim_style_guidance": aim_style_config,
                               "stealth_waist_constraint": waist_config,
                               "waist_reference_receipt": waist_reference_receipt,
                               "stealth_upper_body_constraint": upper_body_config,

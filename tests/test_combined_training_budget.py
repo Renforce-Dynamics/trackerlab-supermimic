@@ -90,3 +90,15 @@ def test_velocity_led_resume_rejects_original_combined_recipe():
     assert checkpoint_start(ck, "velocity-led") == 5500
     with pytest.raises(ValueError, match="matching"):
         checkpoint_start(ck)
+
+
+def test_shared_aim_resume_requires_matching_weight_and_saved_target():
+    ck = checkpoint(5500)
+    ck["arguments"].update(entry_duration_s=.60, wasd_reward_version=3,
+                           stealth_gait_weight=.02, amp_weight=.1)
+    with pytest.raises(ValueError, match="guidance"):
+        checkpoint_start(ck, "shared-aim")
+    ck["aim_style_guidance"] = {"schema": "g1-stealth-aim-style-v1"}
+    assert checkpoint_start(ck, "shared-aim") == 5500
+    with pytest.raises(ValueError):
+        checkpoint_start(ck, "velocity-led")

@@ -132,3 +132,17 @@ def test_velocity_led_selects_new_preset_with_same_preserved_review_budget(case)
     assert len(calls(case, "train")) == 7
     assert len(calls(case, "evaluate")) == 21
     assert "command_stealth_velocity_led.json" in (case.run / "input.receipt").read_text()
+
+
+def test_shared_aim_requires_and_hashes_the_reviewed_reference(case):
+    configure(case)
+    preset = case.root/"scripts/rls/supermimic/configs/command_stealth_shared_aim.json"
+    preset.write_text("{}\n", encoding="ascii")
+    reference = case.root/"pool/aim-style-reference.json"
+    reference.write_text("{}\n", encoding="ascii")
+    case.env["SUPERMIMIC_STEALTH_RECIPE"] = "shared-aim"
+    run_to_exit(case)
+    assert len(calls(case, "train")) == 7
+    receipt = (case.run/"input.receipt").read_text()
+    assert "command_stealth_shared_aim.json" in receipt
+    assert "aim-style-reference.json" in receipt

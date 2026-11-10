@@ -1,4 +1,4 @@
-"""Retarget the selected current Hangar human pose with anatomical frame axes."""
+"""Retarget the selected human pose with bilateral wrists and full palm frames."""
 
 import argparse
 import hashlib
@@ -22,6 +22,7 @@ NAMES = ("Hips", "Spine2", "LeftUpLeg", "LeftLeg", "LeftFoot",
 
 
 def unit(v):
+    v = np.asarray(v, dtype=float)
     n = np.linalg.norm(v)
     if not np.isfinite(n) or n < 1e-7:
         raise ValueError("Selected anatomy has a degenerate direction")
@@ -35,7 +36,112 @@ def body_frame(left, up):
     return np.stack((forward, left, up), -1)
 
 
-def retarget(canonical, output, frame=68):
+def palm_frame(length, thumbward):
+    length = unit(np.asarray(length, dtype=float))
+    thumbward = np.asarray(thumbward, dtype=float)
+    thumbward = unit(thumbward-length*np.dot(length, thumbward))
+    return np.stack((length, thumbward, np.cross(length, thumbward)), -1)
+
+
+def source_palms(document, body_model):
+    """Use the selected body's wrist and metacarpal roots, not finger curl."""
+    body_model = Path(body_model)
+    model_hash = hashlib.sha256(body_model.read_bytes()).hexdigest()
+    if model_hash != document["sourceCorrection"]["bodyModelSha256"]:
+        raise ValueError("SMPL-X palm calibration requires the exact source body")
+    with np.load(body_model, allow_pickle=False) as model:
+        betas = np.asarray(document["surface"]["betas"])
+        shaped = model["v_template"] + np.einsum(
+            "vci,i->vc", model["shapedirs"][:, :, :len(betas)], betas)
+        rest = model["J_regressor"] @ shaped
+    frames = [palm_frame(rest[middle]-rest[wrist], rest[index]-rest[pinky])
+              for wrist, index, middle, pinky in ((20, 25, 28, 31), (21, 40, 43, 46))]
+    return np.array(frames), {"body_model_sha256": model_hash,
+        "basis": "Shaped SMPL-X wrist->middle MCP and pinky MCP->index MCP.",
+        "local_frames": np.array(frames).tolist(),
+        "finger_channels": "Not used to infer a rigid palm orientation."}
+
+
+def robot_palms(model):
+    """Measure flat proximal palms; curled fingers bias whole-hand length PCA."""
+    frames, geoms, evidence = [], [], {}
+    for side in ("left", "right"):
+        mesh = model.mesh(side+"_rubber_hand").id
+        wrist = model.body(side+"_wrist_yaw_link").id
+        found = np.flatnonzero((model.geom_type == mujoco.mjtGeom.mjGEOM_MESH)
+                               & (model.geom_dataid == mesh)
+                               & (model.geom_bodyid == wrist))
+        if len(found) != 1:
+            raise ValueError(f"Expected one fitted {side} palm")
+        geom = int(found[0])
+        vertices = model.mesh_vert[
+            model.mesh_vertadr[mesh]:model.mesh_vertadr[mesh]+model.mesh_vertnum[mesh]]
+        R = np.empty(9)
+        mujoco.mju_quat2Mat(R, model.geom_quat[geom])
+        vertices = vertices @ R.reshape(3, 3).T + model.geom_pos[geom]
+        core = vertices[(vertices[:, 0] > .055) & (vertices[:, 0] < .12)
+                        & (vertices[:, 2] > -.05) & (vertices[:, 2] < .04)]
+        if len(core) < 20:
+            raise ValueError("G1 proximal palm calibration region is missing")
+        variances, axes = np.linalg.eigh(np.cov(core.T))
+        normal = axes[:, 0]
+        if variances[1] < 2*variances[0] or abs(normal[1]) < .8:
+            raise ValueError("G1 proximal palm plane is ambiguous")
+        length = unit(np.array((1., 0., 0.))-normal*normal[0])
+        thumb = vertices[vertices[:, 2] > .045].mean(0)-core.mean(0)
+        frame = palm_frame(length, thumb-normal*np.dot(thumb, normal))
+        frames.append(frame)
+        geoms.append(geom)
+        evidence[side] = {"local_frame": frame.tolist(),
+            "proximal_plane_variances_m2": variances.tolist(),
+            "core_vertices": len(core),
+            "mesh_vertices_sha256": hashlib.sha256(
+                np.asarray(vertices, dtype="<f8").tobytes()).hexdigest(),
+            "basis": "Proximal palm plane, wrist-forward projection and thumb mesh lobe."}
+    return np.array(frames), geoms, evidence
+
+
+def coupled_arm_targets(source_p, target_p, rest_p, torso_R):
+    """Transfer one shoulder-relative hand midpoint and a shared wrist delta."""
+    source_p, target_p = np.asarray(source_p), np.array(target_p, copy=True)
+    chains = ((8, 9, 10), (11, 12, 13))
+    scale = float(np.mean([
+        sum(np.linalg.norm(rest_p[b]-rest_p[a]) for a, b in ((s, e), (e, w)))
+        / sum(np.linalg.norm(source_p[b]-source_p[a]) for a, b in ((s, e), (e, w)))
+        for s, e, w in chains]))
+    shoulder = source_p[[8, 11]].mean(0)
+    robot_shoulder = target_p[[8, 11]].mean(0)
+    midpoint = robot_shoulder + (source_p[[10, 13]].mean(0)-shoulder)*scale
+    delta = (source_p[10]-source_p[13])*scale
+    target_p[10], target_p[13] = midpoint+delta/2, midpoint-delta/2
+    for shoulder_i, elbow, _ in chains:
+        target_p[elbow] = (target_p[shoulder_i]
+                          + (source_p[elbow]-source_p[shoulder_i])*scale)
+    return target_p, {"arm_scale": scale,
+        "midpoint_torso_m": (torso_R.T @ (midpoint-target_p[1])).tolist(),
+        "relative_wrist_torso_m": (torso_R.T @ delta).tolist(),
+        "wrist_distance_m": float(np.linalg.norm(delta))}
+
+
+def palm_clearance_limit(model, hand_geoms):
+    # Mink filters visual-only meshes at construction; include palms for this IK
+    # constraint, then restore the simulation model's original collision masks.
+    original_masks = (model.geom_contype[hand_geoms].copy(),
+                      model.geom_conaffinity[hand_geoms].copy())
+    try:
+        model.geom_contype[hand_geoms] = 1
+        model.geom_conaffinity[hand_geoms] = 1
+        limit = mink.CollisionAvoidanceLimit(
+            model, [([hand_geoms[0]], [hand_geoms[1]])],
+            minimum_distance_from_collisions=.004, collision_detection_distance=.06)
+    finally:
+        model.geom_contype[hand_geoms], model.geom_conaffinity[hand_geoms] = original_masks
+    if len(limit.geom_id_pairs) != 1:
+        raise ValueError("Palm geometry must participate in IK clearance")
+    return limit
+
+
+def retarget(canonical, output, body_model, frame=68):
     canonical, output = Path(canonical).resolve(), Path(output).resolve()
     if output.exists():
         raise FileExistsError(output)
@@ -73,10 +179,17 @@ def retarget(canonical, output, frame=68):
     ids = [model.body(name).id for name in ROLES["g1"]]
     rest = data.xpos[ids].copy()
     # morphology_targets expects the raw BVH basis for its first two rotations.
-    from retarget_lafan_aiming import BODY_BASIS, robot_hand_axes, make_hand_direction_task
+    from retarget_lafan_aiming import BODY_BASIS
     rotations = np.broadcast_to(np.eye(3), (14, 3, 3)).copy()
     rotations[0], rotations[1] = root_R@BODY_BASIS.T, torso_R@BODY_BASIS.T
     target_p, target_R, scale = morphology_targets(p, rotations, rest)
+    target_p, bilateral = coupled_arm_targets(p, target_p, rest, torso_R)
+    human_palms, source_evidence = source_palms(document, body_model)
+    fitted_palms, hand_geoms, robot_evidence = robot_palms(model)
+    for i, (side, role) in enumerate((("Left", 10), ("Right", 13))):
+        quaternion = np.asarray(f[side+"Hand"]["quaternion"])
+        source_R = Rotation.from_quat(quaternion[[1, 2, 3, 0]]).as_matrix()
+        target_R[role] = H.T @ source_R @ human_palms[i] @ fitted_palms[i].T
     config = mink.Configuration(model, data.qpos.copy())
     q = config.q.copy()
     q[:3] = target_p[0]
@@ -86,28 +199,20 @@ def retarget(canonical, output, frame=68):
     for i, name in enumerate(ROLES["g1"]):
         arm = i in (8, 9, 10, 11, 12, 13)
         task = mink.FrameTask(
-            name, "body", position_cost=35. if i in (4, 7) else 20. if arm else 6.,
-            orientation_cost=12. if i < 2 else 0., lm_damping=1e-3)
+            name, "body", position_cost=(35. if i in (4, 7) else
+                35. if i in (10, 13) else 2. if arm else 6.),
+            orientation_cost=12. if i < 2 else 3. if i in (10, 13) else 0.,
+            lm_damping=1e-3)
         task.set_target(mink.SE3.from_rotation_and_translation(
             mink.SO3.from_matrix(target_R[i]), target_p[i]))
-        tasks.append(task)
-    robot_axes, _ = robot_hand_axes(model)
-    hand_directions = []
-    for i, (side, sign) in enumerate((("Left", 1.), ("Right", -1.))):
-        quaternion = np.asarray(f[side+"Hand"]["quaternion"])
-        rotation = Rotation.from_quat(quaternion[[1, 2, 3, 0]]).as_matrix()
-        direction = H.T @ (rotation[:, 0]*sign)
-        hand_directions.append(direction.tolist())
-        task = make_hand_direction_task(
-            ROLES["g1"][10 if i == 0 else 13], robot_axes[i], .7)
-        task.set_target(direction)
         tasks.append(task)
     posture = mink.PostureTask(model, cost=.015, lm_damping=1e-3)
     posture.set_target(config.q.copy())
     tasks += [posture, mink.DampingTask(model, cost=.005)]
-    for _ in range(120):
+    collision_limit = palm_clearance_limit(model, hand_geoms)
+    for _ in range(180):
         velocity = mink.solve_ik(config, tasks, .02, "daqp", damping=1e-5,
-                                 limits=[mink.ConfigurationLimit(model)])
+                                 limits=[mink.ConfigurationLimit(model), collision_limit])
         config.integrate_inplace(velocity, .02)
     q = config.q.copy()
     foot_ids = [model.body(name).id for name in ("left_ankle_roll_link", "right_ankle_roll_link")]
@@ -118,11 +223,28 @@ def retarget(canonical, output, frame=68):
                  and (model.geom_contype[g] or model.geom_conaffinity[g]))
     floor_shift = max(0., .003-bottom)
     q[2] += floor_shift
+    target_p[:, 2] += floor_shift
+    config.update(q)
+    actual_R = config.data.xmat[ids].reshape(-1, 3, 3)
+    wrist_errors = np.linalg.norm(config.data.xpos[np.array(ids)[[10, 13]]]-target_p[[10, 13]], axis=-1)
+    rotation_errors = Rotation.from_matrix(
+        target_R[[10, 13]].transpose(0, 2, 1) @ actual_R[[10, 13]]).magnitude()
+    palm_clearance = float(mujoco.mj_geomDistance(
+        model, config.data, *hand_geoms, 1., np.empty(6)))
+    actual_delta = config.data.xpos[ids[10]]-config.data.xpos[ids[13]]
+    bilateral.update(actual_relative_wrist_torso_m=(actual_R[1].T @ actual_delta).tolist(),
+        actual_wrist_distance_m=float(np.linalg.norm(actual_delta)),
+        wrist_position_error_m=wrist_errors.tolist(),
+        wrist_rotation_error_rad=rotation_errors.tolist(),
+        visual_palm_convex_clearance_m=palm_clearance,
+        clearance_scope="Explicit convex mesh distance, including visual-only palms; no dynamics acceptance.")
+    geometry_accepted = bool(max(wrist_errors) <= .02
+                             and max(rotation_errors) <= .15 and palm_clearance >= .0035)
     values = np.r_[q[:3], q[[4, 5, 6, 3]], q[qids]][None]
     output.parent.mkdir(parents=True, exist_ok=True)
     np.savetxt(output, values, delimiter=",", fmt="%.17g")
     metrics = {
-        "schema": "selected-canonical-aim-g1-v1",
+        "schema": "selected-canonical-aim-g1-v2",
         "source": {"asset_id": "motion_9fbbcfe3539e42d0",
                    "action_data_id": "actiondata_58b86b8139a54265",
                    "canonical_sha256": source_hash, "source_frame": frame,
@@ -134,9 +256,13 @@ def retarget(canonical, output, frame=68):
         "root_scale": scale, "root_R": root_R.tolist(), "torso_R": torso_R.tolist(),
         "floor_shift_m": floor_shift,
         "ik_arm_joint_limits": arm_limits,
-        "hand_direction": {"world_targets_heading_frame": hand_directions,
-            "convention": "SMPL-X T-pose hand length axes: left+X/right-X; robot fixed-hand PCA axes.",
-            "scope": "Length direction only; finger articulation is absent on the G1 model."},
+        "palm_frames": {"source": source_evidence, "robot": robot_evidence,
+            "target_wrist_rotations": target_R[[10, 13]].tolist(),
+            "scope": "Full rigid-palm orientation; G1 finger articulation is absent."},
+        "bilateral_hands": bilateral,
+        "geometry_acceptance": {"passed": geometry_accepted,
+            "max_wrist_position_error_m": .02, "max_wrist_rotation_error_rad": .15,
+            "minimum_visual_palm_clearance_m": .0035},
         "target_positions": dict(zip(ROLES["g1"], target_p.tolist())),
         "position_error_m": dict(zip(ROLES["g1"], np.linalg.norm(config.data.xpos[ids]-target_p, axis=-1).tolist())),
         "file": output.name, "sha256": hashlib.sha256(output.read_bytes()).hexdigest(),
@@ -152,9 +278,13 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--canonical", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--body-model", type=Path, required=True)
     parser.add_argument("--frame", type=int, default=68)
     args = parser.parse_args()
-    print(json.dumps(retarget(args.canonical, args.output, args.frame), indent=2))
+    report = retarget(args.canonical, args.output, args.body_model, args.frame)
+    print(json.dumps(report, indent=2))
+    if not report["geometry_acceptance"]["passed"]:
+        raise SystemExit("Candidate saved for review; palm geometry acceptance failed.")
 
 
 if __name__ == "__main__":

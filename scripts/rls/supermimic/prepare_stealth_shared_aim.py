@@ -57,7 +57,8 @@ def prepare(source_pool, selected_report, selected_csv, output, *, frame=0,
     _require_ignored_output(output)
     source_manifest = verify_pool(source_pool, "g1", "stealth")
     report = json.loads(selected_report.read_text(encoding="utf-8"))
-    if report.get("schema") != "selected-canonical-aim-g1-v1":
+    if (report.get("schema") != "selected-canonical-aim-g1-v2"
+            or report.get("geometry_acceptance", {}).get("passed") is not True):
         raise ValueError("Selection needs the selected current canonical-human retarget")
     row = report
     spec = get_robot("g1")

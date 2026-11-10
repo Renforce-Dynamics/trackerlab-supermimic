@@ -21,8 +21,11 @@ Their diagnostic retargets remain excluded.
 
 `retarget_selected_aim.py` adapts the exact displayed pose using anatomical
 hip/shoulder/spine axes and morphology-scaled MinkIK. Arm targets use the
-inner90%of joint ranges. Hand-length directions use the canonical SMPL-X
-left+X/right-X convention and G1 fixed-hand mesh axes. The G1 model has fixed
+inner90%of joint ranges. The corrected target uses the exact source body's
+metacarpal landmarks and proximal robot palm geometry for full hand rotations,
+with a shared wrist midpoint and relative displacement. The earlier length-only
+target distorted wrist spacing and omitted palm roll; it is superseded.
+See [the palm correction](g1_shared_aim_palm_correction.md). The G1 model has fixed
 fingers; finger shape and a held object are outside this pose representation.
 A display-only constant floor shift avoids rendering target foot penetration.
 The selected full-body pose is not a policy rollout.
@@ -72,9 +75,11 @@ Use `run_g1_stealth_shared_aim.sh` on main with a verified motion pool containin
 checks, stop receipts and first-attempt review protocol. Budget is500WM-only
 steps plus50000actor updates. No new task ID is registered.
 
-Kinematic checks of all303derived training frames found no robot self-contact
-penetration exceeding0.5mm. This is a sampled geometric check, not proof of
-collision-free policy transitions. Required visual review includes consistent
+The earlier enabled-collider contact check omitted the visual-only rubber palms.
+Explicit convex distance queries on all303corrected training frames now measure
+4mm palm-pair separation and at least20.84mm between either palm and the opposite
+arm/torso colliders. These geometric checks do not validate policy transitions.
+Required visual review includes consistent
 hands across W/S/A/D/arcs/release, crouched torso, startup, bilateral stepping,
 slip and command tracking. Numerical aim errors or AMP scores do not release
 an export without reviewing physical videos.

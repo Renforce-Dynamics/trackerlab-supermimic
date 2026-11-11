@@ -292,6 +292,8 @@ def attach_locomotion_quality(env, kin, field, motors, checkpoint,
         foot_slip_mode=checkpoint.get("arguments", {}).get("foot_slip_mode", "legacy"),
         differentiate_support=checkpoint.get("arguments", {}).get("differentiate_support", False),
         stealth_gait_weight=checkpoint.get("arguments", {}).get("stealth_gait_weight", 0.),
+        stealth_gait_version=checkpoint.get("arguments", {}).get("stealth_gait_version", 1),
+        stealth_swing_height=checkpoint.get("arguments", {}).get("stealth_swing_height", .04),
         entry_duration_s=checkpoint.get("arguments", {}).get("entry_duration_s", 0.))
     sole_height = torch.as_tensor(
         checkpoint["quality_sole_height"], device=kin.device, dtype=quality.sole_height.dtype)
@@ -788,6 +790,8 @@ def main():
               "waist_pd_scale": ck["arguments"].get("waist_pd_scale", 1.),
               "foot_slip_mode": ck["arguments"].get("foot_slip_mode", "legacy"),
               "differentiate_support": ck["arguments"].get("differentiate_support", False),
+              "stealth_gait_version": ck["arguments"].get("stealth_gait_version", 1),
+              "stealth_swing_height": ck["arguments"].get("stealth_swing_height", .04),
               "entry_style_guidance": ck.get("entry_style_guidance"),
               "aim_style_guidance": ck.get("aim_style_guidance"),
               "upper_body_rate_limit": rate_limiter_config,

@@ -229,16 +229,32 @@ class AimStyleGuidance(nn.Module):
             source=_source(config.get("source")), error_scales=self.error_scales.copy(),
             term_weights=self.term_weights.copy(),
         )
+        self.palm_separation = None
+        if config.get("palm_separation") is not None:
+            from .stealth_palm_separation import PalmSeparationGuidance
+            self.palm_separation = PalmSeparationGuidance(config["palm_separation"])
+            palm = self.palm_separation.to_dict()
+            if (palm["source"] != config["source"]
+                    or not torch.allclose(torch.tensor(
+                        palm["reference_wrist_positions_torso"], dtype=p.dtype), p,
+                        rtol=0., atol=1e-5)
+                    or not torch.allclose(torch.tensor(
+                        palm["reference_wrist_rotations_torso"], dtype=R.dtype), R,
+                        rtol=0., atol=1e-5)):
+                raise ValueError("Palm geometry must match the selected aiming source and wrist frames")
+            config["palm_separation"] = palm
         self._config = config
         object.__setattr__(self, "kin", kin)
         device = getattr(kin, "device", "cpu")
+        if self.palm_separation is not None:
+            self.palm_separation.to(device=device)
         self.register_buffer("arm_indices", torch.tensor(arms, dtype=torch.long, device=device))
         self.register_buffer("reference_q", q.to(device=device))
         self.register_buffer("reference_wrist_positions_torso", p.to(device=device))
         self.register_buffer("reference_wrist_rotations_torso", R.to(device=device))
         self.register_buffer("reference_torso_up_heading", up.to(device=device))
 
-    def metrics(self, state):
+    def _evaluate(self, state):
         """Per-sample RMS wrist distance, chordal distance, arm pose, tilt and speed.
 
         Position is RMS Euclidean distance over two wrists (meters); rotation
@@ -260,14 +276,31 @@ class AimStyleGuidance(nn.Module):
             "arm_rmse_rad": _scaled_norm(arm, math.sqrt(14.)),
             "torso_up_error": _scaled_norm(torso),
             "arm_speed_rms_rad_s": _scaled_norm(speed, math.sqrt(14.)),
-        }
+        }, p, R
+
+    def metrics(self, state):
+        """Source-pose errors and optional fixed-plane palm diagnostics."""
+        metrics, p, R = self._evaluate(state)
+        if self.palm_separation is not None:
+            gap = self.palm_separation.gap(p, R)
+            metrics["palm_plane_gap_m"] = gap
+            metrics["palm_margin_violation_fraction"] = (
+                gap < self.palm_separation.margin_m).to(gap.dtype)
+        return metrics
+
+    def palm_gap(self, state):
+        """Signed source-plane hull separation in meters, when enabled."""
+        if self.palm_separation is None:
+            raise ValueError("Palm geometry is not enabled for this aiming reference")
+        _, p, R = self._evaluate(state)
+        return self.palm_separation.gap(p, R)
 
     def reward(self, state, c):
-        """Reward in [-weight, 0], quintic activation from zero to duration."""
+        """Nonpositive pose and optional geometry costs with one entry fade."""
         if (not isinstance(c, torch.Tensor) or not c.is_floating_point()
                 or c.ndim < 1 or c.shape[-1] != 7):
             raise ValueError("Aim command must be a floating tensor ending in seven fields")
-        metrics = self.metrics(state)
+        metrics, wrist_p, wrist_R = self._evaluate(state)
         sample = metrics["arm_rmse_rad"]
         if c.device != sample.device:
             raise ValueError("Aim command and state must share a device")
@@ -281,7 +314,10 @@ class AimStyleGuidance(nn.Module):
             saturated = (value / torch.hypot(value, value.new_tensor(self.error_scales[name]))).square()
             cost = cost + self.term_weights[name] * saturated
         blend = entry_blend(c.to(sample), self.duration).clamp(0., 1.)
-        return -self.weight * blend * cost.clamp(0., 1.)
+        reward = -self.weight * blend * cost.clamp(0., 1.)
+        if self.palm_separation is not None:
+            reward = reward + blend * self.palm_separation.reward(wrist_p, wrist_R)
+        return reward
 
     def to_dict(self):
         """Return independent JSON metadata for checkpoint and resume identity."""

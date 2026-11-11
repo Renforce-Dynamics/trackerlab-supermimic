@@ -17,12 +17,15 @@ MOCK_BUDGET = r'''    budget)
             test -f "$resume"
             start=${TEST_RESUME_ITERATION:-1373}
         fi
+        final=50500
+        actors=50000
+        if [ "${SUPERMIMIC_STEALTH_RECIPE:-}" = beyondamp ]; then final=20500; actors=20000; fi
         future=()
         for target in 2500 5500 10500 20500 30500 40500 50500; do
-            if ((target > start)); then future+=("$target"); fi
+            if ((target > start && target <= final)); then future+=("$target"); fi
         done
-        printf '{"starting_iteration":%s,"target_iteration":50500,"actor_update_budget":50000}\n' "$start" > "$output"
-        printf '%s 50500' "$start"
+        printf '{"starting_iteration":%s,"target_iteration":%s,"actor_update_budget":%s}\n' "$start" "$final" "$actors" > "$output"
+        printf '%s %s' "$start" "$final"
         printf ' %s' "${future[@]}"
         printf '\n'
         ;;
@@ -146,3 +149,17 @@ def test_shared_aim_requires_and_hashes_the_reviewed_reference(case):
     receipt = (case.run/"input.receipt").read_text()
     assert "command_stealth_shared_aim.json" in receipt
     assert "aim-style-reference.json" in receipt
+
+
+def test_beyondamp_keeps_geometry_receipts_and_reviews_the_twenty_thousand_budget(case):
+    configure(case)
+    preset = case.root/"scripts/rls/supermimic/configs/command_stealth_beyondamp.json"
+    preset.write_text("{}\n", encoding="ascii")
+    (case.root/"pool/aim-style-reference.json").write_text("{}\n", encoding="ascii")
+    case.env["SUPERMIMIC_STEALTH_RECIPE"] = "beyondamp"
+    run_to_exit(case)
+    assert [int(row["iteration"]) for row in calls(case, "train")] == [2500, 5500, 10500, 20500]
+    assert (case.run/"actor_update_budget").read_text().strip() == "20000"
+    assert (case.run/"completed_iterations").read_text().strip() == "20500"
+    assert "aim-style-reference.json" in (case.run/"input.receipt").read_text()
+    assert len(calls(case, "render")) == 44

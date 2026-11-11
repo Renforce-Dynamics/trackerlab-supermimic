@@ -102,6 +102,10 @@ def parse_args(argv=None):
     parser.add_argument("--feet-close-weight", type=float, default=.008)
     parser.add_argument("--stealth-gait-weight", type=float, default=0.,
                         help="Optional command-gated whole-sole swing/support shaping for G1 stealth")
+    parser.add_argument("--stealth-gait-version", type=int, choices=(1, 2), default=1,
+                        help="Version 2 adds BeyondAMP-inspired velocity-weighted sole clearance")
+    parser.add_argument("--stealth-swing-height", type=float, default=.04,
+                        help="Version 2 whole-sole swing target in robot-scale meters")
     parser.add_argument("--foot-slip-mode", choices=("legacy", "g1_sole"), default="legacy")
     parser.add_argument("--differentiate-support", action="store_true",
                         help="Experimental G1 sole-support gradient; forward rewards unchanged")
@@ -375,6 +379,31 @@ def validate_warm_start_control(checkpoint, upper_body_config, rate_limiter_conf
         raise ValueError("Recovery requires unchanged warm-start arm outputs and controller")
 
 
+def validate_gait_options(args, task):
+    if (isinstance(args.stealth_gait_weight, bool)
+            or not math.isfinite(args.stealth_gait_weight)
+            or not 0 <= args.stealth_gait_weight <= .04
+            or args.stealth_gait_weight and (
+                (task.robot, task.profile, args.foot_slip_mode, args.wasd_reward_version)
+                != ("g1", "stealth", "g1_sole", 3))):
+        raise ValueError("Gait shaping requires G1 stealth, g1_sole, WASD-v3 and a weight in [0, .04]")
+    if type(args.stealth_gait_version) is not int or args.stealth_gait_version not in (1, 2):
+        raise ValueError("Stealth gait version must be 1 or 2")
+    if (isinstance(args.stealth_swing_height, bool)
+            or not math.isfinite(args.stealth_swing_height)
+            or not .02 <= args.stealth_swing_height <= .08):
+        raise ValueError("Stealth swing height must lie in [.02, .08]")
+    if args.stealth_gait_version == 2 and not args.stealth_gait_weight:
+        raise ValueError("Gait version 2 requires a positive gait weight")
+
+
+def validate_gait_resume(checkpoint, args):
+    for name, default in (("stealth_gait_weight", 0.), ("stealth_gait_version", 1),
+                          ("stealth_swing_height", .04)):
+        if checkpoint["arguments"].get(name, default) != getattr(args, name):
+            raise ValueError(f"Resume {name} differs; use --warm-start in a new run")
+
+
 def command_timing_start_mask(data, horizon, margin_steps):
     """Match the upstream command-time-left actor-start condition."""
     if margin_steps is None:
@@ -646,11 +675,7 @@ def main():
     if (isinstance(args.feet_close_weight, bool)
             or not math.isfinite(args.feet_close_weight) or args.feet_close_weight < 0):
         raise SystemExit("Feet-close weight must be finite and nonnegative")
-    if (not math.isfinite(args.stealth_gait_weight) or not 0 <= args.stealth_gait_weight <= .04
-            or args.stealth_gait_weight and (
-                (task.robot, task.profile, args.foot_slip_mode, args.wasd_reward_version)
-                != ("g1", "stealth", "g1_sole", 3))):
-        raise SystemExit("Gait shaping requires G1 stealth, g1_sole, WASD-v3 and a weight in [0, .04]")
+    validate_gait_options(args, task)
     reference_receipt = validate_style_references(args.amp_motion_config, task.robot)
     if not torch.cuda.is_available():
         raise RuntimeError("Terrain training requires CUDA")
@@ -793,7 +818,9 @@ def main():
         foot_slide_weight=args.foot_slide_weight,
         feet_close_weight=args.feet_close_weight, foot_slip_mode=args.foot_slip_mode,
         differentiate_support=args.differentiate_support,
-        stealth_gait_weight=args.stealth_gait_weight, entry_duration_s=args.entry_duration_s)
+        stealth_gait_weight=args.stealth_gait_weight, entry_duration_s=args.entry_duration_s,
+        stealth_gait_version=args.stealth_gait_version,
+        stealth_swing_height=args.stealth_swing_height)
     quality.calibrate(motion)
     command_envelope = None
     if task.profile == "stealth" and args.stealth_control_mode in ("keyboard", "wasd"):
@@ -868,7 +895,9 @@ def main():
             args.aim_style_reference, args.amp_motion_config)
         aim_style_guidance = AimStyleGuidance(kin, aim_style_config)
         aim_style_config = aim_style_guidance.to_dict()
-        if aim_style_config["duration"] != args.entry_duration_s or aim_style_config["weight"] > .04:
+        aim_total_weight = aim_style_config["weight"] + (
+            aim_style_config.get("palm_separation") or {}).get("weight", 0.)
+        if aim_style_config["duration"] != args.entry_duration_s or aim_total_weight > .04:
             raise ValueError("Shared aim duration or weight differs from its training contract")
         if resume_checkpoint is not None and resume_checkpoint.get("aim_style_guidance") != aim_style_config:
             raise ValueError("Resume shared aim target differs from saved objective")
@@ -911,8 +940,7 @@ def main():
                      "self_collisions", "reference_reset_probability"):
             if ck["arguments"].get(name) != getattr(args, name):
                 raise ValueError(f"Resume {name} differs from the saved objective")
-        if ck["arguments"].get("stealth_gait_weight", 0.) != args.stealth_gait_weight:
-            raise ValueError("Resume gait shaping differs; use --warm-start in a new run")
+        validate_gait_resume(ck, args)
         if (ck["arguments"].get("physical_domain_randomization", False)
                 != args.physical_domain_randomization):
             raise ValueError("Changed physical domain requires --warm-start in a new run")
@@ -1038,6 +1066,8 @@ def main():
                                           "foot_slip_mode": quality.foot_slip_mode,
                                           "differentiate_support": quality.differentiate_support,
                                           "stealth_gait_weight": quality.stealth_gait_weight,
+                                          "stealth_gait_version": quality.stealth_gait_version,
+                                          "stealth_swing_height": quality.stealth_swing_height,
                                           "sole_height": quality.sole_height.cpu().tolist()},
                    "style": {"motion_config": str(args.amp_motion_config.resolve()),
                              "training_only": True, "weight": args.amp_weight,

@@ -47,7 +47,7 @@ def replace_upper(payload, reference, joint_names, frames):
 
 
 def prepare(source_pool, selected_report, selected_csv, output, *, frame=0,
-            aim_weight=.01, entry_duration=.60):
+            aim_weight=.01, entry_duration=.60, palm_separation=False):
     source_pool, selected_report, selected_csv, output = map(
         lambda p: Path(p).resolve(), (source_pool, selected_report, selected_csv, output))
     if output.exists():
@@ -96,6 +96,20 @@ def prepare(source_pool, selected_report, selected_csv, output, *, frame=0,
     kin_spec = replace(spec, mjcf_path=os.path.relpath(spec.mjcf_path)) if os.name == "nt" else spec
     kin = RobotKinematics("cpu", kin_spec)
     guidance = calibrate_aim_config(kin, state, source, weight=aim_weight, duration=entry_duration)
+    if palm_separation:
+        import mujoco
+        from trackerLab.algorithms.supermimic.stealth_aim_style import AimStyleGuidance
+        from trackerLab.algorithms.supermimic.stealth_palm_separation import (
+            calibrate_palm_separation_config,
+        )
+        model = mujoco.MjModel.from_xml_path(str(kin_spec.mjcf_path))
+        data = mujoco.MjData(model)
+        qids = [int(model.joint(name).qposadr[0]) for name in spec.joint_names]
+        data.qpos[:3], data.qpos[3:7] = reference[:3], reference[[6, 3, 4, 5]]
+        data.qpos[qids] = reference[7:]
+        guidance["palm_separation"] = calibrate_palm_separation_config(
+            model, data, source, weight=.006, margin=.010, scale=.010)
+        guidance = AimStyleGuidance(kin, guidance).to_dict()
     transformed = {}
     inputs = {selected_report: digest(selected_report), selected_csv: digest(selected_csv),
               source_pool / "manifest.json": digest(source_pool / "manifest.json")}
@@ -150,9 +164,11 @@ def main():
     for name in ("source-pool", "selected-report", "selected-csv", "output"):
         parser.add_argument("--"+name, type=Path, required=True)
     parser.add_argument("--frame", type=int, default=0)
+    parser.add_argument("--palm-separation", action="store_true",
+                        help="Bind the actual rubber-hand hulls to the selected pose")
     args = parser.parse_args()
     result = prepare(args.source_pool, args.selected_report, args.selected_csv,
-                     args.output, frame=args.frame)
+                     args.output, frame=args.frame, palm_separation=args.palm_separation)
     print(json.dumps(result, indent=2))
 
 

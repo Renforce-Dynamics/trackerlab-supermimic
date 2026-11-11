@@ -14,6 +14,7 @@ repo=$(git rev-parse --show-toplevel)
 recipe=${SUPERMIMIC_STEALTH_RECIPE:-combined}
 budget_recipe=()
 aim_options=()
+expected_final=50500
 case "$recipe" in
     combined) config=$repo/scripts/rls/supermimic/configs/command_stealth_combined.json ;;
     velocity-led)
@@ -23,6 +24,13 @@ case "$recipe" in
     shared-aim)
         config=$repo/scripts/rls/supermimic/configs/command_stealth_shared_aim.json
         budget_recipe=(--recipe shared-aim)
+        test -f "$pool/aim-style-reference.json"
+        aim_options=(--aim-style-reference "$pool/aim-style-reference.json")
+        ;;
+    beyondamp)
+        config=$repo/scripts/rls/supermimic/configs/command_stealth_beyondamp.json
+        budget_recipe=(--recipe beyondamp)
+        expected_final=20500
         test -f "$pool/aim-style-reference.json"
         aim_options=(--aim-style-reference "$pool/aim-style-reference.json")
         ;;
@@ -65,13 +73,13 @@ read -r -a budget_values <<< "$budget"
 start=${budget_values[0]}
 final=${budget_values[1]}
 milestones=("${budget_values[@]:2}")
-test "$final" = 50500
+test "$final" = "$expected_final"
 test "${#milestones[@]}" -gt 0
 printf '%s\n' "$start" > "$run/starting_iteration"
 printf '%s\n' "$final" > "$run/target_iterations"
-printf '50000\n' > "$run/actor_update_budget"
+printf '%s\n' "$((final-500))" > "$run/actor_update_budget"
 sha256sum "$initial" "$pool/manifest.json" "$pool/train.json" "$config" > "$run/input.receipt"
-if [ "$recipe" = shared-aim ]; then sha256sum "$pool/aim-style-reference.json" >> "$run/input.receipt"; fi
+if [ "${#aim_options[@]}" -gt 0 ]; then sha256sum "$pool/aim-style-reference.json" >> "$run/input.receipt"; fi
 if [ -n "$resume" ]; then sha256sum "$resume" >> "$run/input.receipt"; fi
 set_phase waiting_gpu
 while true; do

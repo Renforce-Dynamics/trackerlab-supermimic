@@ -102,3 +102,21 @@ def test_shared_aim_resume_requires_matching_weight_and_saved_target():
     assert checkpoint_start(ck, "shared-aim") == 5500
     with pytest.raises(ValueError):
         checkpoint_start(ck, "velocity-led")
+
+
+def test_beyondamp_uses_twenty_thousand_updates_and_versioned_geometry():
+    ck = checkpoint(5500)
+    ck["arguments"].update(entry_duration_s=.60, wasd_reward_version=3,
+                           stealth_gait_weight=.02, amp_weight=.1,
+                           stealth_gait_version=2, stealth_swing_height=.04)
+    ck["aim_style_guidance"] = {"palm_separation": {}}
+    assert checkpoint_start(ck, "beyondamp") == 5500
+    budget = plan(5500, actor_updates=20000)
+    assert budget["actor_update_budget"] == 20000
+    assert budget["remaining_actor_updates"] == 15000
+    assert budget["milestones"] == [10500, 20500]
+    del ck["aim_style_guidance"]["palm_separation"]
+    with pytest.raises(ValueError, match="palm separation"):
+        checkpoint_start(ck, "beyondamp")
+    with pytest.raises(ValueError):
+        plan(20500, actor_updates=20000)

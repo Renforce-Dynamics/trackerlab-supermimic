@@ -36,6 +36,8 @@ def command_training_metadata(checkpoint):
     if arguments.get("wasd_reward_version", 1) >= 3:
         metadata["wasd_reward_version"] = arguments["wasd_reward_version"]
         metadata["stealth_gait_weight"] = arguments.get("stealth_gait_weight", 0.)
+        metadata["stealth_gait_version"] = arguments.get("stealth_gait_version", 1)
+        metadata["stealth_swing_height"] = arguments.get("stealth_swing_height", .04)
     return metadata
 
 

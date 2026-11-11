@@ -47,7 +47,8 @@ class LocomotionQuality:
     def __init__(self, kin, field, motors, *, foot_slide_weight=.008,
                  feet_close_weight=.008, foot_slip_mode="legacy",
                  differentiate_support=False, stealth_gait_weight=0.,
-                 entry_duration_s=0.):
+                 entry_duration_s=0., stealth_gait_version=1,
+                 stealth_swing_height=.04):
         for name, value in (("foot_slide_weight", foot_slide_weight),
                             ("feet_close_weight", feet_close_weight),
                             ("stealth_gait_weight", stealth_gait_weight),
@@ -65,12 +66,23 @@ class LocomotionQuality:
             raise ValueError("g1_sole is supported only for G1")
         if stealth_gait_weight and (foot_slip_mode != "g1_sole" or stealth_gait_weight > .04):
             raise ValueError("Gait shaping requires g1_sole and a weight at most .04")
+        if type(stealth_gait_version) is not int or stealth_gait_version not in (1, 2):
+            raise ValueError("Stealth gait version must be 1 or 2")
+        if (isinstance(stealth_swing_height, bool)
+                or not isinstance(stealth_swing_height, (int, float))
+                or not math.isfinite(stealth_swing_height)
+                or not .02 <= stealth_swing_height <= .08):
+            raise ValueError("Stealth swing height must lie in [.02, .08] scaled meters")
+        if stealth_gait_version == 2 and (not stealth_gait_weight or foot_slip_mode != "g1_sole"):
+            raise ValueError("Gait version 2 requires enabled G1 sole shaping")
         self.kin, self.field = kin, field
         self.foot_slip_mode = foot_slip_mode
         self.differentiate_support = differentiate_support
         self.foot_slide_weight = float(foot_slide_weight)
         self.feet_close_weight = float(feet_close_weight)
         self.stealth_gait_weight = float(stealth_gait_weight)
+        self.stealth_gait_version = stealth_gait_version
+        self.stealth_swing_height = float(stealth_swing_height)
         self.entry_duration_s = float(entry_duration_s)
         spec = kin.robot
         tracked = [kin.body_names[index] for index in kin.tracked_idx]
@@ -192,7 +204,8 @@ class LocomotionQuality:
         penalty = command_gait_penalty(
             metrics["sole_point_height_m"], metrics["sole_point_velocity_m_s"], command,
             scale=self.field.scale, weight=self.stealth_gait_weight,
-            foot_slide_weight=self.foot_slide_weight, entry_duration_s=self.entry_duration_s)
+            foot_slide_weight=self.foot_slide_weight, entry_duration_s=self.entry_duration_s,
+            version=self.stealth_gait_version, swing_height=self.stealth_swing_height)
         return self._reward_from_measurements(state, action, xi, metrics) + penalty
 
     def _reward_from_measurements(self, state, action, xi, metrics):

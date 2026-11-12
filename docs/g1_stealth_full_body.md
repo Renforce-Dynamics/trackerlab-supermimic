@@ -106,6 +106,34 @@ bash scripts/rls/supermimic/run_g1_stealth_full_body.sh \
 The budget is500world-model-only iterations plus5,000actor updates, ending
 at5,500. The sole quality review is at that final checkpoint. The controller
 records all nine held commands, six held-forward attempts and the42srelease
-sequence, preserving failed attempts. Extra training/export and other robots
-remain subject to actual G1 visual acceptance. A corrected reference render
+sequence, preserving failed attempts. Extra training follows a recorded review;
+export and other robots require actual G1 visual acceptance. A corrected reference render
 does not establish a corrected trained policy.
+
+## Five-Thousand-Update Continuation
+
+After reviewing the first trial, an explicit extension preserves the complete
+checkpoint state and adds 5,000 actor updates. It starts at iteration 5,500
+and ends at 10,500, with a single final review. There is no second WM-only
+warmup or optimizer reset. A later interrupted extension may resume within
+the same absolute budget; its saved target must be 10,500.
+Replay buffers and physical worlds use the existing resume startup; the
+serialized model, optimizer and normalization states carry forward.
+
+```sh
+SUPERMIMIC_STEALTH_EXTRA_UPDATES=5000 \
+SUPERMIMIC_STEALTH_PHASE_PROFILE_UPDATES=1000 \
+bash scripts/rls/supermimic/run_g1_stealth_full_body.sh \
+  PYTHON NEW_RUN SOURCE_25500 CORRECTED_POOL SOURCE_COMMIT CHECKPOINT_5500
+```
+
+The pool, entry source, learned action controller, preset and saved AMP state
+must retain their identities. The source checkpoint and first review remain
+preserved. This continuation keeps the reward/data configuration and all nine
+commands; its new run directory distinguishes the additional budget.
+
+Optional phase observation is requested separately and follows the ordinary
+1,000-update timing interval. The runner accepts zero or 1,000 observed updates.
+If fewer than 2,040 updates remain in an interrupted extension, choose zero
+to retain its existing training budget. The controller records the chosen
+timing count and refuses a window that would exceed the target.

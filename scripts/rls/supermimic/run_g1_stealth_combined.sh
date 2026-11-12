@@ -13,14 +13,28 @@ resume=${6:-}
 repo=$(git rev-parse --show-toplevel)
 recipe=${SUPERMIMIC_STEALTH_RECIPE:-combined}
 extra_updates=${SUPERMIMIC_STEALTH_EXTRA_UPDATES:-0}
+phase_profile_updates=${SUPERMIMIC_STEALTH_PHASE_PROFILE_UPDATES:-0}
 case "$extra_updates" in
     0|5000) ;;
     *) printf 'Additional actor updates must be 0 or 5000.\n' >&2; exit 2 ;;
 esac
-if [ "$extra_updates" != 0 ] && { [ "$recipe" != beyondamp ] || [ -z "$resume" ]; }; then
-    printf 'Additional updates require the BeyondAMP recipe and a full resume checkpoint.\n' >&2
-    exit 2
+if [ "$extra_updates" != 0 ]; then
+    case "$recipe" in
+        beyondamp|fullbody)
+            if [ -z "$resume" ]; then
+                printf 'Additional updates require a full resume checkpoint.\n' >&2
+                exit 2
+            fi
+            ;;
+        *) printf 'Additional updates require BeyondAMP or fullbody.\n' >&2; exit 2 ;;
+    esac
 fi
+profile_options=()
+case "$phase_profile_updates" in
+    0) ;;
+    1000) profile_options=(--phase-profile-updates "$phase_profile_updates") ;;
+    *) printf 'Phase profiling updates must be 0 or 1000.\n' >&2; exit 2 ;;
+esac
 budget_recipe=()
 aim_options=()
 expected_final=50500
@@ -46,8 +60,8 @@ case "$recipe" in
     fullbody)
         test "$(git branch --show-current)" = main
         config=$repo/scripts/rls/supermimic/configs/command_stealth_full_body.json
-        budget_recipe=(--recipe fullbody --pool "$pool")
-        expected_final=5500
+        budget_recipe=(--recipe fullbody --pool "$pool" --extra-actor-updates "$extra_updates")
+        expected_final=$((5500+extra_updates))
         test -f "$pool/aim-style-reference.json"
         test -f "$pool/full-body-style.json"
         aim_options=(--aim-style-reference "$pool/aim-style-reference.json")
@@ -100,6 +114,15 @@ test "${#milestones[@]}" -gt 0
 printf '%s\n' "$start" > "$run/starting_iteration"
 printf '%s\n' "$final" > "$run/target_iterations"
 printf '%s\n' "$((final-500))" > "$run/actor_update_budget"
+printf '%s\n' "$phase_profile_updates" > "$run/phase_profile_updates"
+if [ "$phase_profile_updates" != 0 ]; then
+    profile_base=$((start+40))
+    if [ "$profile_base" -lt 540 ]; then profile_base=540; fi
+    if [ "$((profile_base+1000+phase_profile_updates))" -gt "$final" ]; then
+        printf 'Phase window does not fit; choose phase profiling 0 for this continuation.\n' >&2
+        exit 2
+    fi
+fi
 set_phase waiting_gpu
 while true; do
     check_stop
@@ -133,6 +156,7 @@ for target in "${milestones[@]}"; do
         --task locomotion/g1/stealth --config "$config" --run-dir "$run/training" \
         "${source[@]}" --amp-motion-config "$pool/train.json" \
         "${aim_options[@]}" \
+        "${profile_options[@]}" \
         --iterations "$target" --buffer-steps 500 --keep-every 500 --ckpt-every 250 \
         --log-every 25 --stop-file "$run/STOP" > "$stage/train.stdout.log" 2>&1
     check_stop

@@ -19,6 +19,7 @@ WRAPPER = SCRIPTS / "run_g1_stealth_full_body.sh"
 def fullbody_case(case):
     configure(case)
     for name in ("SUPERMIMIC_STEALTH_RECIPE", "SUPERMIMIC_STEALTH_EXTRA_UPDATES",
+                 "SUPERMIMIC_STEALTH_PHASE_PROFILE_UPDATES",
                  "TEST_RESUME_ITERATION", "TEST_PREFLIGHT_FAIL", "TEST_PREFLIGHT_MUTATE",
                  "TEST_BRANCH", "TEST_CODE_PIN", "TEST_DIRTY"):
         case.env.pop(name, None)
@@ -75,9 +76,9 @@ mode=unknown''')
 ''')
     script = script.replace("        future=()", r'''
         if [ "${SUPERMIMIC_STEALTH_RECIPE:-}" = fullbody ]; then
-            final=5500
-            actors=5000
-            targets=(5500)
+            final=$((5500+${SUPERMIMIC_STEALTH_EXTRA_UPDATES:-0}))
+            actors=$((final-500))
+            targets=("$final")
         fi
         future=()''')
     script = script.replace("    train)", r'''    train)
@@ -184,8 +185,8 @@ def test_fullbody_refuses_different_branch_pin_or_dirty_source(fullbody_case, va
     assert not (case.root / "calls").exists()
 
 
-@pytest.mark.parametrize("extra", ["5000", "10000", "-1"])
-def test_fullbody_never_accepts_extra_updates_even_with_resume(fullbody_case, extra):
+@pytest.mark.parametrize("extra", ["10000", "-1"])
+def test_fullbody_rejects_unbounded_extra_updates(fullbody_case, extra):
     case = fullbody_case
     case.env["SUPERMIMIC_STEALTH_EXTRA_UPDATES"] = extra
     case.command.append(case.resume.as_posix())
@@ -193,6 +194,57 @@ def test_fullbody_never_accepts_extra_updates_even_with_resume(fullbody_case, ex
         _, errors = process.communicate(timeout=10)
         assert process.returncode == 2, errors
     assert not (case.root / "calls").exists()
+
+
+def test_fullbody_extension_uses_one_full_resume_and_optional_timing(fullbody_case):
+    case = fullbody_case
+    case.env.update(SUPERMIMIC_STEALTH_EXTRA_UPDATES="5000",
+                    SUPERMIMIC_STEALTH_PHASE_PROFILE_UPDATES="1000",
+                    TEST_RESUME_ITERATION="5500")
+    case.command.append(case.resume.as_posix())
+    run_to_exit(case)
+    trainer, = calls(case, "train")
+    assert trainer["iteration"] == "10500"
+    assert trainer["resume"] == case.resume.as_posix() and trainer["warm_start"] == ""
+    assert (case.run / "starting_iteration").read_text().strip() == "5500"
+    assert (case.run / "actor_update_budget").read_text().strip() == "10000"
+    assert (case.run / "phase_profile_updates").read_text().strip() == "1000"
+    assert (case.run / "controller.phase").read_text().strip() == "completed_10500_awaiting_visual_review"
+    assert [p.name for p in (case.run / "milestones").iterdir()] == ["010500"]
+    arguments = (case.root / "python-arguments").read_text().splitlines()
+    position = arguments.index("--phase-profile-updates")
+    assert arguments[position + 1] == "1000"
+    assert len(calls(case, "evaluate")) == 3 and len(calls(case, "render")) == 11
+    assert_inputs_preserved(case)
+
+
+def test_fullbody_extension_requires_full_resume(fullbody_case):
+    case = fullbody_case
+    case.env["SUPERMIMIC_STEALTH_EXTRA_UPDATES"] = "5000"
+    with running_runner(case) as process:
+        _, errors = process.communicate(timeout=10)
+        assert process.returncode == 2 and "full resume checkpoint" in errors
+    assert not (case.root / "calls").exists()
+
+
+@pytest.mark.parametrize("value", ["-1", "500", "1001"])
+def test_fullbody_rejects_invalid_phase_window(fullbody_case, value):
+    case = fullbody_case
+    case.env["SUPERMIMIC_STEALTH_PHASE_PROFILE_UPDATES"] = value
+    with running_runner(case) as process:
+        _, errors = process.communicate(timeout=10)
+        assert process.returncode == 2, errors
+    assert not (case.root / "calls").exists()
+
+
+def test_fullbody_phase_window_must_fit_remaining_updates(fullbody_case):
+    case = fullbody_case
+    case.env.update(SUPERMIMIC_STEALTH_EXTRA_UPDATES="5000",
+                    SUPERMIMIC_STEALTH_PHASE_PROFILE_UPDATES="1000",
+                    TEST_RESUME_ITERATION="9000")
+    case.command.append(case.resume.as_posix())
+    run_to_exit(case, expected=2)
+    assert [r["mode"] for r in calls(case)] == ["budget"]
 
 
 def test_fullbody_preflight_failure_prevents_training(fullbody_case):

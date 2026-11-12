@@ -13,14 +13,14 @@ REVIEW_ITERATIONS = (2500, 5500, 10500, 20500, 30500, 40500, TARGET_ITERATION)
 
 
 def plan(start_iteration=0, *, actor_updates=ACTOR_UPDATES):
-    if type(actor_updates) is not int or actor_updates not in (5000, 20000, 25000, ACTOR_UPDATES):
-        raise ValueError("Supported actor budgets are 5000, 20000, 25000 and 50000 updates")
+    if type(actor_updates) is not int or actor_updates not in (5000, 10000, 20000, 25000, ACTOR_UPDATES):
+        raise ValueError("Supported actor budgets are 5000, 10000, 20000, 25000 and 50000 updates")
     final = WARMUP_ITERATIONS + actor_updates
     if (type(start_iteration) is not int or start_iteration < 0
             or start_iteration >= final):
         raise ValueError(f"Combined run start must be an integer before iteration {final}")
     completed_actor = max(0, start_iteration - WARMUP_ITERATIONS)
-    reviews = (final,) if actor_updates == 5000 else (*REVIEW_ITERATIONS, final)
+    reviews = (final,) if actor_updates in (5000, 10000) else (*REVIEW_ITERATIONS, final)
     return {
         "starting_iteration": start_iteration,
         "target_iteration": final,
@@ -38,14 +38,14 @@ def plan(start_iteration=0, *, actor_updates=ACTOR_UPDATES):
 def actor_budget(recipe, extra_actor_updates=0):
     if type(extra_actor_updates) is not int or extra_actor_updates not in (0, 5000):
         raise ValueError("Additional actor updates must be 0 or 5000")
-    if extra_actor_updates and recipe != "beyondamp":
-        raise ValueError("The extra 5000 updates require the BeyondAMP recipe")
+    if extra_actor_updates and recipe not in ("beyondamp", "fullbody"):
+        raise ValueError("The extra 5000 updates require the BeyondAMP or fullbody recipe")
     if recipe == "fullbody":
-        return 5000
+        return 5000 + extra_actor_updates
     return (20000 if recipe == "beyondamp" else ACTOR_UPDATES) + extra_actor_updates
 
 
-def validate_fullbody_resume(checkpoint, pool):
+def validate_fullbody_resume(checkpoint, pool, *, extended=False):
     """Bind a bounded continuation to its preset, learned controller and pool."""
     preset_path = Path(__file__).parent / "configs/command_stealth_full_body.json"
     preset = json.loads(preset_path.read_text(encoding="utf-8"))
@@ -58,8 +58,14 @@ def validate_fullbody_resume(checkpoint, pool):
         "allow_style_feature_change": False, "allow_support_gradient_change": False,
         "warm_start_normalizer_prior_count": 0.,
     }
+    expected.pop("iterations")
+    permitted_targets = (5500, 10500) if extended else (5500,)
     if (checkpoint.get("robot") != "g1"
             or Path(args.get("config") or "").name != preset_path.name
+            or type(args.get("iterations")) is not int
+            or args["iterations"] not in permitted_targets
+            or type(checkpoint.get("iteration")) is not int
+            or checkpoint["iteration"] > args["iterations"]
             or any(name not in args or args[name] != value for name, value in expected.items())):
         raise ValueError("Fullbody resume requires the matching preset and target height")
     from bootstrap import configure_paths
@@ -148,8 +154,10 @@ def checkpoint_start(checkpoint, recipe="combined", *, extra_actor_updates=0, po
         if not isinstance(checkpoint.get(key), dict):
             raise ValueError(f"Full combined resume is missing {key}")
     if recipe == "fullbody":
-        validate_fullbody_resume(checkpoint, pool)
+        validate_fullbody_resume(checkpoint, pool, extended=bool(extra_actor_updates))
     iteration = checkpoint.get("iteration")
+    if recipe == "fullbody" and extra_actor_updates and iteration < 5500:
+        raise ValueError("Fullbody extension requires the original 5500-iteration budget completed")
     plan(iteration, actor_updates=budget)
     if iteration < 1:
         raise ValueError("Resume requires a saved completed iteration")

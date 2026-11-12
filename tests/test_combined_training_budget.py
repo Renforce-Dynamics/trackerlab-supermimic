@@ -240,8 +240,8 @@ def test_fullbody_rejects_completed_or_invalid_resume(fullbody_state, start):
         checkpoint_start(ck, "fullbody", pool=pool)
 
 
-@pytest.mark.parametrize("recipe", ["combined", "velocity-led", "shared-aim", "fullbody"])
-def test_extra_five_thousand_remains_exclusive_to_beyondamp(recipe):
+@pytest.mark.parametrize("recipe", ["combined", "velocity-led", "shared-aim"])
+def test_extra_five_thousand_requires_a_bounded_recipe(recipe):
     with pytest.raises(ValueError, match="BeyondAMP"):
         actor_budget(recipe, 5000)
 
@@ -316,7 +316,56 @@ def test_fullbody_cli_reads_full_saved_state_on_cpu_and_does_not_reset_budget(fu
     assert result["remaining_world_only_iterations"] == 0
     assert result["remaining_actor_updates"] == 4127
     assert result["milestones"] == [5500]
-    with pytest.raises(ValueError, match="BeyondAMP"):
+    with pytest.raises(ValueError, match="original 5500"):
         main(["--recipe", "fullbody", "--pool", str(pool), "--resume", str(path),
               "--extra-actor-updates", "5000", "--output", str(tmp_path / "extra.json")])
     assert not (tmp_path / "extra.json").exists()
+
+
+@pytest.mark.parametrize("start", [5500, 6000, 10499])
+def test_fullbody_extension_preserves_full_state_and_remaining_budget(fullbody_state, start):
+    ck, pool = fullbody_state
+    ck["iteration"] = start
+    if start > 5500:
+        ck["arguments"]["iterations"] = 10500
+    before = deepcopy(ck)
+    assert checkpoint_start(ck, "fullbody", pool=pool, extra_actor_updates=5000) == start
+    result = plan(start, actor_updates=actor_budget("fullbody", 5000))
+    assert result["target_iteration"] == 10500
+    assert result["remaining_world_only_iterations"] == 0
+    assert result["remaining_actor_updates"] == 10500 - start
+    assert result["actor_updates_already_completed"] == start - 500
+    assert result["milestones"] == [10500]
+    assert ck == before
+
+
+def test_fullbody_extension_cli_requires_completed_source_and_preserves_sources(
+        fullbody_state, tmp_path, capsys):
+    import torch
+    ck, pool = fullbody_state
+    ck["iteration"] = 5500
+    source = tmp_path / "5500.pt"
+    output = tmp_path / "extension.json"
+    torch.save(ck, source)
+    source_bytes = source.read_bytes()
+    main(["--recipe", "fullbody", "--pool", str(pool), "--resume", str(source),
+          "--extra-actor-updates", "5000", "--output", str(output)])
+    assert capsys.readouterr().out == "5500 10500 10500\n"
+    result = json.loads(output.read_text())
+    assert result["additional_actor_update_budget"] == result["remaining_actor_updates"] == 5000
+    assert result["continuation"].startswith("full checkpoint resume")
+    assert source.read_bytes() == source_bytes
+
+
+def test_fullbody_extension_cannot_expand_a_fresh_run_or_forged_target(fullbody_state, tmp_path):
+    with pytest.raises(SystemExit):
+        main(["--recipe", "fullbody", "--extra-actor-updates", "5000",
+              "--output", str(tmp_path / "unstarted.json")])
+    ck, pool = fullbody_state
+    ck["iteration"] = 6000
+    with pytest.raises(ValueError, match="preset"):
+        checkpoint_start(ck, "fullbody", pool=pool, extra_actor_updates=5000)
+    ck["arguments"]["iterations"] = 10500
+    ck["iteration"] = 10500
+    with pytest.raises(ValueError):
+        checkpoint_start(ck, "fullbody", pool=pool, extra_actor_updates=5000)

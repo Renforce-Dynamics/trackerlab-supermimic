@@ -11,9 +11,9 @@ Gait weight 0.02, swing height 0.04 m, AMP weight 0.1, all nine WASD modes,
 ## Evidence And Scope
 
 The reviewed v2 checkpoint at iteration 10,500 achieved 90/90 numerical
-successes and still failed visual review. Version 3 has never been trained
-or deployed at the time this recipe was prepared. Its effect on policy
-behavior awaits the bounded trial and owner visual review.
+successes and still failed visual review. The November 13, 2026 v3 trial
+has now completed its full budget and recordings. It retains visual failures;
+the measured results and the subsequent observability finding are below.
 
 The saved first-attempt iteration-5,500 material was examined by the CPU
 `support_gradient_audit.py` under
@@ -127,3 +127,79 @@ visual acceptance pending.
 An unreviewed result remains excluded from policy export and other-robot
 training. CPU checks verify the recipe contracts; target-server execution and
 actual policy recordings provide separate evidence.
+
+## Completed Trial: November 13, 2026
+
+Training source `1d267aff134daf416c95bf3136ad95742c6d9b9f` completed
+500 WM-only iterations and 5,000 actor updates. The final checkpoint label is
+5,500, SHA256
+`e8b26027ff02382c511e5ed9f942120589731443009afd7966fbea5f44e76b62`.
+Actual saved optimizer counters are actor 5,000, WM 55,000, critic 100,000 and
+AMP 30,000; AMP started at 20,000. The controller exited 0 after all recordings.
+Actor normalization remained identical to the source checkpoint.
+
+Held forward passed 24/24 episodes. All nine held commands passed 90/90 with
+zero falls. Evaluation protocols, recorded commands, physical contexts and
+initial poses match the retained v2 comparison. Eleven videos were
+hash-verified and fully decoded, totaling 6,050 frames. Dense side-frame
+inspection covered forward entry/stepping, left pivot and backward-left;
+decode coverage alone makes no visual-acceptance claim.
+
+First-attempt whole-sole lifts over 2..18 seconds use the same definition:
+the lowest sole pole is above 2 cm for an observed span of at least 80 ms.
+
+| Command | v2 at 10,500: Left/Right | v3 at 5,500: Left/Right |
+| --- | ---: | ---: |
+| W |25/26|21/21|
+| S |8/12|11/13|
+| A |0/0|0/0|
+| D |18/10|28/27|
+| W+A |26/27|21/21|
+| W+D |27/27|23/23|
+| S+A |0/6|0/15|
+| S+D |0/25|1/25|
+| Idle |0/0|0/0|
+
+Forward geometric support slip decreased from 0.02668 to 0.02026 m/s.
+Left-pivot slip remains 0.10692 m/s, with no sustained whole-sole lifts.
+Backward-left retains a dragging left foot, and backward-right remains
+asymmetric. In the matched held-forward first attempt, mean torso lean
+increased from 13.76 to 15.02 degrees; the selected reference is 24.45 degrees.
+Idle retains approximately 0.283 m fore/aft foot spacing.
+
+The 42 second release sequence was recorded with 18 worlds. Its episode counters
+are zero, so it supplies recorded transition evidence rather than an 18/18
+completed-episode success rate.
+
+**Visual acceptance remains false.** Preserve this partial improvement and
+its source model. Export and other-robot training remain unqualified.
+The bounded evidence is in
+`../artifacts/g1-stealth-fullbody-review-20261112/contact-v3-005500/review-evidence.json`
+(SHA256 `862b47be0f9b13583f81a2ec1fc17bafad9fdc0e5b78f1a0dc73082ea3c8423d`).
+The ordinary 1,000-update speed window, iterations 541..1540, measured
+1.211489 updates/s; shorter windows near 1.26/s are a different statistic.
+Historical Tele speed parity remains unmet.
+
+## AMP Observability Finding
+
+A local CPU probe bound the unmodified production feature and history methods
+to the saved 117-value `postural_end_effectors_vx` layout. With the exact
+selected-pose CSV, zero root translation/joint velocity and rigid yaw rates
+0 or +/-0.55 rad/s, all 1,170 values over ten frames were byte-identical. Actual
+collision-sole material-point horizontal speeds changed from 0 to
+0.0840..0.3021 m/s. Independent MuJoCo/analytic velocity agreement was within
+5.58e-8 m/s.
+
+This proves ambiguity in the feature map for that kinematic construction.
+The selected pose includes sole heights from 0.003 to 0.1454 m; the probe establishes
+neither contact feasibility nor the cause of the learned policy's failures.
+Global-heading invariance was checked separately. A two-term posture probe
+also found that upright and torso-style rewards compete, while their combined
+gradient at the old forward samples still favors more forward tilt. It does
+not support attributing the posture failure to the upright term alone.
+
+A subsequent bounded candidate may append two per-foot RMS horizontal
+sole-speed features derived from existing WM state and FK. Actor inputs,
+reference data and task rewards would retain their current contracts.
+The candidate requires its own discriminator training, gradient/geometry
+checks and actual G1 visual review. It has not been implemented or trained.

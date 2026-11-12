@@ -60,6 +60,34 @@ twenty critic steps and two AMP steps per full iteration.
 
 Historical Tele's 2.47115 updates/s used an RTX PRO 6000 and a different
 environment count and workload. A phase receipt and matched hardware
-measurement remain required to attribute the speed difference. This optional
-observer has no measured GPU timing result yet, and speed observations provide
-no motion-quality acceptance.
+measurement remain required to attribute the speed difference. Speed
+observations provide no motion-quality acceptance.
+
+The subsequent v2 full-body extension at `adb8f827` completed a 1,000-update
+phase interval, zero-based indices 6540..7539, on the same RTX 4090. Its
+instrumented speed was 1.258066 updates/s; the preceding ordinary window measured
+1.262735 updates/s. Actual optimizer deltas were WM 10,000, actor 1,000,
+critic 20,000 and AMP 2,000.
+
+The largest mean current-stream span was actor backward/optimizer 417.10 ms,
+followed by WM 120.57 ms, collection 73.50 ms and imagination 66.63 ms. These spans
+include stream gaps. They are not exclusive kernel timings. An arithmetic
+scenario subtracting the entire WM span while keeping all other observed
+durations fixed gives about 1.48 updates/s; this is a prioritization calculation,
+not a measured optimization.
+
+The completed November 13 contact-v3 trial at `1d267aff` measured
+1.211489 updates/s over its ordinary 541..1540 window. Recent 25-update windows
+near 1.26/s must not replace that complete-window statistic.
+
+Local Tele source `8dea656b` enforces `SM_GRAPH_SCOPE=wm` at its accepted
+entrypoint. WM fitting requests `reduce-overhead`; imagination requests default
+compilation. Command training currently requests `reduce-overhead` for both WM
+and imagination. Both use BF16 MLP autocast with TF32 disabled. These source
+settings alone establish neither actual backward graph replay nor a speedup.
+
+After G1 visual review, a narrow benchmark candidate can disable CUDA graphs
+only for command imagination while preserving compilation, workload, precision,
+data and optimizer schedules. Full-horizon value/gradient checks, explicit RNG
+accounting and equal complete-update timing windows are required before
+adoption. No such performance candidate has been implemented or benchmarked.

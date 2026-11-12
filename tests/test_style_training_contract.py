@@ -405,6 +405,7 @@ class StyleTrainingContractTests(unittest.TestCase):
         namespace = {
             "torch": torch, "args": args, "actor": actor, "world": world,
             "critic": critic, "style": learner,
+            "phase_probe": None,
             "style_reward_fn": learner.reward_from_features,
             "style_frame_fn": learner.frame_features,
             "regularization_reward_fn": lambda previous, state, action, xi: action.sum(-1) * 0,

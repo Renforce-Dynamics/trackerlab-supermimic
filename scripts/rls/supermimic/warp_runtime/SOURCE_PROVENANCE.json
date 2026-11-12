@@ -4,7 +4,7 @@
   "source_revision": "c27a8ce",
   "source": "Portable accepted scratch BF16/FP32 WM-graph runtime with source-level endpoint and active-normalizer repairs.",
   "target_shared_source_revision": "f83c532",
-  "scope": "Optional G1 runtime only; excludes private deployment state, datasets, checkpoints and remote launches.",
+  "scope": "Optional G1 tracking runtime and command/AMP timing; excludes private deployment state, datasets, checkpoints and remote launches.",
   "source_files": {
     "actual_batch_validation.py": {
       "source_sha256": "15ec1ab6fd126762c2905b8a400fe87961ec894e3c85f942d57cbf060eeb6f65",
@@ -18,6 +18,15 @@
       "integrated_sha256_lf": "dbf03012f2759d50e7e6802cb67c46acf5329eaa9e7de7e8ab729c7cdd30c894",
       "integration_changes": [
         "New source integrity receipt for repaired shared sources and independent legacy normalizer fixture."
+      ]
+    },
+    "command_phase_probe.py": {
+      "source_sha256": null,
+      "integrated_sha256": "b1b8483ec0460f48e8d006300fcc77069b18b24dad6efea92321a8ab7f5d0cb7",
+      "integrated_sha256_lf": "b1b8483ec0460f48e8d006300fcc77069b18b24dad6efea92321a8ab7f5d0cb7",
+      "integration_changes": [
+        "New opt-in command/AMP observer using boundary synchronization and actual optimizer step states.",
+        "Record complete, partial and unstarted windows without changing model, RNG, optimizer or normalizer state."
       ]
     },
     "compact_gpu_motion.py": {

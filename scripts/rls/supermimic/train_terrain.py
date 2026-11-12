@@ -68,6 +68,8 @@ def parse_args(argv=None):
     parser.add_argument("--ckpt-every", type=int, default=500)
     parser.add_argument("--keep-every", type=int, default=2000)
     parser.add_argument("--speed-probe-updates", type=int, default=1000)
+    parser.add_argument("--phase-profile-updates", type=int, default=0,
+                        help="Optional 1..1000 phase-timed updates after the ordinary speed window")
     parser.add_argument("--resume", type=Path)
     parser.add_argument("--warm-start", type=Path)
     parser.add_argument("--warm-start-reset-arms", action="store_true")
@@ -156,6 +158,10 @@ def parse_args(argv=None):
         command_clearance_options(vars(args))
     except ValueError as error:
         parser.error(str(error))
+    if not 0 <= args.phase_profile_updates <= 1000:
+        parser.error("--phase-profile-updates must be between 0 and 1000")
+    if args.phase_profile_updates and args.profile:
+        parser.error("Use one phase timing mode per run")
     return args
 
 
@@ -712,6 +718,8 @@ def main():
         raise RuntimeError("Terrain training requires CUDA")
     configure_cuda_memory(args.cuda_memory_fraction, args.device)
     run = args.run_dir.resolve()
+    if args.phase_profile_updates and (run / "command_phase_profile.json").exists():
+        raise ValueError("Preserve the existing phase timing receipt; use a fresh run directory")
     if args.resume and args.warm_start:
         raise SystemExit("Choose resume or a command/style warm start")
     if (run / "last.pt").exists() and not args.resume:
@@ -1077,6 +1085,9 @@ def main():
         raise ValueError("Frozen actor normalization requires initialized saved statistics")
     if start_it >= args.iterations:
         raise ValueError("Requested iterations must exceed resumed checkpoint iteration")
+    phase_first_index = max(args.wm_only_iters + 40, start_it + 40) + args.speed_probe_updates
+    if args.phase_profile_updates and phase_first_index + args.phase_profile_updates > args.iterations:
+        raise ValueError("Phase timing must fit after the ordinary speed window in the requested run")
     amp_updates_total = style.checkpoint()["updates"]
     with (run / "run_config.json").open("w", encoding="utf-8") as stream:
         json.dump({"arguments": vars(args) | {"run_dir": str(run)},
@@ -1284,12 +1295,16 @@ def main():
         return ({key: torch.cat([row[key] for row in starts]) for key in starts[0]},
                 {key: torch.cat([row[key] for row in histories]) for key in histories[0]})
 
+    phase_probe = None
+
     def policy_update():
         if args.compile:
             torch.compiler.cudagraph_mark_step_begin()
         if args.profile:
             torch.cuda.synchronize()
             profile_start = time.monotonic()
+        if phase_probe is not None:
+            phase_probe.start_phase("actor_sample_and_history")
         data, hist = sample_starts(args.pi_batch)
         state = unflatten_state(data["s"])
         xi, c, a_prev = data["xi"], data["c"], data["a_prev"]
@@ -1303,6 +1318,9 @@ def main():
         actor_hist = obs_hist_local[:, -args.hist:]
         with torch.no_grad():
             style_history = style_frame_fn(history_states)[:, -style.history_steps:]
+        if phase_probe is not None:
+            phase_probe.end_phase("actor_sample_and_history")
+            phase_probe.start_phase("actor_imagination")
         frozen = (*world.parameters(), *critic.parameters(), *style.parameters())
         old_flags = [p.requires_grad for p in frozen]
         for parameter in frozen:
@@ -1318,6 +1336,9 @@ def main():
             commands.append(c)
         states = tuple(torch.stack([row[index] for row in rows]) for index in range(6))
         flat_c = torch.stack(commands).flatten(0, 1)
+        if phase_probe is not None:
+            phase_probe.end_phase("actor_imagination")
+            phase_probe.start_phase("actor_task_rewards")
         reward, done = reward_term(tuple(value.flatten(0, 1) for value in states),
                                    torch.stack(actions).flatten(0, 1),
                                    torch.stack(previous).flatten(0, 1), flat_c)
@@ -1340,6 +1361,9 @@ def main():
         if aim_style_reward_fn is not None:
             reward = reward + aim_style_reward_fn(
                 tuple(value.flatten(0, 1) for value in states), flat_c)
+        if phase_probe is not None:
+            phase_probe.end_phase("actor_task_rewards")
+            phase_probe.start_phase("actor_style_reward")
         style_frames = style_frame_fn(states)
         style_windows = style.rollout_features(style_history, style_frames).flatten(0, 1)
         style_reward = style_reward_fn(style_windows)
@@ -1349,6 +1373,9 @@ def main():
             style_reward = style_reward * (real_history >= style.history_steps).flatten()
             style_reward = style_reward * entry_blend(flat_c, args.entry_duration_s)
         reward = reward + args.amp_weight * style_reward
+        if phase_probe is not None:
+            phase_probe.end_phase("actor_style_reward")
+            phase_probe.start_phase("actor_objective")
         reward, done = reward.view(args.horizon, -1), done.view(args.horizon, -1)
         alive = torch.cumprod(1 - done, 0)
         alive_prev = torch.cat((torch.ones_like(alive[:1]), alive[:-1]), 0)
@@ -1360,6 +1387,9 @@ def main():
         if args.profile:
             torch.cuda.synchronize()
             profile_forward = time.monotonic()
+        if phase_probe is not None:
+            phase_probe.end_phase("actor_objective")
+            phase_probe.start_phase("actor_backward_and_step")
         opt_pi.zero_grad(set_to_none=True)
         pi_loss.backward()
         if args.profile:
@@ -1370,6 +1400,9 @@ def main():
         opt_pi.step()
         for parameter, flag in zip(frozen, old_flags):
             parameter.requires_grad_(flag)
+        if phase_probe is not None:
+            phase_probe.end_phase("actor_backward_and_step")
+            phase_probe.start_phase("critic")
         with torch.no_grad():
             state_seq = tuple(torch.cat((initial[i].unsqueeze(0), states[i].detach()), 0)
                               for i in range(6))
@@ -1404,6 +1437,8 @@ def main():
             print(f"profile imagine={profile_forward - profile_start:.3f}s "
                   f"backward={profile_backward - profile_forward:.3f}s "
                   f"critic={time.monotonic() - profile_backward:.3f}s", flush=True)
+        if phase_probe is not None:
+            phase_probe.end_phase("critic")
         return tuple(value.detach().clone() for value in
                      (pi_loss, v_loss, pi_grad, reward.mean(), style_reward.mean()))
 
@@ -1440,17 +1475,49 @@ def main():
         probe_started_at = None
         probe_start_completed = probe_first_index + 1
         probe_summary = None
+        if args.phase_profile_updates:
+            from warp_runtime.command_phase_probe import CommandPhaseProbe
+            phase_probe = CommandPhaseProbe(
+                run, first_iteration=phase_first_index, updates=args.phase_profile_updates,
+                device=args.device,
+                optimizers={"world_model": opt_wm, "actor": opt_pi,
+                            "critic": opt_v, "amp": style.optimizer},
+                metadata={
+                    "task": args.task,
+                    "trainer_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+                    "initialization": initialization,
+                    "resume_iteration": start_it,
+                    "ordinary_speed_window": [probe_start_completed,
+                                              probe_first_index + args.speed_probe_updates],
+                    "ordinary_speed_window_indexing": "one-based completed iteration labels",
+                    "workload": {name: getattr(args, name) for name in (
+                        "num_envs", "utd", "horizon", "hist", "wm_window", "wm_batches",
+                        "wm_batch", "pi_batch", "critic_epochs", "critic_minibatches",
+                        "amp_batch", "amp_updates", "amp_history", "solver_iterations",
+                        "log_every", "ckpt_every", "keep_every", "compile",
+                        "compile_critic", "fused_optimizers")},
+                })
         print(f"task={args.task} iterations={start_it + 1}..{args.iterations} envs={args.num_envs}", flush=True)
         for iteration in range(start_it, args.iterations):
+            if phase_probe is not None:
+                phase_probe.begin(iteration)
             if iteration == probe_first_index:
                 torch.cuda.synchronize()
                 probe_started_at = time.monotonic()
             step_credit += 1 / args.utd
             nsteps, step_credit = int(step_credit), step_credit % 1
+            if phase_probe is not None:
+                phase_probe.start_phase("collection")
             outcome_window.append(collect(nsteps))
+            if phase_probe is not None:
+                phase_probe.end_phase("collection")
+                phase_probe.start_phase("world_model")
             wm_loss = torch.zeros((), device=args.device)
             for _ in range(args.wm_batches):
                 wm_loss = wm_update()
+            if phase_probe is not None:
+                phase_probe.end_phase("world_model")
+                phase_probe.start_phase("amp")
             # Fit the prior alongside the actor, after world-model warmup,
             # so the discriminator does not saturate on the initial controller.
             amp_metrics = style.update(batch_size=args.amp_batch, updates=(
@@ -1458,10 +1525,14 @@ def main():
                 tensor_metrics=True)
             amp_updates_total += amp_metrics["updates"]
             amp_loss = torch.as_tensor(amp_metrics["loss"], device=args.device).detach()
+            if phase_probe is not None:
+                phase_probe.end_phase("amp")
             if iteration >= args.wm_only_iters:
                 pi_loss, v_loss, grad, imag_reward, amp_reward = policy_update()
             else:
                 pi_loss = v_loss = grad = imag_reward = amp_reward = torch.zeros((), device=args.device)
+            if phase_probe is not None:
+                phase_probe.start_phase("bookkeeping_and_io")
             expert_score = torch.as_tensor(amp_metrics["expert_score"], device=args.device)
             policy_score = torch.as_tensor(amp_metrics["policy_score"], device=args.device)
             aggregates.append((wm_loss, pi_loss, v_loss, grad, imag_reward, amp_reward, amp_loss,
@@ -1550,8 +1621,13 @@ def main():
                     milestone = run / f"iteration_{iteration + 1:06d}.pt"
                     shutil.copy2(run / "last.pt", milestone.with_suffix(".pt.tmp"))
                     os.replace(milestone.with_suffix(".pt.tmp"), milestone)
+            if phase_probe is not None:
+                phase_probe.end_phase("bookkeeping_and_io")
+                phase_probe.end(iteration)
             if stop_requested:
                 break
+    if phase_probe is not None:
+        phase_probe.finish()
     if probe_started_at is not None:
         torch.cuda.synchronize()
         measured_updates = max(0, iteration + 1 - probe_first_index)

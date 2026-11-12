@@ -96,7 +96,11 @@ def convert_array(raw, joint_names):
 def validate_fk(raw, values, spec):
     import mujoco
 
-    model = mujoco.MjModel.from_xml_path(spec.mjcf_path)
+    model_path = Path(spec.mjcf_path).resolve()
+    # Some Windows MuJoCo builds use ANSI fopen; relative assets avoid the parent path.
+    model_path = (os.path.relpath(model_path)
+                  if model_path.anchor.lower() == Path.cwd().anchor.lower() else str(model_path))
+    model = mujoco.MjModel.from_xml_path(model_path)
     data = mujoco.MjData(model)
     joint_ids = np.array([model.joint(name).id for name in spec.joint_names])
     qids = model.jnt_qposadr[joint_ids]

@@ -51,7 +51,8 @@ def test_stop_sources_are_independent_and_read_only(tmp_path, which):
     assert not training_stop_requested(run, external)
 
 
-def test_external_stop_uses_actual_checkpoint_condition_before_break(tmp_path):
+@pytest.mark.parametrize("observe", [False, True])
+def test_external_stop_uses_actual_checkpoint_condition_before_break(tmp_path, observe):
     tree = ast.parse((SCRIPTS / "train_terrain.py").read_text(encoding="utf-8"))
     main = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "main")
     loop = next(node for node in ast.walk(main) if isinstance(node, ast.For)
@@ -59,20 +60,29 @@ def test_external_stop_uses_actual_checkpoint_condition_before_break(tmp_path):
     index = next(i for i, node in enumerate(loop.body) if isinstance(node, ast.Assign)
                  and any(isinstance(target, ast.Name) and target.id == "stop_requested"
                          for target in node.targets))
-    tail = copy.deepcopy(loop.body[index:index + 4])
-    assert len(tail) == 4 and isinstance(tail[2], ast.If) and isinstance(tail[3], ast.If)
+    tail = copy.deepcopy(loop.body[index:])
+    assert isinstance(tail[2], ast.If) and isinstance(tail[-1], ast.If)
+    assert isinstance(tail[-1].test, ast.Name) and tail[-1].test.id == "stop_requested"
+    assert any(isinstance(node, ast.Break) for node in tail[-1].body)
     # Exercise the real predicates with a checkpoint callback, without model setup.
-    tail[2].body = ast.parse("checkpoints.append(iteration + 1)").body
+    tail[2].body = ast.parse("checkpoints.append(iteration + 1)\norder.append('checkpoint')").body
     harness = ast.parse("for iteration in range(5):\n    request_stop(iteration)\n")
     harness.body[0].body.extend(tail)
     marker = tmp_path / "parent STOP"
-    namespace = {"run": tmp_path / "training", "final": False, "checkpoints": [],
+    order = []
+    observer = SimpleNamespace(
+        end_phase=lambda name: order.append("phase:" + name),
+        end=lambda iteration: order.append(("end", iteration)))
+    namespace = {"run": tmp_path / "training", "final": False, "checkpoints": [], "order": order,
+                 "phase_probe": observer if observe else None,
                  "args": SimpleNamespace(stop_file=[str(marker)], ckpt_every=250, keep_every=250),
                  "training_stop_requested": training_stop_requested,
                  "request_stop": lambda i: marker.touch() if i == 2 else None}
     exec(compile(ast.fix_missing_locations(harness), "trainer-stop-tail", "exec"), namespace)
     assert namespace["iteration"] == 2
     assert namespace["checkpoints"] == [3]
+    if observe:
+        assert order[-3:] == ["checkpoint", "phase:bookkeeping_and_io", ("end", 2)]
 
 
 @pytest.mark.parametrize("robot", ["g1", "go2", "a3", "t1", "bumi", "pi_plus"])

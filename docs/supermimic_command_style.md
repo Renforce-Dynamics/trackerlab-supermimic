@@ -95,6 +95,10 @@ Height scans and body velocity are simulator measurements in this campaign.
 Real deployment requires a local height map and velocity estimator. This is a
 height-map perception experiment, not an RGB-D policy reproduction.
 
+Optional [phase timing](command_training_timing.md) separates command/AMP
+work outside the ordinary throughput window. Enable it at run creation with
+`--phase-profile-updates`; existing presets leave it disabled.
+
 ## Tasks And Queue
 
 - 6 flat velocity tasks: `locomotion/{robot}/velocity`

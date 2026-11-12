@@ -14,7 +14,7 @@ import torch
 
 from bootstrap import configure_paths
 REPO = configure_paths()
-from export_command_policy import command_training_metadata
+from export_command_policy import command_clearance_options, command_training_metadata
 from trackerTask.supermimic.terrain import get_task, generate, robot_parameters
 from trackerTask.supermimic.mujoco_terrain import build_model
 from trackerLab.algorithms.supermimic.terrain_networks import TerrainPolicy
@@ -233,6 +233,7 @@ def command_runtime_options(checkpoint):
     """Restore runtime settings; training command subsets remain metadata only."""
     arguments = checkpoint["arguments"]
     return {
+        **command_clearance_options(arguments),
         "jump_height": arguments.get("jump_height", 0.),
         "jump_probability": arguments.get("jump_probability", .15),
         "action_limit": arguments.get("action_limit", 4.),
@@ -481,6 +482,7 @@ def main():
             field, torch.tensor(spec.default_q, device=device), limits[:, 0], limits[:, 1],
             gamma=ck["arguments"].get("gamma", .99), profile=task.profile,
             clearance_ratio=ck["arguments"].get("clearance_ratio", 1.),
+            **command_clearance_options(ck["arguments"]),
             action_limit=ck["arguments"].get("action_limit", 4.),
             entry_duration_s=ck["arguments"].get("entry_duration_s", 0.),
             control_mode="wasd" if ck["arguments"].get("stealth_control_mode") == "wasd" else "legacy",

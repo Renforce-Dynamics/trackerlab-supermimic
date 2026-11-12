@@ -17,6 +17,7 @@ from bootstrap import configure_paths
 REPO = configure_paths()
 
 from configuration import apply_config
+from export_command_policy import command_clearance_options
 from trackerTask.supermimic.terrain import get_task, ROBOT_HEIGHTS, robot_parameters
 from trackerTask.supermimic.mujoco_terrain import build_model
 from trackerLab.algorithms.supermimic.buffer import ReplayBuffer
@@ -134,6 +135,8 @@ def parse_args(argv=None):
     parser.add_argument("--grounded-start", action="store_true")
     parser.add_argument("--standing-joint-noise", type=float, default=0.)
     parser.add_argument("--clearance-ratio", type=float, default=1.)
+    parser.add_argument("--target-clearance-m", type=float, default=None,
+                        help="Optional absolute root clearance in meters; overrides clearance ratio")
     parser.add_argument("--action-limit", type=float, default=20.)
     parser.add_argument("--jump-height", type=float, default=0.)
     parser.add_argument("--jump-probability", type=float, default=.15)
@@ -148,7 +151,12 @@ def parse_args(argv=None):
     parser.add_argument("--fused-optimizers", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--profile", action="store_true")
     apply_config(parser, argv)
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    try:
+        command_clearance_options(vars(args))
+    except ValueError as error:
+        parser.error(str(error))
+    return args
 
 
 def validate_upper_body_options(args, task):
@@ -236,6 +244,11 @@ def validate_resume_command_resampling(checkpoint, args):
     saved = checkpoint["arguments"].get("command_resample_steps", (100, 250))
     if tuple(saved) != tuple(args.command_resample_steps):
         raise ValueError("Resume command_resample_steps differs from the saved objective")
+
+
+def validate_resume_clearance(checkpoint, args):
+    if command_clearance_options(checkpoint["arguments"]) != command_clearance_options(vars(args)):
+        raise ValueError("Resume target_clearance_m differs from the saved objective")
 
 
 def validate_command_sampling_resume(checkpoint, args):
@@ -423,7 +436,7 @@ def noise_padded_actor_history(mdp, observations, history_steps):
     return torch.where(padded[..., None], first[:, None], noisy)
 
 
-def validate_style_references(config_path, robot):
+def validate_style_references(config_path, robot, *, target_clearance_m=None):
     """Verify immutable campaign pools, or the audited gait pool used in probes."""
     config_path = Path(config_path).resolve()
     config = json.loads(config_path.read_text(encoding="utf-8"))
@@ -431,6 +444,23 @@ def validate_style_references(config_path, robot):
     manifest_path = root / "manifest.json"
     if manifest_path.is_file():
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        auxiliary = manifest.get("auxiliary_files", {})
+        if isinstance(auxiliary, dict) and "full_body_style" in auxiliary:
+            record = auxiliary["full_body_style"]
+            if not isinstance(record, dict) or record.get("file") != "full-body-style.json":
+                raise ValueError("full_body_style must declare full-body-style.json")
+            payload = (root / record["file"]).read_bytes()
+            if hashlib.sha256(payload).hexdigest() != record.get("sha256"):
+                raise ValueError("Full-body style auxiliary hash differs from the pool manifest")
+            document = json.loads(payload)
+            if not isinstance(document, dict):
+                raise ValueError("Full-body style auxiliary must be a JSON object")
+            expected = command_clearance_options(document).get("target_clearance_m")
+            configured = command_clearance_options(
+                {"target_clearance_m": target_clearance_m}).get("target_clearance_m")
+            if expected is None or configured is None or configured != expected:
+                raise ValueError("Full-body pool requires explicit target_clearance_m "
+                                 "matching full-body-style.json")
         if manifest.get("schema") == "style-campaign-pool-v1":
             from prepare_style_campaign import verify_pool
             verified = verify_pool(root, robot, manifest["style"])
@@ -676,7 +706,8 @@ def main():
             or not math.isfinite(args.feet_close_weight) or args.feet_close_weight < 0):
         raise SystemExit("Feet-close weight must be finite and nonnegative")
     validate_gait_options(args, task)
-    reference_receipt = validate_style_references(args.amp_motion_config, task.robot)
+    reference_receipt = validate_style_references(
+        args.amp_motion_config, task.robot, target_clearance_m=args.target_clearance_m)
     if not torch.cuda.is_available():
         raise RuntimeError("Terrain training requires CUDA")
     configure_cuda_memory(args.cuda_memory_fraction, args.device)
@@ -704,6 +735,7 @@ def main():
     default_q = torch.tensor(spec.default_q, device=args.device)
     mdp = CommandMDP(field, default_q, qlo, qhi, gamma=args.gamma,
                      profile=task.profile, clearance_ratio=args.clearance_ratio,
+                     **command_clearance_options(vars(args)),
                      action_limit=args.action_limit, entry_duration_s=args.entry_duration_s,
                      control_mode="wasd" if args.stealth_control_mode == "wasd" else "legacy",
                      wasd_reward_version=args.wasd_reward_version,
@@ -929,6 +961,7 @@ def main():
                 or ck.get("objective_version") != COMMAND_VERSION):
             raise ValueError("Resume requires the same command/style objective")
         validate_resume_command_resampling(ck, args)
+        validate_resume_clearance(ck, args)
         sampling_receipt = validate_command_sampling_resume(ck, args)
         if sampling_receipt.get("reward_adaptation") and (run / "last.pt").exists():
             raise ValueError("A reward adaptation requires a new run directory")

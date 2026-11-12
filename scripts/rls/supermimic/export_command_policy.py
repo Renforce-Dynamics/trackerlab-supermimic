@@ -20,6 +20,17 @@ from trackerLab.tracker_env.mdp.supermimic_command import (
 from trackerTask.supermimic.robots import get_robot
 
 
+def command_clearance_options(arguments):
+    """Preserve the optional physical height without changing legacy defaults."""
+    clearance = arguments.get("target_clearance_m")
+    if clearance is None:
+        return {}
+    if (type(clearance) not in (int, float)
+            or not math.isfinite(clearance) or clearance <= 0):
+        raise ValueError("target_clearance_m must be finite and positive")
+    return {"target_clearance_m": float(clearance)}
+
+
 def command_training_metadata(checkpoint):
     """Describe saved training settings without narrowing runtime commands."""
     arguments = checkpoint["arguments"]
@@ -32,6 +43,7 @@ def command_training_metadata(checkpoint):
     metadata = {
         "command_reward_mode": reward_mode,
         "training_command_modes": None if training_modes is None else list(training_modes),
+        **command_clearance_options(arguments),
     }
     if arguments.get("wasd_reward_version", 1) >= 3:
         metadata["wasd_reward_version"] = arguments["wasd_reward_version"]
@@ -126,8 +138,11 @@ def export(checkpoint_path, output):
     with torch.no_grad():
         example = (torch.zeros(1, hist, obs_dim), torch.zeros(1, goal_dim))
         scripted = torch.jit.trace(policy, example)
-        scripted.save(str(output / "policy.ts"))
-        loaded = torch.jit.load(str(output / "policy.ts"))
+        # Python file handles preserve Unicode paths on Windows TorchScript builds.
+        with (output / "policy.ts").open("wb") as stream:
+            torch.jit.save(scripted, stream)
+        with (output / "policy.ts").open("rb") as stream:
+            loaded = torch.jit.load(stream)
         errors = []
         for batch in (1, 7):
             observations, goal = torch.randn(batch, hist, obs_dim), torch.randn(batch, goal_dim)

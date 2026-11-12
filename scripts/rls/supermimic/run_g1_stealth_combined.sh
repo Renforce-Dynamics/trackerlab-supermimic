@@ -43,6 +43,15 @@ case "$recipe" in
         test -f "$pool/aim-style-reference.json"
         aim_options=(--aim-style-reference "$pool/aim-style-reference.json")
         ;;
+    fullbody)
+        test "$(git branch --show-current)" = main
+        config=$repo/scripts/rls/supermimic/configs/command_stealth_full_body.json
+        budget_recipe=(--recipe fullbody --pool "$pool")
+        expected_final=5500
+        test -f "$pool/aim-style-reference.json"
+        test -f "$pool/full-body-style.json"
+        aim_options=(--aim-style-reference "$pool/aim-style-reference.json")
+        ;;
     *) printf 'unknown stealth recipe: %s\n' "$recipe" >&2; exit 2 ;;
 esac
 test "$(git rev-parse HEAD)" = "$pin"
@@ -74,6 +83,10 @@ check_stop() {
 }
 printf '%s\n' "$BASHPID" > "$run/controller.pid"
 printf '%s\n' "$pin" > "$run/code.receipt"
+sha256sum "$initial" "$pool/manifest.json" "$pool/train.json" "$config" > "$run/input.receipt"
+if [ "${#aim_options[@]}" -gt 0 ]; then sha256sum "$pool/aim-style-reference.json" >> "$run/input.receipt"; fi
+if [ "$recipe" = fullbody ]; then sha256sum "$pool/full-body-style.json" >> "$run/input.receipt"; fi
+if [ -n "$resume" ]; then sha256sum "$resume" >> "$run/input.receipt"; fi
 plan_options=()
 if [ -n "$resume" ]; then plan_options=(--resume "$resume"); fi
 budget=$(CUDA_VISIBLE_DEVICES='' "$python" scripts/rls/supermimic/combined_training_budget.py \
@@ -87,9 +100,6 @@ test "${#milestones[@]}" -gt 0
 printf '%s\n' "$start" > "$run/starting_iteration"
 printf '%s\n' "$final" > "$run/target_iterations"
 printf '%s\n' "$((final-500))" > "$run/actor_update_budget"
-sha256sum "$initial" "$pool/manifest.json" "$pool/train.json" "$config" > "$run/input.receipt"
-if [ "${#aim_options[@]}" -gt 0 ]; then sha256sum "$pool/aim-style-reference.json" >> "$run/input.receipt"; fi
-if [ -n "$resume" ]; then sha256sum "$resume" >> "$run/input.receipt"; fi
 set_phase waiting_gpu
 while true; do
     check_stop
@@ -106,6 +116,15 @@ for target in "${milestones[@]}"; do
     test "$(git rev-parse HEAD)" = "$pin"
     test -z "$(git status --porcelain)"
     sha256sum -c "$run/input.receipt" > "$run/input-verified.receipt"
+    if [ "$recipe" = fullbody ]; then
+        set_phase verifying_full_body_pool
+        CUDA_VISIBLE_DEVICES='' "$python" scripts/rls/supermimic/prepare_stealth_full_body.py \
+            --verify-pool "$pool" > "$run/full-body-pool-verified.json"
+        check_stop
+        test "$(git rev-parse HEAD)" = "$pin"
+        test -z "$(git status --porcelain)"
+        sha256sum -c "$run/input.receipt" > "$run/input-verified.receipt"
+    fi
     tag=$(printf '%06d' "$target")
     stage=$run/milestones/$tag
     mkdir -p "$stage"

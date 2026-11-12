@@ -1,5 +1,19 @@
 # SuperMimic Command Locomotion With AMP
 
+## Current G1 Trial And Migration
+
+The November12,2026 G1 work uses the
+[full-body stealth reference repair](g1_stealth_full_body.md), including the
+owner-requested staggered idle hold. The earlier25.5kpolicy failed visual style
+review despite improved command tracking and foot lifting.
+
+The29command/style task definitions remain available. The historical v9batch
+map and gait-foundation-v5 directory described below are absent from the
+migrated31293workspace and the current local checkout. Restore and verify their
+inputs before a multi-robot campaign. G1 physical/visual acceptance precedes
+other-robot training; registry presence and old smoke checks do not certify
+learned performance or current-server readiness.
+
 The November 4, 2026 command/style campaign replaces the retired
 trajectory-tracking foundation route for new locomotion jobs.
 

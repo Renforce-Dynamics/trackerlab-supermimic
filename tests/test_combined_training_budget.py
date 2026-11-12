@@ -6,7 +6,7 @@ import sys
 import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts/rls/supermimic"))
-from combined_training_budget import checkpoint_start, plan
+from combined_training_budget import actor_budget, checkpoint_start, main, plan
 
 
 def checkpoint(iteration=1373):
@@ -120,3 +120,33 @@ def test_beyondamp_uses_twenty_thousand_updates_and_versioned_geometry():
         checkpoint_start(ck, "beyondamp")
     with pytest.raises(ValueError):
         plan(20500, actor_updates=20000)
+
+
+@pytest.mark.parametrize("start", [20500, 21750, 25499])
+def test_beyondamp_extension_preserves_completed_actor_updates(start):
+    ck = checkpoint(start)
+    ck["arguments"].update(entry_duration_s=.6, wasd_reward_version=3,
+                           stealth_gait_weight=.02, amp_weight=.1,
+                           stealth_gait_version=2, stealth_swing_height=.04)
+    ck["aim_style_guidance"] = {"palm_separation": {}}
+    with pytest.raises(ValueError):
+        checkpoint_start(ck, "beyondamp")
+    assert checkpoint_start(ck, "beyondamp", extra_actor_updates=5000) == start
+    budget = plan(start, actor_updates=actor_budget("beyondamp", 5000))
+    assert budget["target_iteration"] == 25500
+    assert budget["remaining_world_only_iterations"] == 0
+    assert budget["actor_updates_already_completed"] == start-500
+    assert budget["remaining_actor_updates"] == 25500-start
+    assert budget["milestones"] == [25500]
+
+
+def test_extension_requires_resume_and_the_matching_recipe(tmp_path):
+    with pytest.raises(SystemExit):
+        main(["--recipe", "beyondamp", "--extra-actor-updates", "5000",
+              "--output", str(tmp_path/"plan.json")])
+    assert not (tmp_path/"plan.json").exists()
+    with pytest.raises(ValueError, match="BeyondAMP"):
+        actor_budget("shared-aim", 5000)
+    for extra in (True, -1, 1000, 10000):
+        with pytest.raises(ValueError, match="Additional"):
+            actor_budget("beyondamp", extra)

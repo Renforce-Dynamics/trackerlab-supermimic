@@ -91,6 +91,13 @@ Videos must show actual bilateral lift, restrained slip, natural entry,
 consistent hand posture and separation across command changes.
 Offline reward ordering or finite gradients alone do not establish that result.
 
+An explicitly authorized extension uses `SUPERMIMIC_STEALTH_EXTRA_UPDATES=5000`
+with the same wrapper and its full-resume sixth argument. It extends the
+cumulative actor budget to25,000 and the total target to25,500. The completed
+20,500 checkpoint can resume directly, including its optimizer states and
+normalizers; no WM-only warmup is repeated. A missing resume checkpoint or
+an incompatible recipe is rejected. Allninecommand/release recordings remain.
+
 ## Preflight Evidence
 
 The recorded-state audit compared5,208samples of the reviewed10500policy and

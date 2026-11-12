@@ -19,9 +19,15 @@ MOCK_BUDGET = r'''    budget)
         fi
         final=50500
         actors=50000
+        targets=(2500 5500 10500 20500 30500 40500 50500)
         if [ "${SUPERMIMIC_STEALTH_RECIPE:-}" = beyondamp ]; then final=20500; actors=20000; fi
+        if [ "${SUPERMIMIC_STEALTH_EXTRA_UPDATES:-0}" = 5000 ]; then
+            final=25500
+            actors=25000
+            targets=(2500 5500 10500 20500 25500)
+        fi
         future=()
-        for target in 2500 5500 10500 20500 30500 40500 50500; do
+        for target in "${targets[@]}"; do
             if ((target > start && target <= final)); then future+=("$target"); fi
         done
         printf '{"starting_iteration":%s,"target_iteration":%s,"actor_update_budget":%s}\n' "$start" "$final" "$actors" > "$output"
@@ -163,3 +169,35 @@ def test_beyondamp_keeps_geometry_receipts_and_reviews_the_twenty_thousand_budge
     assert (case.run/"completed_iterations").read_text().strip() == "20500"
     assert "aim-style-reference.json" in (case.run/"input.receipt").read_text()
     assert len(calls(case, "render")) == 44
+
+
+def test_beyondamp_extension_uses_full_resume_and_records_all_commands(case):
+    configure(case)
+    preset = case.root/"scripts/rls/supermimic/configs/command_stealth_beyondamp.json"
+    preset.write_text("{}\n", encoding="ascii")
+    (case.root/"pool/aim-style-reference.json").write_text("{}\n", encoding="ascii")
+    case.env.update(SUPERMIMIC_STEALTH_RECIPE="beyondamp",
+                    SUPERMIMIC_STEALTH_EXTRA_UPDATES="5000", TEST_RESUME_ITERATION="20500")
+    case.command.append(case.resume.as_posix())
+    run_to_exit(case)
+    trainers = calls(case, "train")
+    assert len(trainers) == 1
+    assert trainers[0]["resume"] == case.resume.as_posix()
+    assert trainers[0]["warm_start"] == ""
+    assert trainers[0]["iteration"] == "25500"
+    assert (case.run/"starting_iteration").read_text().strip() == "20500"
+    assert (case.run/"actor_update_budget").read_text().strip() == "25000"
+    assert (case.run/"completed_iterations").read_text().strip() == "25500"
+    assert len(calls(case, "evaluate")) == 3 and len(calls(case, "render")) == 11
+    assert_inputs_preserved(case)
+
+
+def test_extension_without_full_resume_is_rejected_before_training(case):
+    configure(case)
+    case.env.update(SUPERMIMIC_STEALTH_RECIPE="beyondamp",
+                    SUPERMIMIC_STEALTH_EXTRA_UPDATES="5000")
+    with running_runner(case) as process:
+        output, errors = process.communicate(timeout=30)
+        assert process.returncode == 2
+    assert "full resume checkpoint" in errors
+    assert not (case.root/"calls").exists()

@@ -12,6 +12,15 @@ pin=$5
 resume=${6:-}
 repo=$(git rev-parse --show-toplevel)
 recipe=${SUPERMIMIC_STEALTH_RECIPE:-combined}
+extra_updates=${SUPERMIMIC_STEALTH_EXTRA_UPDATES:-0}
+case "$extra_updates" in
+    0|5000) ;;
+    *) printf 'Additional actor updates must be 0 or 5000.\n' >&2; exit 2 ;;
+esac
+if [ "$extra_updates" != 0 ] && { [ "$recipe" != beyondamp ] || [ -z "$resume" ]; }; then
+    printf 'Additional updates require the BeyondAMP recipe and a full resume checkpoint.\n' >&2
+    exit 2
+fi
 budget_recipe=()
 aim_options=()
 expected_final=50500
@@ -29,8 +38,8 @@ case "$recipe" in
         ;;
     beyondamp)
         config=$repo/scripts/rls/supermimic/configs/command_stealth_beyondamp.json
-        budget_recipe=(--recipe beyondamp)
-        expected_final=20500
+        budget_recipe=(--recipe beyondamp --extra-actor-updates "$extra_updates")
+        expected_final=$((20500+extra_updates))
         test -f "$pool/aim-style-reference.json"
         aim_options=(--aim-style-reference "$pool/aim-style-reference.json")
         ;;

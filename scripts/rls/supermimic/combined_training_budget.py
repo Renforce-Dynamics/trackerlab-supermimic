@@ -1,4 +1,4 @@
-"""Plan cumulative 20,000 or 50,000 actor-update stealth experiments."""
+"""Plan cumulative stealth budgets and an explicit 5,000-update continuation."""
 
 import argparse
 import json
@@ -12,8 +12,8 @@ REVIEW_ITERATIONS = (2500, 5500, 10500, 20500, 30500, 40500, TARGET_ITERATION)
 
 
 def plan(start_iteration=0, *, actor_updates=ACTOR_UPDATES):
-    if type(actor_updates) is not int or actor_updates not in (20000, ACTOR_UPDATES):
-        raise ValueError("Supported actor budgets are 20000 and 50000 updates")
+    if type(actor_updates) is not int or actor_updates not in (20000, 25000, ACTOR_UPDATES):
+        raise ValueError("Supported actor budgets are 20000, 25000 and 50000 updates")
     final = WARMUP_ITERATIONS + actor_updates
     if (type(start_iteration) is not int or start_iteration < 0
             or start_iteration >= final):
@@ -26,13 +26,23 @@ def plan(start_iteration=0, *, actor_updates=ACTOR_UPDATES):
         "actor_updates_already_completed": completed_actor,
         "remaining_actor_updates": actor_updates - completed_actor,
         "remaining_world_only_iterations": max(0, WARMUP_ITERATIONS - start_iteration),
-        "milestones": [value for value in REVIEW_ITERATIONS if start_iteration < value <= final],
+        "milestones": [value for value in sorted({*REVIEW_ITERATIONS, final})
+                       if start_iteration < value <= final],
         "quality_failure_action": "record_and_continue_authorized_budget",
         "visual_acceptance": False,
     }
 
 
-def checkpoint_start(checkpoint, recipe="combined"):
+def actor_budget(recipe, extra_actor_updates=0):
+    if type(extra_actor_updates) is not int or extra_actor_updates not in (0, 5000):
+        raise ValueError("Additional actor updates must be 0 or 5000")
+    if extra_actor_updates and recipe != "beyondamp":
+        raise ValueError("The extra 5000 updates require the BeyondAMP recipe")
+    return (20000 if recipe == "beyondamp" else ACTOR_UPDATES) + extra_actor_updates
+
+
+def checkpoint_start(checkpoint, recipe="combined", *, extra_actor_updates=0):
+    budget = actor_budget(recipe, extra_actor_updates)
     args = checkpoint.get("arguments", {})
     expected = {
         "wm_only_iters": WARMUP_ITERATIONS,
@@ -68,25 +78,33 @@ def checkpoint_start(checkpoint, recipe="combined"):
         if not isinstance(checkpoint.get(key), dict):
             raise ValueError(f"Full combined resume is missing {key}")
     iteration = checkpoint.get("iteration")
-    plan(iteration, actor_updates=20000 if recipe == "beyondamp" else ACTOR_UPDATES)
+    plan(iteration, actor_updates=budget)
     if iteration < 1:
         raise ValueError("Resume requires a saved completed iteration")
     return iteration
 
 
-def main():
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--resume", type=Path)
     parser.add_argument("--recipe", choices=("combined", "velocity-led", "shared-aim", "beyondamp"),
                         default="combined")
     parser.add_argument("--output", type=Path, required=True)
-    args = parser.parse_args()
+    parser.add_argument("--extra-actor-updates", type=int, choices=(0, 5000), default=0)
+    args = parser.parse_args(argv)
+    budget = actor_budget(args.recipe, args.extra_actor_updates)
+    if args.extra_actor_updates and args.resume is None:
+        parser.error("Extra actor updates require a full --resume checkpoint")
     start = 0
     if args.resume is not None:
         import torch
         start = checkpoint_start(
-            torch.load(args.resume, map_location="cpu", weights_only=False), args.recipe)
-    result = plan(start, actor_updates=20000 if args.recipe == "beyondamp" else ACTOR_UPDATES)
+            torch.load(args.resume, map_location="cpu", weights_only=False), args.recipe,
+            extra_actor_updates=args.extra_actor_updates)
+    result = plan(start, actor_updates=budget)
+    if args.extra_actor_updates:
+        result["additional_actor_update_budget"] = args.extra_actor_updates
+        result["continuation"] = "full checkpoint resume; unchanged training objective"
     with args.output.open("x", encoding="utf-8") as stream:
         json.dump(result, stream, indent=2)
         stream.write("\n")

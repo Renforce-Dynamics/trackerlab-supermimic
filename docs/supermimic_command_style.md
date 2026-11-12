@@ -7,9 +7,13 @@ The November12,2026 G1 work uses the
 owner-requested staggered idle hold. The earlier25.5kpolicy failed visual style
 review despite improved command tracking and foot lifting.
 
+The November13,2026 [contact-support trial](g1_stealth_contact_support.md)
+changes one G1 gait-support approximation after the v2 run retained skating
+despite passing command tracking. It keeps the reviewed references and weights.
+
 The29command/style task definitions remain available. The historical v9batch
-map and gait-foundation-v5 directory described below are absent from the
-migrated31293workspace and the current local checkout. Restore and verify their
+map and complete gait-foundation-v5 inputs described below remain unavailable in
+the migrated31293workspace and current local checkout. Restore and verify their
 inputs before a multi-robot campaign. G1 physical/visual acceptance precedes
 other-robot training; registry presence and old smoke checks do not certify
 learned performance or current-server readiness.

@@ -202,9 +202,25 @@ def fullbody_state(tmp_path):
     return ck, pool
 
 
-def test_fullbody_fresh_budget_reviews_only_after_five_thousand_actor_updates(tmp_path, capsys):
-    assert actor_budget("fullbody") == 5000
-    result = plan(actor_updates=actor_budget("fullbody"))
+@pytest.fixture
+def contact_state(fullbody_state):
+    ck, pool = fullbody_state
+    ck = deepcopy(ck)
+    preset = Path(ck["arguments"]["config"]).with_name("command_stealth_full_body_contact.json")
+    ck["arguments"].update(config=str(preset), stealth_gait_version=3)
+    return ck, pool
+
+
+@pytest.fixture(params=["fullbody", "fullbody-contact"])
+def bounded_fullbody_state(fullbody_state, contact_state, request):
+    ck, pool = contact_state if request.param == "fullbody-contact" else fullbody_state
+    return ck, pool, request.param
+
+
+@pytest.mark.parametrize("recipe", ["fullbody", "fullbody-contact"])
+def test_fullbody_fresh_budget_reviews_only_after_five_thousand_actor_updates(tmp_path, capsys, recipe):
+    assert actor_budget(recipe) == 5000
+    result = plan(actor_updates=actor_budget(recipe))
     assert result["remaining_world_only_iterations"] == 500
     assert result["actor_update_budget"] == result["remaining_actor_updates"] == 5000
     assert result["actor_updates_already_completed"] == 0
@@ -212,20 +228,20 @@ def test_fullbody_fresh_budget_reviews_only_after_five_thousand_actor_updates(tm
     assert result["milestones"] == [5500]
     assert result["visual_acceptance"] is False
     output = tmp_path / "plan.json"
-    main(["--recipe", "fullbody", "--output", str(output)])
+    main(["--recipe", recipe, "--output", str(output)])
     assert json.loads(output.read_text()) == result
     assert capsys.readouterr().out == "0 5500 5500\n"
     with pytest.raises(FileExistsError):
-        main(["--recipe", "fullbody", "--output", str(output)])
+        main(["--recipe", recipe, "--output", str(output)])
 
 
 @pytest.mark.parametrize("start", [1, 250, 500, 1373, 2500, 5499])
-def test_fullbody_resume_stays_inside_original_budget(fullbody_state, start):
-    ck, pool = fullbody_state
+def test_fullbody_resume_stays_inside_original_budget(bounded_fullbody_state, start):
+    ck, pool, recipe = bounded_fullbody_state
     ck["iteration"] = start
     before = deepcopy(ck)
-    assert checkpoint_start(ck, "fullbody", pool=pool) == start
-    result = plan(start, actor_updates=actor_budget("fullbody"))
+    assert checkpoint_start(ck, recipe, pool=pool) == start
+    result = plan(start, actor_updates=actor_budget(recipe))
     assert result["milestones"] == [5500]
     assert result["remaining_actor_updates"] + result["actor_updates_already_completed"] == 5000
     assert result["remaining_actor_updates"] + result["remaining_world_only_iterations"] == 5500-start
@@ -233,11 +249,11 @@ def test_fullbody_resume_stays_inside_original_budget(fullbody_state, start):
 
 
 @pytest.mark.parametrize("start", [0, 5500, 20500, 25500, True, 1000.])
-def test_fullbody_rejects_completed_or_invalid_resume(fullbody_state, start):
-    ck, pool = fullbody_state
+def test_fullbody_rejects_completed_or_invalid_resume(bounded_fullbody_state, start):
+    ck, pool, recipe = bounded_fullbody_state
     ck["iteration"] = start
     with pytest.raises(ValueError):
-        checkpoint_start(ck, "fullbody", pool=pool)
+        checkpoint_start(ck, recipe, pool=pool)
 
 
 @pytest.mark.parametrize("recipe", ["combined", "velocity-led", "shared-aim"])
@@ -256,22 +272,22 @@ def test_extra_five_thousand_requires_a_bounded_recipe(recipe):
     ("warm_start_reset_world", True), ("allow_style_feature_change", True),
     ("allow_command_sampling_change", True), ("warm_start_normalizer_prior_count", 1.),
 ])
-def test_fullbody_resume_rejects_changed_preset_and_control_options(fullbody_state, name, value):
-    ck, pool = fullbody_state
+def test_fullbody_resume_rejects_changed_preset_and_control_options(bounded_fullbody_state, name, value):
+    ck, pool, recipe = bounded_fullbody_state
     ck["arguments"][name] = value
     with pytest.raises(ValueError, match="preset"):
-        checkpoint_start(ck, "fullbody", pool=pool)
+        checkpoint_start(ck, recipe, pool=pool)
 
 
 @pytest.mark.parametrize("name,value", [
     ("max_joint_rate_rad_s", 1.2), ("response_version", 1),
     ("joint_names", ["unrelated_joint"]), ("action_scale", [.1] * 29),
 ])
-def test_fullbody_resume_checks_actual_saved_controller(fullbody_state, name, value):
-    ck, pool = fullbody_state
+def test_fullbody_resume_checks_actual_saved_controller(bounded_fullbody_state, name, value):
+    ck, pool, recipe = bounded_fullbody_state
     ck["upper_body_rate_limit"][name] = value
     with pytest.raises(ValueError, match="29-action controller"):
-        checkpoint_start(ck, "fullbody", pool=pool)
+        checkpoint_start(ck, recipe, pool=pool)
 
 
 @pytest.mark.parametrize("field,name,value", [
@@ -283,24 +299,24 @@ def test_fullbody_resume_checks_actual_saved_controller(fullbody_state, name, va
     ("amp_style", "history_steps", 2),
     ("aim_style_guidance", "source", {"selected_csv_sha256": "d" * 64}),
 ])
-def test_fullbody_resume_rejects_mismatched_saved_style(fullbody_state, field, name, value):
-    ck, pool = fullbody_state
+def test_fullbody_resume_rejects_mismatched_saved_style(bounded_fullbody_state, field, name, value):
+    ck, pool, recipe = bounded_fullbody_state
     ck[field][name] = value
     with pytest.raises(ValueError, match="source or saved style"):
-        checkpoint_start(ck, "fullbody", pool=pool)
+        checkpoint_start(ck, recipe, pool=pool)
 
 
-def test_fullbody_resume_requires_current_pool_and_unchanged_sources(fullbody_state):
-    ck, pool = fullbody_state
+def test_fullbody_resume_requires_current_pool_and_unchanged_sources(bounded_fullbody_state):
+    ck, pool, recipe = bounded_fullbody_state
     with pytest.raises(ValueError, match="--pool"):
-        checkpoint_start(ck, "fullbody")
+        checkpoint_start(ck, recipe)
     ck["entry_style_guidance"]["source"]["forward_csv_sha256"] = "d" * 64
     with pytest.raises(ValueError, match="forward expert"):
-        checkpoint_start(ck, "fullbody", pool=pool)
+        checkpoint_start(ck, recipe, pool=pool)
     ck["entry_style_guidance"]["source"]["forward_csv_sha256"] = "b" * 64
     (pool / "manifest.json").write_bytes((pool / "manifest.json").read_bytes() + b"\n")
     with pytest.raises(ValueError, match="source"):
-        checkpoint_start(ck, "fullbody", pool=pool)
+        checkpoint_start(ck, recipe, pool=pool)
 
 
 def test_fullbody_cli_reads_full_saved_state_on_cpu_and_does_not_reset_budget(fullbody_state, tmp_path, capsys):
@@ -369,3 +385,77 @@ def test_fullbody_extension_cannot_expand_a_fresh_run_or_forged_target(fullbody_
     ck["iteration"] = 10500
     with pytest.raises(ValueError):
         checkpoint_start(ck, "fullbody", pool=pool, extra_actor_updates=5000)
+
+
+@pytest.mark.parametrize("start", [1373, 5500, 10500])
+def test_contact_rejects_v2_full_resumes_even_with_contact_preset_name(fullbody_state, start):
+    ck, pool = fullbody_state
+    ck["iteration"] = start
+    ck["arguments"]["iterations"] = 10500 if start > 5500 else 5500
+    with pytest.raises(ValueError, match="matching"):
+        checkpoint_start(ck, "fullbody-contact", pool=pool)
+    ck["arguments"]["config"] = "command_stealth_full_body_contact.json"
+    with pytest.raises(ValueError, match="matching"):
+        checkpoint_start(ck, "fullbody-contact", pool=pool)
+
+
+def test_contact_requires_its_own_preset_and_original_target(contact_state):
+    ck, pool = contact_state
+    ck["arguments"]["config"] = "command_stealth_full_body.json"
+    with pytest.raises(ValueError, match="preset"):
+        checkpoint_start(ck, "fullbody-contact", pool=pool)
+    ck["arguments"]["config"] = "command_stealth_full_body_contact.json"
+    ck["arguments"]["iterations"] = 10500
+    with pytest.raises(ValueError, match="preset"):
+        checkpoint_start(ck, "fullbody-contact", pool=pool)
+    ck["arguments"]["iterations"] = 5500
+    with pytest.raises(ValueError, match="matching"):
+        checkpoint_start(ck, "fullbody", pool=pool)
+
+
+@pytest.mark.parametrize("key", ["actor", "world", "critic", "opt_pi", "opt_wm", "opt_v", "amp_style"])
+def test_contact_interruption_requires_full_saved_state(contact_state, key):
+    ck, pool = contact_state
+    del ck[key]
+    with pytest.raises(ValueError, match=f"missing {key}"):
+        checkpoint_start(ck, "fullbody-contact", pool=pool)
+
+
+def test_contact_cli_resumes_on_cpu_without_restarting_warmup(contact_state, tmp_path, capsys):
+    import torch
+    ck, pool = contact_state
+    source = tmp_path / "contact-1373.pt"
+    output = tmp_path / "contact-plan.json"
+    torch.save(ck, source)
+    source_bytes = source.read_bytes()
+    main(["--recipe", "fullbody-contact", "--pool", str(pool), "--resume", str(source),
+          "--output", str(output)])
+    assert capsys.readouterr().out == "1373 5500 5500\n"
+    result = json.loads(output.read_text())
+    assert result["remaining_world_only_iterations"] == 0
+    assert result["remaining_actor_updates"] == 4127
+    assert result["actor_update_budget"] == 5000
+    assert result["milestones"] == [5500]
+    assert result["visual_acceptance"] is False
+    assert "additional_actor_update_budget" not in result
+    assert source.read_bytes() == source_bytes
+
+
+def test_contact_budget_rejects_extension_even_for_its_own_checkpoint(contact_state):
+    ck, pool = contact_state
+    with pytest.raises(ValueError, match="fixed 5000"):
+        actor_budget("fullbody-contact", 5000)
+    with pytest.raises(ValueError, match="fixed 5000"):
+        checkpoint_start(ck, "fullbody-contact", pool=pool, extra_actor_updates=5000)
+
+
+@pytest.mark.parametrize("extra", ["0", "5000"])
+@pytest.mark.parametrize("resumed", [False, True])
+def test_contact_cli_rejects_explicit_extra_update_flag_before_loading(tmp_path, extra, resumed):
+    output = tmp_path / "rejected.json"
+    options = ["--resume", str(tmp_path / "unopened.pt")] if resumed else []
+    with pytest.raises(SystemExit) as error:
+        main(["--recipe", "fullbody-contact", "--extra-actor-updates", extra,
+              "--output", str(output), *options])
+    assert error.value.code == 2
+    assert not output.exists()

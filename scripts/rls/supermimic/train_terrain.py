@@ -105,8 +105,8 @@ def parse_args(argv=None):
     parser.add_argument("--feet-close-weight", type=float, default=.008)
     parser.add_argument("--stealth-gait-weight", type=float, default=0.,
                         help="Optional command-gated whole-sole swing/support shaping for G1 stealth")
-    parser.add_argument("--stealth-gait-version", type=int, choices=(1, 2), default=1,
-                        help="Version 2 adds BeyondAMP-inspired velocity-weighted sole clearance")
+    parser.add_argument("--stealth-gait-version", type=int, choices=(1, 2, 3), default=1,
+                        help="Version 2 adds sole clearance; version 3 corrects grounded support")
     parser.add_argument("--stealth-swing-height", type=float, default=.04,
                         help="Version 2 whole-sole swing target in robot-scale meters")
     parser.add_argument("--foot-slip-mode", choices=("legacy", "g1_sole"), default="legacy")
@@ -406,14 +406,14 @@ def validate_gait_options(args, task):
                 (task.robot, task.profile, args.foot_slip_mode, args.wasd_reward_version)
                 != ("g1", "stealth", "g1_sole", 3))):
         raise ValueError("Gait shaping requires G1 stealth, g1_sole, WASD-v3 and a weight in [0, .04]")
-    if type(args.stealth_gait_version) is not int or args.stealth_gait_version not in (1, 2):
-        raise ValueError("Stealth gait version must be 1 or 2")
+    if type(args.stealth_gait_version) is not int or args.stealth_gait_version not in (1, 2, 3):
+        raise ValueError("Stealth gait version must be 1, 2 or 3")
     if (isinstance(args.stealth_swing_height, bool)
             or not math.isfinite(args.stealth_swing_height)
             or not .02 <= args.stealth_swing_height <= .08):
         raise ValueError("Stealth swing height must lie in [.02, .08]")
-    if args.stealth_gait_version == 2 and not args.stealth_gait_weight:
-        raise ValueError("Gait version 2 requires a positive gait weight")
+    if args.stealth_gait_version in (2, 3) and not args.stealth_gait_weight:
+        raise ValueError("Gait versions 2 and 3 require a positive gait weight")
 
 
 def validate_gait_resume(checkpoint, args):

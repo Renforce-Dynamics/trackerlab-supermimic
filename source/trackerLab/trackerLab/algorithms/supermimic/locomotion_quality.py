@@ -66,15 +66,15 @@ class LocomotionQuality:
             raise ValueError("g1_sole is supported only for G1")
         if stealth_gait_weight and (foot_slip_mode != "g1_sole" or stealth_gait_weight > .04):
             raise ValueError("Gait shaping requires g1_sole and a weight at most .04")
-        if type(stealth_gait_version) is not int or stealth_gait_version not in (1, 2):
-            raise ValueError("Stealth gait version must be 1 or 2")
+        if type(stealth_gait_version) is not int or stealth_gait_version not in (1, 2, 3):
+            raise ValueError("Stealth gait version must be 1, 2 or 3")
         if (isinstance(stealth_swing_height, bool)
                 or not isinstance(stealth_swing_height, (int, float))
                 or not math.isfinite(stealth_swing_height)
                 or not .02 <= stealth_swing_height <= .08):
             raise ValueError("Stealth swing height must lie in [.02, .08] scaled meters")
-        if stealth_gait_version == 2 and (not stealth_gait_weight or foot_slip_mode != "g1_sole"):
-            raise ValueError("Gait version 2 requires enabled G1 sole shaping")
+        if stealth_gait_version in (2, 3) and (not stealth_gait_weight or foot_slip_mode != "g1_sole"):
+            raise ValueError("Gait versions 2 and 3 require enabled G1 sole shaping")
         self.kin, self.field = kin, field
         self.foot_slip_mode = foot_slip_mode
         self.differentiate_support = differentiate_support

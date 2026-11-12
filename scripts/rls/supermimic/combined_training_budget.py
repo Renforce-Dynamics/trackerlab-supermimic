@@ -38,6 +38,10 @@ def plan(start_iteration=0, *, actor_updates=ACTOR_UPDATES):
 def actor_budget(recipe, extra_actor_updates=0):
     if type(extra_actor_updates) is not int or extra_actor_updates not in (0, 5000):
         raise ValueError("Additional actor updates must be 0 or 5000")
+    if recipe == "fullbody-contact":
+        if extra_actor_updates:
+            raise ValueError("Fullbody-contact has a fixed 5000-actor-update budget")
+        return 5000
     if extra_actor_updates and recipe not in ("beyondamp", "fullbody"):
         raise ValueError("The extra 5000 updates require the BeyondAMP or fullbody recipe")
     if recipe == "fullbody":
@@ -45,9 +49,11 @@ def actor_budget(recipe, extra_actor_updates=0):
     return (20000 if recipe == "beyondamp" else ACTOR_UPDATES) + extra_actor_updates
 
 
-def validate_fullbody_resume(checkpoint, pool, *, extended=False):
+def validate_fullbody_resume(checkpoint, pool, *, extended=False, recipe="fullbody"):
     """Bind a bounded continuation to its preset, learned controller and pool."""
-    preset_path = Path(__file__).parent / "configs/command_stealth_full_body.json"
+    filename = ("command_stealth_full_body_contact.json" if recipe == "fullbody-contact"
+                else "command_stealth_full_body.json")
+    preset_path = Path(__file__).parent / "configs" / filename
     preset = json.loads(preset_path.read_text(encoding="utf-8"))
     args = checkpoint["arguments"]
     expected = preset | {
@@ -59,7 +65,7 @@ def validate_fullbody_resume(checkpoint, pool, *, extended=False):
         "warm_start_normalizer_prior_count": 0.,
     }
     expected.pop("iterations")
-    permitted_targets = (5500, 10500) if extended else (5500,)
+    permitted_targets = (5500, 10500) if extended and recipe == "fullbody" else (5500,)
     if (checkpoint.get("robot") != "g1"
             or Path(args.get("config") or "").name != preset_path.name
             or type(args.get("iterations")) is not int
@@ -128,11 +134,12 @@ def checkpoint_start(checkpoint, recipe="combined", *, extra_actor_updates=0, po
         "waist_pd_scale": 1.,
         "freeze_actor_normalization": True,
     }
-    if recipe in ("velocity-led", "shared-aim", "beyondamp", "fullbody"):
+    if recipe in ("velocity-led", "shared-aim", "beyondamp", "fullbody", "fullbody-contact"):
         expected.update(entry_duration_s=.60, wasd_reward_version=3,
                         stealth_gait_weight=.02, amp_weight=.05 if recipe == "velocity-led" else .1)
-        if recipe in ("beyondamp", "fullbody"):
-            expected.update(stealth_gait_version=2, stealth_swing_height=.04)
+        if recipe in ("beyondamp", "fullbody", "fullbody-contact"):
+            expected.update(stealth_gait_version=3 if recipe == "fullbody-contact" else 2,
+                            stealth_swing_height=.04)
     elif recipe != "combined":
         raise ValueError("Unknown stealth recipe")
     if (checkpoint.get("task") != "locomotion/g1/stealth"
@@ -144,17 +151,17 @@ def checkpoint_start(checkpoint, recipe="combined", *, extra_actor_updates=0, po
             or not isinstance(checkpoint.get("upper_body_rate_limit"), dict)
             or not isinstance(checkpoint.get("entry_style_guidance"), dict)):
         raise ValueError("Resume requires the matching autonomous combined-stealth checkpoint")
-    if recipe in ("shared-aim", "beyondamp", "fullbody") and not isinstance(
+    if recipe in ("shared-aim", "beyondamp", "fullbody", "fullbody-contact") and not isinstance(
             checkpoint.get("aim_style_guidance"), dict):
         raise ValueError("Shared aim resume requires saved aim guidance")
-    if recipe in ("beyondamp", "fullbody") and not isinstance(
+    if recipe in ("beyondamp", "fullbody", "fullbody-contact") and not isinstance(
             checkpoint["aim_style_guidance"].get("palm_separation"), dict):
         raise ValueError("BeyondAMP recipe requires saved palm separation geometry")
     for key in ("actor", "world", "critic", "opt_pi", "opt_wm", "opt_v", "amp_style"):
         if not isinstance(checkpoint.get(key), dict):
             raise ValueError(f"Full combined resume is missing {key}")
-    if recipe == "fullbody":
-        validate_fullbody_resume(checkpoint, pool, extended=bool(extra_actor_updates))
+    if recipe in ("fullbody", "fullbody-contact"):
+        validate_fullbody_resume(checkpoint, pool, extended=bool(extra_actor_updates), recipe=recipe)
     iteration = checkpoint.get("iteration")
     if recipe == "fullbody" and extra_actor_updates and iteration < 5500:
         raise ValueError("Fullbody extension requires the original 5500-iteration budget completed")
@@ -168,13 +175,17 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--resume", type=Path)
     parser.add_argument("--recipe", choices=("combined", "velocity-led", "shared-aim", "beyondamp",
-                                             "fullbody"),
+                                             "fullbody", "fullbody-contact"),
                         default="combined")
     parser.add_argument("--pool", type=Path,
                         help="Current fullbody pool for saved-source validation on resume")
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--extra-actor-updates", type=int, choices=(0, 5000), default=0)
+    parser.add_argument("--extra-actor-updates", type=int, choices=(0, 5000))
     args = parser.parse_args(argv)
+    if args.recipe == "fullbody-contact" and args.extra_actor_updates is not None:
+        parser.error("Fullbody-contact does not accept --extra-actor-updates; final iteration is 5500")
+    if args.extra_actor_updates is None:
+        args.extra_actor_updates = 0
     budget = actor_budget(args.recipe, args.extra_actor_updates)
     if args.extra_actor_updates and args.resume is None:
         parser.error("Extra actor updates require a full --resume checkpoint")

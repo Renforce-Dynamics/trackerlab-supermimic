@@ -16,7 +16,13 @@ def command_gait_penalty(heights, velocities, command, *, scale, weight,
     Alternation remains learned from physics and the motion prior.
     """
     clearance = heights.amin(-1)
-    support = torch.sigmoid((.008 * scale - clearance) / (.004 * scale))
+    if version == 3:
+        # A planted sole is fully supported; the tail preserves landing gradients.
+        gap = torch.relu(clearance / scale - .004)
+        width = gap.new_tensor(.006)
+        support = (width / torch.hypot(gap, width)).square()
+    else:
+        support = torch.sigmoid((.008 * scale - clearance) / (.004 * scale))
     point_speed_squared = velocities[..., :2].square().sum(-1) / scale**2
     mean_velocity = velocities[..., :2].mean(-2) / scale
     swing = 1. - torch.exp(-mean_velocity.square().sum(-1) / .15**2)
@@ -26,7 +32,7 @@ def command_gait_penalty(heights, velocities, command, *, scale, weight,
     flight = (1. - left) * (1. - right)
     maximum_speed = torch.sqrt(point_speed_squared.amax((-1, -2)) + 1e-8)
     cost = weight * (1. - single_swing + 4. * flight)
-    if version == 2:
+    if version in (2, 3):
         # BeyondAMP's velocity-weighted clearance objective, normalized to a
         # whole-sole target and bounded to preserve the command value ceiling.
         error = clearance / scale - swing_height

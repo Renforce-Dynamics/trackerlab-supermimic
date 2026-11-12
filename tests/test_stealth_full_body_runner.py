@@ -15,20 +15,26 @@ SCRIPTS = REPO / "scripts/rls/supermimic"
 WRAPPER = SCRIPTS / "run_g1_stealth_full_body.sh"
 
 
-@pytest.fixture
-def fullbody_case(case):
+@pytest.fixture(params=["fullbody", "fullbody-contact"])
+def fullbody_case(case, request):
     configure(case)
     for name in ("SUPERMIMIC_STEALTH_RECIPE", "SUPERMIMIC_STEALTH_EXTRA_UPDATES",
                  "SUPERMIMIC_STEALTH_PHASE_PROFILE_UPDATES",
                  "TEST_RESUME_ITERATION", "TEST_PREFLIGHT_FAIL", "TEST_PREFLIGHT_MUTATE",
                  "TEST_BRANCH", "TEST_CODE_PIN", "TEST_DIRTY"):
         case.env.pop(name, None)
-    preset = case.root / "scripts/rls/supermimic/configs/command_stealth_full_body.json"
+    case.recipe = request.param
+    case.preset_name = ("command_stealth_full_body_contact.json" if case.recipe == "fullbody-contact"
+                        else "command_stealth_full_body.json")
+    case.env.update(TEST_FULLBODY_RECIPE=case.recipe, TEST_FULLBODY_PRESET=case.preset_name)
+    preset = case.root / "scripts/rls/supermimic/configs" / case.preset_name
     preset.write_bytes((SCRIPTS / "configs" / preset.name).read_bytes())
     for name in ("aim-style-reference.json", "full-body-style.json"):
         (case.root / "pool" / name).write_text("{}\n", encoding="ascii")
-    wrapper = case.root / WRAPPER.name
-    wrapper.write_text(WRAPPER.read_text(encoding="utf-8"), encoding="utf-8", newline="\n")
+    source_wrapper = (SCRIPTS / "run_g1_stealth_full_body_contact.sh"
+                      if case.recipe == "fullbody-contact" else WRAPPER)
+    wrapper = case.root / source_wrapper.name
+    wrapper.write_text(source_wrapper.read_text(encoding="utf-8"), encoding="utf-8", newline="\n")
     case.command[3] = wrapper.as_posix()
     with Path(case.env["BASH_ENV"]).open("a", encoding="ascii") as stream:
         stream.write(r'''
@@ -71,11 +77,11 @@ mode=unknown''')
         ;;
     budget)
         test "${CUDA_VISIBLE_DEVICES-unset}" = ""
-        test "$selected_recipe" = fullbody
+        test "$selected_recipe" = "$TEST_FULLBODY_RECIPE"
         test "$budget_pool" = "$TEST_ROOT/pool"
 ''')
     script = script.replace("        future=()", r'''
-        if [ "${SUPERMIMIC_STEALTH_RECIPE:-}" = fullbody ]; then
+        if [ "${SUPERMIMIC_STEALTH_RECIPE:-}" = "$TEST_FULLBODY_RECIPE" ]; then
             final=$((5500+${SUPERMIMIC_STEALTH_EXTRA_UPDATES:-0}))
             actors=$((final-500))
             targets=("$final")
@@ -84,7 +90,7 @@ mode=unknown''')
     script = script.replace("    train)", r'''    train)
         test -f "$TEST_RUN/full-body-pool-verified.json"
         test "$aim_reference" = "$TEST_ROOT/pool/aim-style-reference.json"
-        test "$config" = "$TEST_ROOT/scripts/rls/supermimic/configs/command_stealth_full_body.json"
+        test "$config" = "$TEST_ROOT/scripts/rls/supermimic/configs/$TEST_FULLBODY_PRESET"
         printf 'fullbody-train\n' >> "$TEST_ROOT/events"
 ''')
     fake.write_text(script, encoding="ascii", newline="\n")
@@ -103,7 +109,22 @@ def test_fullbody_preset_changes_only_budget_and_measured_height():
     assert fullbody["amp_weight"] == .1
 
 
-@pytest.mark.parametrize("filename", ["run_g1_stealth_full_body.sh", "run_g1_stealth_combined.sh"])
+def test_contact_preset_changes_only_gait_version():
+    folder = SCRIPTS / "configs"
+    fullbody = json.loads((folder / "command_stealth_full_body.json").read_text())
+    contact = json.loads((folder / "command_stealth_full_body_contact.json").read_text())
+    assert contact == fullbody | {"stealth_gait_version": 3}
+    assert contact["iterations"] == 5500
+    assert contact["wm_only_iters"] == 500
+    assert contact["stealth_gait_weight"] == .02
+    assert contact["stealth_swing_height"] == .04
+    assert contact["amp_weight"] == .1
+    assert contact["entry_duration_s"] == .6
+    assert "command_training_modes" not in contact
+
+
+@pytest.mark.parametrize("filename", ["run_g1_stealth_full_body.sh", "run_g1_stealth_combined.sh",
+                                      "run_g1_stealth_full_body_contact.sh"])
 def test_fullbody_shell_syntax(bash, filename):
     result = subprocess.run([bash, "-n", (SCRIPTS / filename).as_posix()],
                             capture_output=True, text=True, timeout=5)
@@ -133,7 +154,7 @@ def test_fullbody_runs_cpu_preflight_then_only_final_review(fullbody_case, resum
     assert [p.name for p in (case.run / "milestones").iterdir()] == ["005500"]
     receipt = (case.run / "input.receipt").read_text()
     for name in ("aim-style-reference.json", "full-body-style.json", "manifest.json",
-                 "train.json", "command_stealth_full_body.json", case.initial.name):
+                 "train.json", case.preset_name, case.initial.name):
         assert name in receipt
     if resumed:
         assert case.resume.name in receipt
@@ -152,6 +173,15 @@ def test_fullbody_runs_cpu_preflight_then_only_final_review(fullbody_case, resum
                      "--allow-command-reward-change", "--allow-support-gradient-change",
                      "--upper-body-reference", "--waist-entry-reference"):
         assert unwanted not in args
+    if case.recipe == "fullbody-contact":
+        assert "--extra-actor-updates" not in args
+    assert "--phase-profile-updates" not in args
+    assert (case.run / "phase_profile_updates").read_text().strip() == "0"
+    assert [r["mode"] for r in calls(case)] == ["budget", "preflight", "train",
+        "evaluate", "render", "evaluate", "evaluate", *(["render"] * 10)]
+    events = (case.root / "events").read_text().splitlines()
+    assert events.index("acquired:8") < events.index("acquired:9") < (
+        events.index("acquired:10")) < events.index("gpu-probe")
     assert "--command-mode" in args and "forward" in args
     assert "--mode-layout" in args and "cycle" in args
     assert "--command-sequence" in args and "wasd-release-regression" in args
@@ -196,6 +226,7 @@ def test_fullbody_rejects_unbounded_extra_updates(fullbody_case, extra):
     assert not (case.root / "calls").exists()
 
 
+@pytest.mark.parametrize("fullbody_case", ["fullbody"], indirect=True)
 def test_fullbody_extension_uses_one_full_resume_and_optional_timing(fullbody_case):
     case = fullbody_case
     case.env.update(SUPERMIMIC_STEALTH_EXTRA_UPDATES="5000",
@@ -218,6 +249,7 @@ def test_fullbody_extension_uses_one_full_resume_and_optional_timing(fullbody_ca
     assert_inputs_preserved(case)
 
 
+@pytest.mark.parametrize("fullbody_case", ["fullbody"], indirect=True)
 def test_fullbody_extension_requires_full_resume(fullbody_case):
     case = fullbody_case
     case.env["SUPERMIMIC_STEALTH_EXTRA_UPDATES"] = "5000"
@@ -237,6 +269,7 @@ def test_fullbody_rejects_invalid_phase_window(fullbody_case, value):
     assert not (case.root / "calls").exists()
 
 
+@pytest.mark.parametrize("fullbody_case", ["fullbody"], indirect=True)
 def test_fullbody_phase_window_must_fit_remaining_updates(fullbody_case):
     case = fullbody_case
     case.env.update(SUPERMIMIC_STEALTH_EXTRA_UPDATES="5000",
@@ -265,6 +298,8 @@ def test_fullbody_preflight_failure_prevents_training(fullbody_case):
 ])
 def test_fullbody_input_mutation_during_gpu_wait_prevents_training(fullbody_case, relative):
     case = fullbody_case
+    if relative.endswith("command_stealth_full_body.json"):
+        relative = "scripts/rls/supermimic/configs/" + case.preset_name
     case.command.append(case.resume.as_posix())
     with Path(case.env["BASH_ENV"]).open("a", encoding="ascii") as stream:
         stream.write(r'''
@@ -307,5 +342,87 @@ def test_fullbody_trainer_failure_is_terminal_without_extra_attempts(fullbody_ca
     assert [r["mode"] for r in calls(case)] == ["budget", "preflight", "train"]
     assert (case.run / "controller.phase").read_text().strip() == "failed:training_to_5500"
     assert not calls(case, "evaluate")
+    assert not (case.run / "completed_iterations").exists()
+    assert_inputs_preserved(case)
+
+
+@pytest.mark.parametrize("fullbody_case", ["fullbody-contact"], indirect=True)
+@pytest.mark.parametrize("resumed", [False, True])
+def test_contact_rejects_extra_five_thousand_before_any_workload(fullbody_case, resumed):
+    case = fullbody_case
+    case.env["SUPERMIMIC_STEALTH_EXTRA_UPDATES"] = "5000"
+    if resumed:
+        case.command.append(case.resume.as_posix())
+    with running_runner(case) as process:
+        _, errors = process.communicate(timeout=10)
+        assert process.returncode == 2 and "fixed 5000" in errors
+    assert not (case.root / "calls").exists()
+    assert not (case.root / "events").exists()
+    assert_inputs_preserved(case)
+
+
+@pytest.mark.parametrize("fullbody_case", ["fullbody-contact"], indirect=True)
+@pytest.mark.parametrize("start,expected", [(0, 0), (2500, 0), (4000, 2)])
+def test_contact_optional_timing_stays_within_original_budget(fullbody_case, start, expected):
+    case = fullbody_case
+    case.env["SUPERMIMIC_STEALTH_PHASE_PROFILE_UPDATES"] = "1000"
+    if start:
+        case.env["TEST_RESUME_ITERATION"] = str(start)
+        case.command.append(case.resume.as_posix())
+    run_to_exit(case, expected=expected)
+    assert (case.run / "target_iterations").read_text().strip() == "5500"
+    assert (case.run / "actor_update_budget").read_text().strip() == "5000"
+    if expected:
+        assert [r["mode"] for r in calls(case)] == ["budget"]
+    else:
+        trainer, = calls(case, "train")
+        assert trainer["iteration"] == "5500"
+        arguments = (case.root / "python-arguments").read_text().splitlines()
+        position = arguments.index("--phase-profile-updates")
+        assert arguments[position + 1] == "1000"
+        assert len(calls(case, "render")) == 11
+    assert_inputs_preserved(case)
+
+
+@pytest.mark.parametrize("descriptor", [8, 9, 10])
+def test_fullbody_held_lease_prevents_workloads_and_gpu_probe(fullbody_case, descriptor):
+    case = fullbody_case
+    (case.root / f"held-{descriptor}").touch()
+    with running_runner(case) as process:
+        _, errors = process.communicate(timeout=10)
+        assert process.returncode == 75, errors
+    assert (case.root / f"observed-held-{descriptor}").is_file()
+    assert not (case.root / "calls").exists()
+    assert "gpu-probe" not in (case.root / "events").read_text()
+    assert_inputs_preserved(case)
+
+
+def test_fullbody_owner_stop_during_gpu_wait_prevents_training(fullbody_case):
+    case = fullbody_case
+    with Path(case.env["BASH_ENV"]).open("a", encoding="ascii") as stream:
+        stream.write(r'''
+nvidia-smi() { : > "$TEST_ROOT/gpu-wait-observed"; printf '12345\n'; }
+''')
+    with running_runner(case) as process:
+        wait_for_file(case.root / "gpu-wait-observed", process)
+        (case.run / "STOP").write_text("owner stop\n", encoding="ascii")
+        assert_stopped(case, process)
+    assert [r["mode"] for r in calls(case)] == ["budget"]
+    assert_inputs_preserved(case)
+
+
+@pytest.mark.parametrize("marker", ["STOP", "training/STOP"])
+def test_fullbody_owner_stop_during_resume_preserves_checkpoint(fullbody_case, marker):
+    case = fullbody_case
+    case.command.append(case.resume.as_posix())
+    case.env.update(TEST_RESUME_ITERATION="2500", TEST_CHILD_MODE="wait")
+    with running_runner(case) as process:
+        wait_for_file(case.root / "child-started", process)
+        (case.run / marker).write_text("owner stop\n", encoding="ascii")
+        assert_stopped(case, process)
+    assert [r["mode"] for r in calls(case)] == ["budget", "preflight", "train"]
+    trainer, = calls(case, "train")
+    assert trainer["resume"] == case.resume.as_posix() and trainer["warm_start"] == ""
+    assert (case.run / "training/last.pt").read_text().strip() == "checkpoint-on-stop"
     assert not (case.run / "completed_iterations").exists()
     assert_inputs_preserved(case)

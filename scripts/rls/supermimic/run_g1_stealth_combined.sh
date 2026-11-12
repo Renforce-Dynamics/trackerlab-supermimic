@@ -20,8 +20,8 @@ case "$extra_updates" in
 esac
 if [ "$extra_updates" != 0 ]; then
     case "$recipe" in
-        fullbody-contact)
-            printf 'Fullbody-contact has a fixed 5000-actor-update budget.\n' >&2
+        fullbody-contact|fullbody-sole-speed)
+            printf '%s has a fixed 5000-actor-update budget.\n' "$recipe" >&2
             exit 2
             ;;
         beyondamp|fullbody)
@@ -61,11 +61,15 @@ case "$recipe" in
         test -f "$pool/aim-style-reference.json"
         aim_options=(--aim-style-reference "$pool/aim-style-reference.json")
         ;;
-    fullbody|fullbody-contact)
+    fullbody|fullbody-contact|fullbody-sole-speed)
         test "$(git branch --show-current)" = main
         if [ "$recipe" = fullbody-contact ]; then
             config=$repo/scripts/rls/supermimic/configs/command_stealth_full_body_contact.json
             budget_recipe=(--recipe fullbody-contact --pool "$pool")
+            expected_final=5500
+        elif [ "$recipe" = fullbody-sole-speed ]; then
+            config=$repo/scripts/rls/supermimic/configs/command_stealth_full_body_sole_speed.json
+            budget_recipe=(--recipe fullbody-sole-speed --pool "$pool")
             expected_final=5500
         else
             config=$repo/scripts/rls/supermimic/configs/command_stealth_full_body.json
@@ -109,7 +113,7 @@ printf '%s\n' "$BASHPID" > "$run/controller.pid"
 printf '%s\n' "$pin" > "$run/code.receipt"
 sha256sum "$initial" "$pool/manifest.json" "$pool/train.json" "$config" > "$run/input.receipt"
 if [ "${#aim_options[@]}" -gt 0 ]; then sha256sum "$pool/aim-style-reference.json" >> "$run/input.receipt"; fi
-if [ "$recipe" = fullbody ] || [ "$recipe" = fullbody-contact ]; then
+if [ "$recipe" = fullbody ] || [ "$recipe" = fullbody-contact ] || [ "$recipe" = fullbody-sole-speed ]; then
     sha256sum "$pool/full-body-style.json" >> "$run/input.receipt"
 fi
 if [ -n "$resume" ]; then sha256sum "$resume" >> "$run/input.receipt"; fi
@@ -151,7 +155,7 @@ for target in "${milestones[@]}"; do
     test "$(git rev-parse HEAD)" = "$pin"
     test -z "$(git status --porcelain)"
     sha256sum -c "$run/input.receipt" > "$run/input-verified.receipt"
-    if [ "$recipe" = fullbody ] || [ "$recipe" = fullbody-contact ]; then
+    if [ "$recipe" = fullbody ] || [ "$recipe" = fullbody-contact ] || [ "$recipe" = fullbody-sole-speed ]; then
         set_phase verifying_full_body_pool
         CUDA_VISIBLE_DEVICES='' "$python" scripts/rls/supermimic/prepare_stealth_full_body.py \
             --verify-pool "$pool" > "$run/full-body-pool-verified.json"

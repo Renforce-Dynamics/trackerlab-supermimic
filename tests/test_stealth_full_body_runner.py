@@ -15,7 +15,7 @@ SCRIPTS = REPO / "scripts/rls/supermimic"
 WRAPPER = SCRIPTS / "run_g1_stealth_full_body.sh"
 
 
-@pytest.fixture(params=["fullbody", "fullbody-contact"])
+@pytest.fixture(params=["fullbody", "fullbody-contact", "fullbody-sole-speed"])
 def fullbody_case(case, request):
     configure(case)
     for name in ("SUPERMIMIC_STEALTH_RECIPE", "SUPERMIMIC_STEALTH_EXTRA_UPDATES",
@@ -24,15 +24,23 @@ def fullbody_case(case, request):
                  "TEST_BRANCH", "TEST_CODE_PIN", "TEST_DIRTY"):
         case.env.pop(name, None)
     case.recipe = request.param
-    case.preset_name = ("command_stealth_full_body_contact.json" if case.recipe == "fullbody-contact"
-                        else "command_stealth_full_body.json")
+    presets = {
+        "fullbody": "command_stealth_full_body.json",
+        "fullbody-contact": "command_stealth_full_body_contact.json",
+        "fullbody-sole-speed": "command_stealth_full_body_sole_speed.json",
+    }
+    wrappers = {
+        "fullbody": WRAPPER,
+        "fullbody-contact": SCRIPTS / "run_g1_stealth_full_body_contact.sh",
+        "fullbody-sole-speed": SCRIPTS / "run_g1_stealth_full_body_sole_speed.sh",
+    }
+    case.preset_name = presets[case.recipe]
     case.env.update(TEST_FULLBODY_RECIPE=case.recipe, TEST_FULLBODY_PRESET=case.preset_name)
     preset = case.root / "scripts/rls/supermimic/configs" / case.preset_name
     preset.write_bytes((SCRIPTS / "configs" / preset.name).read_bytes())
     for name in ("aim-style-reference.json", "full-body-style.json"):
         (case.root / "pool" / name).write_text("{}\n", encoding="ascii")
-    source_wrapper = (SCRIPTS / "run_g1_stealth_full_body_contact.sh"
-                      if case.recipe == "fullbody-contact" else WRAPPER)
+    source_wrapper = wrappers[case.recipe]
     wrapper = case.root / source_wrapper.name
     wrapper.write_text(source_wrapper.read_text(encoding="utf-8"), encoding="utf-8", newline="\n")
     case.command[3] = wrapper.as_posix()
@@ -123,8 +131,19 @@ def test_contact_preset_changes_only_gait_version():
     assert "command_training_modes" not in contact
 
 
+def test_sole_speed_preset_changes_only_the_discriminator_feature_mode():
+    folder = SCRIPTS / "configs"
+    contact = json.loads((folder / "command_stealth_full_body_contact.json").read_text())
+    sole = json.loads((folder / "command_stealth_full_body_sole_speed.json").read_text())
+    assert sole == contact | {"style_feature_mode": "postural_end_effectors_vx_sole_speed"}
+    assert sole["iterations"] - sole["wm_only_iters"] == 5000
+    assert sole["amp_weight"] == .1
+    assert sole["stealth_gait_version"] == 3
+
+
 @pytest.mark.parametrize("filename", ["run_g1_stealth_full_body.sh", "run_g1_stealth_combined.sh",
-                                      "run_g1_stealth_full_body_contact.sh"])
+                                      "run_g1_stealth_full_body_contact.sh",
+                                      "run_g1_stealth_full_body_sole_speed.sh"])
 def test_fullbody_shell_syntax(bash, filename):
     result = subprocess.run([bash, "-n", (SCRIPTS / filename).as_posix()],
                             capture_output=True, text=True, timeout=5)
@@ -173,7 +192,7 @@ def test_fullbody_runs_cpu_preflight_then_only_final_review(fullbody_case, resum
                      "--allow-command-reward-change", "--allow-support-gradient-change",
                      "--upper-body-reference", "--waist-entry-reference"):
         assert unwanted not in args
-    if case.recipe == "fullbody-contact":
+    if case.recipe in ("fullbody-contact", "fullbody-sole-speed"):
         assert "--extra-actor-updates" not in args
     assert "--phase-profile-updates" not in args
     assert (case.run / "phase_profile_updates").read_text().strip() == "0"
@@ -346,7 +365,7 @@ def test_fullbody_trainer_failure_is_terminal_without_extra_attempts(fullbody_ca
     assert_inputs_preserved(case)
 
 
-@pytest.mark.parametrize("fullbody_case", ["fullbody-contact"], indirect=True)
+@pytest.mark.parametrize("fullbody_case", ["fullbody-contact", "fullbody-sole-speed"], indirect=True)
 @pytest.mark.parametrize("resumed", [False, True])
 def test_contact_rejects_extra_five_thousand_before_any_workload(fullbody_case, resumed):
     case = fullbody_case
@@ -361,7 +380,7 @@ def test_contact_rejects_extra_five_thousand_before_any_workload(fullbody_case, 
     assert_inputs_preserved(case)
 
 
-@pytest.mark.parametrize("fullbody_case", ["fullbody-contact"], indirect=True)
+@pytest.mark.parametrize("fullbody_case", ["fullbody-contact", "fullbody-sole-speed"], indirect=True)
 @pytest.mark.parametrize("start,expected", [(0, 0), (2500, 0), (4000, 2)])
 def test_contact_optional_timing_stays_within_original_budget(fullbody_case, start, expected):
     case = fullbody_case

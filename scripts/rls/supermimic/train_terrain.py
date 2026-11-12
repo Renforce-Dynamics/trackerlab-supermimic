@@ -98,7 +98,8 @@ def parse_args(argv=None):
                         help="Real-data AMP-only updates before an explicit feature adaptation")
     parser.add_argument("--wasd-reward-version", type=int, choices=(1, 2, 3), default=1)
     parser.add_argument("--style-feature-mode", choices=("full", "proprioceptive", "postural",
-                                                       "postural_end_effectors", "postural_end_effectors_vx"),
+                                                       "postural_end_effectors", "postural_end_effectors_vx",
+                                                       "postural_end_effectors_vx_sole_speed"),
                         default="proprioceptive")
     parser.add_argument("--reference-reset-probability", type=float, default=.7)
     parser.add_argument("--foot-slide-weight", type=float, default=.008)
@@ -627,6 +628,8 @@ def main():
     task = get_task(args.task)
     if args.task_profile and args.task_profile != task.profile:
         raise SystemExit("--task_profile differs from the selected task")
+    if args.style_feature_mode == "postural_end_effectors_vx_sole_speed" and task.robot != "g1":
+        raise SystemExit("Material sole-speed AMP features currently require G1 geometry")
     if args.describe:
         print(json.dumps({
             "task": task.describe(), "algorithm": "supermimic-command-amp",

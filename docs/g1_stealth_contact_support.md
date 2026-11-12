@@ -202,4 +202,6 @@ A subsequent bounded candidate may append two per-foot RMS horizontal
 sole-speed features derived from existing WM state and FK. Actor inputs,
 reference data and task rewards would retain their current contracts.
 The candidate requires its own discriminator training, gradient/geometry
-checks and actual G1 visual review. It has not been implemented or trained.
+checks and actual G1 visual review. The opt-in
+[sole-speed trial implementation](g1_stealth_sole_speed.md) is now available;
+training and visual qualification remain pending.

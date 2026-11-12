@@ -211,13 +211,26 @@ def contact_state(fullbody_state):
     return ck, pool
 
 
-@pytest.fixture(params=["fullbody", "fullbody-contact"])
-def bounded_fullbody_state(fullbody_state, contact_state, request):
-    ck, pool = contact_state if request.param == "fullbody-contact" else fullbody_state
+@pytest.fixture
+def sole_speed_state(contact_state):
+    ck, pool = contact_state
+    ck = deepcopy(ck)
+    preset = Path(ck["arguments"]["config"]).with_name("command_stealth_full_body_sole_speed.json")
+    mode = "postural_end_effectors_vx_sole_speed"
+    ck["arguments"].update(config=str(preset), style_feature_mode=mode)
+    ck["amp_style"]["feature_mode"] = mode
+    return ck, pool
+
+
+@pytest.fixture(params=["fullbody", "fullbody-contact", "fullbody-sole-speed"])
+def bounded_fullbody_state(fullbody_state, contact_state, sole_speed_state, request):
+    states = {"fullbody": fullbody_state, "fullbody-contact": contact_state,
+              "fullbody-sole-speed": sole_speed_state}
+    ck, pool = states[request.param]
     return ck, pool, request.param
 
 
-@pytest.mark.parametrize("recipe", ["fullbody", "fullbody-contact"])
+@pytest.mark.parametrize("recipe", ["fullbody", "fullbody-contact", "fullbody-sole-speed"])
 def test_fullbody_fresh_budget_reviews_only_after_five_thousand_actor_updates(tmp_path, capsys, recipe):
     assert actor_budget(recipe) == 5000
     result = plan(actor_updates=actor_budget(recipe))
@@ -413,22 +426,24 @@ def test_contact_requires_its_own_preset_and_original_target(contact_state):
         checkpoint_start(ck, "fullbody", pool=pool)
 
 
+@pytest.mark.parametrize("bounded_fullbody_state", ["fullbody-contact", "fullbody-sole-speed"], indirect=True)
 @pytest.mark.parametrize("key", ["actor", "world", "critic", "opt_pi", "opt_wm", "opt_v", "amp_style"])
-def test_contact_interruption_requires_full_saved_state(contact_state, key):
-    ck, pool = contact_state
+def test_contact_interruption_requires_full_saved_state(bounded_fullbody_state, key):
+    ck, pool, recipe = bounded_fullbody_state
     del ck[key]
     with pytest.raises(ValueError, match=f"missing {key}"):
-        checkpoint_start(ck, "fullbody-contact", pool=pool)
+        checkpoint_start(ck, recipe, pool=pool)
 
 
-def test_contact_cli_resumes_on_cpu_without_restarting_warmup(contact_state, tmp_path, capsys):
+@pytest.mark.parametrize("bounded_fullbody_state", ["fullbody-contact", "fullbody-sole-speed"], indirect=True)
+def test_contact_cli_resumes_on_cpu_without_restarting_warmup(bounded_fullbody_state, tmp_path, capsys):
     import torch
-    ck, pool = contact_state
+    ck, pool, recipe = bounded_fullbody_state
     source = tmp_path / "contact-1373.pt"
     output = tmp_path / "contact-plan.json"
     torch.save(ck, source)
     source_bytes = source.read_bytes()
-    main(["--recipe", "fullbody-contact", "--pool", str(pool), "--resume", str(source),
+    main(["--recipe", recipe, "--pool", str(pool), "--resume", str(source),
           "--output", str(output)])
     assert capsys.readouterr().out == "1373 5500 5500\n"
     result = json.loads(output.read_text())
@@ -441,21 +456,41 @@ def test_contact_cli_resumes_on_cpu_without_restarting_warmup(contact_state, tmp
     assert source.read_bytes() == source_bytes
 
 
-def test_contact_budget_rejects_extension_even_for_its_own_checkpoint(contact_state):
-    ck, pool = contact_state
+@pytest.mark.parametrize("bounded_fullbody_state", ["fullbody-contact", "fullbody-sole-speed"], indirect=True)
+def test_contact_budget_rejects_extension_even_for_its_own_checkpoint(bounded_fullbody_state):
+    ck, pool, recipe = bounded_fullbody_state
     with pytest.raises(ValueError, match="fixed 5000"):
-        actor_budget("fullbody-contact", 5000)
+        actor_budget(recipe, 5000)
     with pytest.raises(ValueError, match="fixed 5000"):
-        checkpoint_start(ck, "fullbody-contact", pool=pool, extra_actor_updates=5000)
+        checkpoint_start(ck, recipe, pool=pool, extra_actor_updates=5000)
 
 
 @pytest.mark.parametrize("extra", ["0", "5000"])
 @pytest.mark.parametrize("resumed", [False, True])
-def test_contact_cli_rejects_explicit_extra_update_flag_before_loading(tmp_path, extra, resumed):
+@pytest.mark.parametrize("recipe", ["fullbody-contact", "fullbody-sole-speed"])
+def test_contact_cli_rejects_explicit_extra_update_flag_before_loading(tmp_path, extra, resumed, recipe):
     output = tmp_path / "rejected.json"
     options = ["--resume", str(tmp_path / "unopened.pt")] if resumed else []
     with pytest.raises(SystemExit) as error:
-        main(["--recipe", "fullbody-contact", "--extra-actor-updates", extra,
+        main(["--recipe", recipe, "--extra-actor-updates", extra,
               "--output", str(output), *options])
     assert error.value.code == 2
     assert not output.exists()
+
+
+def test_sole_speed_cannot_full_resume_a_contact_style_checkpoint(contact_state):
+    ck, pool = contact_state
+    with pytest.raises(ValueError, match="matching"):
+        checkpoint_start(ck, "fullbody-sole-speed", pool=pool)
+    ck["arguments"]["config"] = "command_stealth_full_body_sole_speed.json"
+    with pytest.raises(ValueError, match="matching"):
+        checkpoint_start(ck, "fullbody-sole-speed", pool=pool)
+    ck["arguments"]["style_feature_mode"] = "postural_end_effectors_vx_sole_speed"
+    with pytest.raises(ValueError, match="source or saved style"):
+        checkpoint_start(ck, "fullbody-sole-speed", pool=pool)
+
+
+def test_sole_speed_resume_cannot_relabel_itself_as_contact(sole_speed_state):
+    ck, pool = sole_speed_state
+    with pytest.raises(ValueError, match="matching"):
+        checkpoint_start(ck, "fullbody-contact", pool=pool)

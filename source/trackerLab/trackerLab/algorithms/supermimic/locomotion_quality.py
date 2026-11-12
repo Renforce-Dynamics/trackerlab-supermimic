@@ -31,6 +31,15 @@ def _g1_sole_geometry(mjcf_path, device):
             torch.tensor(radii, device=device))
 
 
+def _material_sole_state(position, rotation, velocity, angular, centers, radii):
+    """Sphere world-down poles and the velocities of their sampled material."""
+    arm = (rotation[..., None, :, :] @ centers.to(rotation)[..., None]).squeeze(-1)
+    arm = arm - radii.to(rotation)[..., None] * rotation.new_tensor((0., 0., 1.))
+    return (position[..., None, :] + arm,
+            velocity[..., None, :] + torch.cross(
+                angular[..., None, :].expand_as(arm), arm, dim=-1))
+
+
 class LocomotionQuality:
     """Locomotion regularization, with an opt-in G1 collision-sole model.
 
@@ -134,12 +143,8 @@ class LocomotionQuality:
         return self._sole_state(*self._foot_kinematics(state))
 
     def _sole_state(self, position, rotation, velocity, angular):
-        arm = (rotation[..., None, :, :] @
-               self.sole_centers.to(rotation)[..., None]).squeeze(-1)
-        arm = arm - self.sole_radii.to(rotation)[..., None] * rotation.new_tensor((0., 0., 1.))
-        return (position[..., None, :] + arm,
-                velocity[..., None, :] + torch.cross(
-                    angular[..., None, :].expand_as(arm), arm, dim=-1))
+        return _material_sole_state(
+            position, rotation, velocity, angular, self.sole_centers, self.sole_radii)
 
     def measurements(self, state, previous=None):
         position, rotation, velocity, angular = self._foot_kinematics(state)

@@ -21,6 +21,7 @@ from typing import Callable
 import torch
 from torch import nn
 
+from .locomotion_quality import _g1_sole_geometry, _material_sole_state
 from .networks import RunningNorm, mlp
 from trackerLab.kinematics.supermimic.rotations import mat_to_6d, yaw_mat
 
@@ -29,6 +30,10 @@ State = tuple[torch.Tensor, torch.Tensor, torch.Tensor,
               torch.Tensor, torch.Tensor, torch.Tensor]
 _TAIL_DIMS = (1, 2, 1, 1, 1, 1)
 _STATE_NAMES = ("root_p", "root_R", "root_v", "root_w", "q", "qd")
+_SOLE_SPEED_MODE = "postural_end_effectors_vx_sole_speed"
+_FORWARD_SPEED_MODES = ("postural_end_effectors_vx", _SOLE_SPEED_MODE)
+_END_EFFECTOR_MODES = ("postural_end_effectors", *_FORWARD_SPEED_MODES)
+_POSTURAL_MODES = ("postural", *_END_EFFECTOR_MODES)
 
 
 def _positive_int(value, name):
@@ -63,6 +68,12 @@ class AMPStyle(nn.Module):
     ``postural_end_effectors_vx`` retains that exact feature prefix and appends
     signed root-local forward velocity divided by ``robot_height``.
 
+    ``postural_end_effectors_vx_sole_speed`` appends left/right RMS horizontal
+    material-sole speed divided by ``robot_height``. This G1-only opt-in uses
+    full state FK and all four collision-sphere world-down poles per foot.
+    Geometry and the material-point convention are part of expert identity;
+    its discriminator and normalization require a matching feature layout.
+
     For LAFAN clips with zero End Sites and no thumb landmarks, hand forward
     uses a straight-hand rest convention and a model mesh-axis proxy, not a
     measured anatomical palm normal. Palm roll remains unobserved. The 6D
@@ -73,8 +84,7 @@ class AMPStyle(nn.Module):
     NORM_LIMIT = 10.0
     MIN_STD = 0.1
     CHECKPOINT_VERSION = 2
-    FEATURE_MODES = ("full", "proprioceptive", "postural", "postural_end_effectors",
-                     "postural_end_effectors_vx")
+    FEATURE_MODES = ("full", "proprioceptive", *_POSTURAL_MODES)
 
     def __init__(
         self,
@@ -100,8 +110,7 @@ class AMPStyle(nn.Module):
         super().__init__()
         if feature_mode not in self.FEATURE_MODES:
             raise ValueError(f"feature_mode must be one of {self.FEATURE_MODES}")
-        if hand_body_names is not None and feature_mode not in (
-                "postural_end_effectors", "postural_end_effectors_vx"):
+        if hand_body_names is not None and feature_mode not in _END_EFFECTOR_MODES:
             raise ValueError("hand_body_names requires postural_end_effectors")
         self.feature_mode = feature_mode
         self.history_steps = _positive_int(history_steps, "history_steps")
@@ -188,16 +197,21 @@ class AMPStyle(nn.Module):
             if local_bodies.ndim != 3 or local_bodies.shape[-1] != 3 or local_bodies.shape[-2] == 0:
                 raise ValueError("Kinematics must provide tracked-body positions")
             self.num_tracked_bodies = local_bodies.shape[-2]
-        elif self.feature_mode in ("postural_end_effectors", "postural_end_effectors_vx"):
+        elif self.feature_mode in _END_EFFECTOR_MODES:
             self._set_end_effector_layout(hand_body_names)
             with torch.no_grad():
                 self._validate_end_effector_fk(tuple(value[:1].detach().float() for value in states))
+            if self.feature_mode == _SOLE_SPEED_MODE:
+                self._set_sole_layout(device)
+                with torch.no_grad():
+                    self._validate_sole_fk(tuple(value[:1].detach().float() for value in states))
         self.frame_dim = (
             9 + 2 * self.num_joints if self.feature_mode == "proprioceptive" else
             4 + 2 * self.num_joints if self.feature_mode == "postural" else
             4 + 2 * self.num_joints + 3 * self.num_tracked_bodies
-            + 6 * len(self.hand_body_names) + int(self.feature_mode == "postural_end_effectors_vx")
-            if self.feature_mode in ("postural_end_effectors", "postural_end_effectors_vx") else
+            + 6 * len(self.hand_body_names) + int(self.feature_mode in _FORWARD_SPEED_MODES)
+            + 2 * int(self.feature_mode == _SOLE_SPEED_MODE)
+            if self.feature_mode in _END_EFFECTOR_MODES else
             13 + 2 * self.num_joints + 3 * self.num_tracked_bodies)
         self.feature_dim = self.history_steps * self.frame_dim
         self.norm = RunningNorm(self.frame_dim, eps=self.MIN_STD).to(device)
@@ -299,6 +313,45 @@ class AMPStyle(nn.Module):
         if any(not bool(torch.isfinite(value).all()) for value in poses[:2]):
             raise ValueError("Nonfinite end-effector FK poses")
 
+    def _set_sole_layout(self, device):
+        from trackerTask.supermimic.gait import FOOT_BODIES
+        from trackerTask.supermimic.robots import get_robot
+
+        robot = getattr(self.kin, "robot", None)
+        if getattr(robot, "name", None) != "g1":
+            raise ValueError("AMP sole speed is supported only for G1")
+        joints = get_robot("g1").joint_names
+        if (self.num_joints != len(joints)
+                or tuple(getattr(self.kin, "joint_names", ())) != joints
+                or tuple(getattr(robot, "joint_names", ())) != joints):
+            raise ValueError("AMP sole speed requires the G1 joint layout")
+        self._sole_body_names = FOOT_BODIES["g1"]
+        if any(name not in self._tracked_names for name in self._sole_body_names):
+            raise ValueError("AMP sole speed requires both G1 feet in the tracked layout")
+        self._sole_tracked_indices = tuple(
+            self._tracked_names.index(name) for name in self._sole_body_names)
+        centers, radii = _g1_sole_geometry(getattr(robot, "mjcf_path", None), device)
+        if (centers.shape != (2, 4, 3) or radii.shape != (2, 4)
+                or not bool(torch.isfinite(centers).all())
+                or not bool(torch.isfinite(radii).all()) or not bool((radii > 0).all())):
+            raise ValueError("AMP sole speed requires four finite collision spheres per G1 foot")
+        self.register_buffer("_sole_centers", centers.detach().clone(), persistent=False)
+        self.register_buffer("_sole_radii", radii.detach().clone(), persistent=False)
+
+    def _validate_sole_fk(self, state):
+        values = self.kin.forward(*state)
+        batch = state[0].shape[:-1]
+        shapes = ((*batch, self.num_tracked_bodies, 3),
+                  (*batch, self.num_tracked_bodies, 3, 3),
+                  (*batch, self.num_tracked_bodies, 3),
+                  (*batch, self.num_tracked_bodies, 3))
+        if (not isinstance(values, (tuple, list)) or len(values) != 4
+                or any(not isinstance(value, torch.Tensor) or value.shape != shape
+                       for value, shape in zip(values, shapes))):
+            raise ValueError("Sole speed FK must provide tracked poses and full world velocities")
+        if any(not bool(torch.isfinite(value).all()) for value in values):
+            raise ValueError("Nonfinite sole speed FK")
+
     def _feature_layout(self):
         if self.feature_mode == "proprioceptive":
             return {
@@ -317,7 +370,7 @@ class AMPStyle(nn.Module):
                 "joint_names": list(getattr(self.kin, "joint_names", ())),
                 "default_q": self._default_q.cpu().tolist(),
             }
-        if self.feature_mode in ("postural", "postural_end_effectors", "postural_end_effectors_vx"):
+        if self.feature_mode in _POSTURAL_MODES:
             layout = {
                 "version": 1,
                 "feature_mode": self.feature_mode,
@@ -333,7 +386,7 @@ class AMPStyle(nn.Module):
                 "joint_names": list(getattr(self.kin, "joint_names", ())),
                 "default_q": self._default_q.cpu().tolist(),
             }
-            if self.feature_mode in ("postural_end_effectors", "postural_end_effectors_vx"):
+            if self.feature_mode in _END_EFFECTOR_MODES:
                 layout["frame"].append(
                     ["root_local_tracked_position/robot_height", 3 * self.num_tracked_bodies])
                 if self.hand_body_names:
@@ -349,8 +402,24 @@ class AMPStyle(nn.Module):
                     hand_rotation_frame="model_body_axes",
                     rotation_6d_convention="first_two_columns_row_major",
                 )
-                if self.feature_mode == "postural_end_effectors_vx":
+                if self.feature_mode in _FORWARD_SPEED_MODES:
                     layout["frame"].append(["root_local_forward_velocity/robot_height", 1])
+                if self.feature_mode == _SOLE_SPEED_MODE:
+                    layout["version"] = 2
+                    layout["frame"].append(["sole_horizontal_material_speed_rms/robot_height", 2])
+                    layout["sole_speed"] = {
+                        "robot": "g1",
+                        "body_names": list(self._sole_body_names),
+                        "tracked_indices": list(self._sole_tracked_indices),
+                        "body_indices": [self._tracked_indices[i] for i in self._sole_tracked_indices],
+                        "sphere_centers_body_m": self._sole_centers.cpu().tolist(),
+                        "sphere_radii_m": self._sole_radii.cpu().tolist(),
+                        "point_convention": "instantaneous_world_down_sphere_pole",
+                        "material_velocity": "V_foot + W_foot cross (R_foot*c_sphere - radius*world_z)",
+                        "velocity_source": "full_state_world_fk",
+                        "reduction": "sqrt(mean_points(vx^2+vy^2))/robot_height",
+                        "zero_speed_gradient": 0.,
+                    }
             return layout
         return {
             "version": 1,
@@ -425,6 +494,22 @@ class AMPStyle(nn.Module):
             q, torch.zeros_like(qd),
         )
 
+    def _sole_speed(self, state):
+        position, rotation, velocity, angular = self.kin.forward(*state)
+        feet = self._sole_tracked_indices
+        _, material_velocity = _material_sole_state(
+            position[..., feet, :], rotation[..., feet, :, :],
+            velocity[..., feet, :], angular[..., feet, :],
+            self._sole_centers, self._sole_radii)
+        horizontal = material_velocity[..., :2].flatten(-2)
+        # Scaling avoids squared-speed overflow. The detached scale cancels
+        # analytically; vector_norm supplies a zero subgradient at rest.
+        scale = horizontal.detach().abs().amax(-1, keepdim=True)
+        scale = torch.where(scale > 0, scale, torch.ones_like(scale))
+        length = torch.linalg.vector_norm(horizontal / scale, dim=-1)
+        return (length / (math.sqrt(self._sole_radii.shape[-1]) * self.robot_height)
+                * scale.squeeze(-1))
+
     def frame_features(self, state: State, reference: bool = False) -> torch.Tensor:
         """Raw invariant frame features; references always use aligned ground=0."""
         state = tuple(value.to(dtype=self.norm.mean.dtype) for value in state)
@@ -440,21 +525,23 @@ class AMPStyle(nn.Module):
             ground = torch.zeros_like(p[..., 2])
             if not reference and self.ground_sampler is not None:
                 ground = self.ground_sampler(p[..., :2]).to(p).reshape(p.shape[:-1])
-            if self.feature_mode in ("postural", "postural_end_effectors", "postural_end_effectors_vx"):
+            if self.feature_mode in _POSTURAL_MODES:
                 components = (
                     -R[..., 2, :],
                     ((p[..., 2] - ground) / self.robot_height).unsqueeze(-1),
                     q - self._default_q,
                     qd * 0.05,
                 )
-                if self.feature_mode in ("postural_end_effectors", "postural_end_effectors_vx"):
+                if self.feature_mode in _END_EFFECTOR_MODES:
                     positions, rotations = self._local_kinematics(state)[:2]
                     components += ((positions / self.robot_height).flatten(-2),)
                     if self.hand_body_names:
                         components += (mat_to_6d(
                             rotations[..., self.hand_tracked_indices, :, :]).flatten(-2),)
-                    if self.feature_mode == "postural_end_effectors_vx":
+                    if self.feature_mode in _FORWARD_SPEED_MODES:
                         components += ((Rt @ v.unsqueeze(-1)).squeeze(-1)[..., :1] / self.robot_height,)
+                    if self.feature_mode == _SOLE_SPEED_MODE:
+                        components += (self._sole_speed(state),)
                 return torch.cat(components, -1)
             return torch.cat((
                 ((p[..., 2] - ground) / self.robot_height).unsqueeze(-1),
@@ -753,8 +840,8 @@ class AMPStyle(nn.Module):
         if type(history) is not int or history < 2:
             raise ValueError("Missing or invalid AMP history length")
         layout = checkpoint.get("feature_layout")
-        if (checkpoint.get("feature_mode") == "postural_end_effectors_vx"
-                or isinstance(layout, dict) and layout.get("feature_mode") == "postural_end_effectors_vx"):
+        if (checkpoint.get("feature_mode") in _FORWARD_SPEED_MODES
+                or isinstance(layout, dict) and layout.get("feature_mode") in _FORWARD_SPEED_MODES):
             if (not isinstance(layout, dict)
                     or checkpoint.get("feature_mode") != layout.get("feature_mode")):
                 raise ValueError("AMP checkpoint feature layout differs from feature mode")
@@ -855,10 +942,10 @@ class AMPStyle(nn.Module):
             raise ValueError("Invalid AMP proprioceptive feature dimension")
         elif mode == "postural" and frame_dim != 4 + 2 * joints:
             raise ValueError("Invalid AMP postural feature dimension")
-        elif mode in ("postural_end_effectors", "postural_end_effectors_vx"):
+        elif mode in _END_EFFECTOR_MODES:
             scorer._set_end_effector_layout(layout.get("hand_names"))
             expected = (4 + 2 * joints + 3 * scorer.num_tracked_bodies + 6 * len(scorer.hand_body_names)
-                        + int(mode == "postural_end_effectors_vx"))
+                        + int(mode in _FORWARD_SPEED_MODES) + 2 * int(mode == _SOLE_SPEED_MODE))
             if frame_dim != expected:
                 raise ValueError(f"Invalid AMP {mode} feature dimension")
             with torch.no_grad():
@@ -867,6 +954,11 @@ class AMPStyle(nn.Module):
                 scorer._validate_end_effector_fk((
                     p, torch.eye(3, device=device)[None], p, p, q, torch.zeros_like(q),
                 ))
+                if mode == _SOLE_SPEED_MODE:
+                    scorer._set_sole_layout(device)
+                    scorer._validate_sole_fk((
+                        p, torch.eye(3, device=device)[None], p, p, q, torch.zeros_like(q),
+                    ))
         scorer.feature_layout = scorer._feature_layout()
         if history_steps > 2:
             scorer.feature_layout["history_steps"] = history_steps

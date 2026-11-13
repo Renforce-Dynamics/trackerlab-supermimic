@@ -31,16 +31,46 @@ from trackerTask.supermimic.mujoco_terrain import build_model
 from trackerTask.supermimic.robots import get_robot
 from trackerTask.supermimic.terrain import generate, robot_parameters
 
+WALK_REVISION = "ce1572906efe6157840e8474d5a0d7aa87481e74"
+WALK_PIVOT_SHA256 = {
+    "walk3_subject4.csv": "11a79dd8c534a562b99abdb42a221064b2b2166948d088f7ca9b63ac13f25368",
+}
+
+
+def walk_pivot_values(original, begin, end):
+    """Preserve recorded foot motion and timing, with one floor translation."""
+    from prepare_gait_references import canonicalize
+    from prepare_style_references import align_constant_floor, physical_floor_distances, resample_g1
+    raw = validate_motion(np.loadtxt(original, delimiter=",", ndmin=2))
+    if (type(begin) is not int or type(end) is not int
+            or not 0 <= begin < end <= len(raw) or end - begin < 61):
+        raise ValueError("Pivot crop needs at least61original frames inside the recording")
+    values = canonicalize(resample_g1(raw[begin:end], 30., 50))
+    values, floor = align_constant_floor(values, physical_floor_distances(values, "g1"))
+    rotation = Rotation.from_quat(values[:, 3:7]).as_matrix()
+    yaw = np.unwrap(np.arctan2(rotation[:, 1, 0], rotation[:, 0, 0]))
+    mirrored = bool(yaw[-1] < yaw[0])
+    if mirrored:
+        values = mirror_g1_motion(values, get_robot("g1").joint_names)
+    return values, floor, mirrored, len(raw)
+
 
 def _origin_record(path: Path, source_name: str) -> dict:
     document = json.loads(path.read_text(encoding="utf-8"))
-    if (document.get("schema") != "lafan1-g1-origin-v1"
-            or document.get("revision") != OFFICIAL_REVISION
-            or document.get("task_group") != "aiming"):
+    aiming = (document.get("schema") == "lafan1-g1-origin-v1"
+              and document.get("revision") == OFFICIAL_REVISION
+              and document.get("task_group") == "aiming")
+    pivot = (document.get("schema") == "g1-stealth-walk-pivot-origin-v1"
+             and document.get("revision") == WALK_REVISION
+             and document.get("dataset") == "lvhaidong/LAFAN1_Retargeting_Dataset")
+    if not aiming and not pivot:
         raise ValueError("Turning source needs the pinned original Aiming provenance")
     rows = [row for row in document.get("files", []) if row.get("file") == source_name]
     if len(rows) != 1:
         raise ValueError(f"Origin manifest needs exactly one record for {source_name}")
+    if (pivot and rows[0].get("source_file") not in WALK_PIVOT_SHA256
+            or aiming and rows[0].get("source_file") not in ORIGINAL_AIMING_SHA256):
+        raise ValueError("Original motion type differs from the declared provenance")
     return rows[0]
 
 
@@ -48,11 +78,14 @@ def _load_origin(path: Path, source: Path, bvh: Path) -> dict:
     record = _origin_record(path, source.name)
     if record.get("sha256") != digest(source):
         raise ValueError("Turning source differs from its origin manifest")
-    if (bvh.name not in ORIGINAL_AIMING_SHA256 or not bvh.name.startswith("aiming2_")
-            or digest(bvh) != ORIGINAL_AIMING_SHA256[bvh.name]
+    pivot = bvh.name in WALK_PIVOT_SHA256
+    allowed = WALK_PIVOT_SHA256 if pivot else ORIGINAL_AIMING_SHA256
+    if (bvh.name not in allowed or (not pivot and not bvh.name.startswith("aiming2_"))
+            or digest(bvh) != allowed[bvh.name]
             or record.get("source_file") != bvh.name
-            or record.get("source_sha256") != ORIGINAL_AIMING_SHA256[bvh.name]
-            or record.get("source_group") != "aiming2" or record.get("split") != "train"
+            or record.get("source_sha256") != allowed[bvh.name]
+            or record.get("source_group") != ("walk3" if pivot else "aiming2")
+            or record.get("split") != "train"
             or record.get("source_fps") != 30 or record.get("output_fps") != 50
             or record.get("target_model_sha256") != digest(get_robot("g1").mjcf_path)
             or record.get("joint_names") != list(get_robot("g1").joint_names)):
@@ -63,6 +96,15 @@ def _load_origin(path: Path, source: Path, bvh: Path) -> dict:
             or not 0 <= frames[0] < frames[1] <= record.get("source_total_frames", 0)):
         raise ValueError("Turning source needs a valid original frame interval")
     values = validate_motion(np.loadtxt(source, delimiter=",", ndmin=2))
+    if pivot:
+        expected, floor, mirrored, total = walk_pivot_values(bvh, *frames)
+        if (values.shape != expected.shape
+                or not np.allclose(values, expected, atol=2e-10, rtol=0)
+                or record.get("reflected_to_left") is not mirrored
+                or record.get("source_total_frames") != total
+                or not np.isclose(record.get("constant_floor_shift_m", np.nan),
+                                  floor["root_z_shift_m"], atol=2e-10, rtol=0)):
+            raise ValueError("Pivot source does not reproduce its original CSV crop")
     expected_frames = (frames[1] - frames[0] - 1) * 50 // 30 + 1
     if len(values) != record.get("output_frames") or len(values) != expected_frames:
         raise ValueError("Turning frame count must preserve the declared 30-to-50 Hz timing")
@@ -89,13 +131,14 @@ def verify_turning_extension(pool, manifest, style):
         raise ValueError("Turning audit or mirror convention differs from the recipe")
     origin = audit["source"]
     inputs = {}
-    for name in ("csv", "origin_manifest", "bvh", "base_manifest"):
+    original_key = "motion_csv" if "motion_csv" in origin else "bvh"
+    for name in ("csv", "origin_manifest", original_key, "base_manifest"):
         binding = origin[name]
         path = local_file(pool, binding["file"])
         if digest(path) != binding["sha256"]:
             raise ValueError(f"Turning {name} source bytes changed")
         inputs[name] = path
-    record = _load_origin(inputs["origin_manifest"], inputs["csv"], inputs["bvh"])
+    record = _load_origin(inputs["origin_manifest"], inputs["csv"], inputs[original_key])
     if record != audit["origin_record"]:
         raise ValueError("Turning origin record differs from the bundled provenance")
     base = json.loads(inputs["base_manifest"].read_text(encoding="utf-8"))
@@ -224,6 +267,7 @@ def prepare(base_pool: Path, turning_source: Path, origin_manifest: Path, output
 
     implementation = digest(Path(__file__))
     mirror = mirror_receipt(tuple(spec.joint_names)).to_dict()
+    original_key = "motion_csv" if source_bvh.suffix.lower() == ".csv" else "bvh"
     audit = {
         "schema": "g1-stealth-turning-reference-v2",
         "source": {
@@ -231,8 +275,8 @@ def prepare(base_pool: Path, turning_source: Path, origin_manifest: Path, output
                     "sha256": inputs[turning_source]},
             "origin_manifest": {"file": "sources/turning/origin.json",
                                 "sha256": inputs[origin_manifest]},
-            "bvh": {"file": f"sources/turning/{source_bvh.name}",
-                    "sha256": inputs[source_bvh]},
+            original_key: {"file": f"sources/turning/{source_bvh.name}",
+                           "sha256": inputs[source_bvh]},
             "base_manifest": {"file": "sources/base-manifest.json",
                               "sha256": inputs[base_pool / "manifest.json"]},
         },
@@ -255,7 +299,7 @@ def prepare(base_pool: Path, turning_source: Path, origin_manifest: Path, output
         (staging / "sources/turning").mkdir()
         for name, path in (
             ("csv", turning_source), ("origin_manifest", origin_manifest),
-            ("bvh", source_bvh), ("base_manifest", base_pool / "manifest.json")):
+            (original_key, source_bvh), ("base_manifest", base_pool / "manifest.json")):
             shutil.copyfile(path, staging / audit["source"][name]["file"])
         left_source_name = "sources/turn_left.csv"
         right_source_name = "sources/turn_right.csv"
@@ -347,7 +391,8 @@ def main(argv=None):
     parser.add_argument("--base-pool", type=Path, required=True)
     parser.add_argument("--turning-source", type=Path, required=True)
     parser.add_argument("--origin-manifest", type=Path, required=True)
-    parser.add_argument("--source-bvh", type=Path, required=True)
+    parser.add_argument("--source-bvh", "--source-original", dest="source_bvh", type=Path,
+                        required=True, help="Original Aiming BVH or pinned G1 walk CSV")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args(argv)
     print(json.dumps(prepare(

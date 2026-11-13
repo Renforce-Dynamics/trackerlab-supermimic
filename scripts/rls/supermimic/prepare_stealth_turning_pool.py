@@ -14,8 +14,8 @@ import numpy as np
 from bootstrap import configure_paths
 
 REPO = configure_paths()
-from full_body_reference import assess_reference, load_selected, solve_reference, validate_motion
-from prepare_stealth_full_body import verify_full_body_pool
+from full_body_reference import assess_reference, solve_reference, validate_motion
+from prepare_stealth_full_body import load_selected, verify_full_body_pool
 from prepare_style_campaign import _identity, _json_bytes, digest, motion_config, verify_pool
 from stealth_turning import mirror_g1_motion, mirror_receipt
 from trackerTask.supermimic.robots import get_robot

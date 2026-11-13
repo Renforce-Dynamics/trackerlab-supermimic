@@ -31,6 +31,8 @@ from trackerTask.supermimic.terrain import generate, robot_parameters
 
 SCHEMA = "g1-stealth-full-body-style-v1"
 ROLES = ("forward", "backward", "idle")
+REQUIRED_ROLES = frozenset(ROLES)
+OPTIONAL_ROLES = frozenset(("turn_left", "turn_right"))
 
 
 def digest(path):
@@ -285,8 +287,11 @@ def verify_full_body_pool(pool):
     model, spec, *_ = build_model("g1", generate("stealth", .76, 101), self_collisions=True)
     _, _, motors = robot_parameters("g1")
     train = [row for row in manifest["files"] if row["split"] == "train"]
-    if len(train) != 3 or {row.get("clip_role") for row in train} != set(ROLES):
-        raise ValueError("Require exactly three corrected training roles")
+    train_roles = [row.get("clip_role") for row in train]
+    if (len(train_roles) != len(set(train_roles))
+            or not REQUIRED_ROLES.issubset(train_roles)
+            or set(train_roles) - REQUIRED_ROLES - OPTIONAL_ROLES):
+        raise ValueError("Require the forward, backward and idle roles, with optional turn roles")
     results = {}
     for row in train:
         role = row["clip_role"]
@@ -301,8 +306,8 @@ def verify_full_body_pool(pool):
                 raise ValueError("Idle stance must bind the selected-pose hold")
             assess = assess_staggered_idle
         else:
-            if binding.get("kind") != "chronological":
-                raise ValueError("Moving references must retain their chronological donors")
+            if binding.get("kind") not in ("chronological", "mirrored_chronological"):
+                raise ValueError("Moving references must retain a chronological donor")
             assess = assess_reference
         results[role] = assess(
             np.loadtxt(pool / row["file"], delimiter=",", ndmin=2),

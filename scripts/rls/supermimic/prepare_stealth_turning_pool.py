@@ -177,6 +177,8 @@ def prepare(base_pool: Path, turning_source: Path, origin_manifest: Path, output
             _row("turn_right", right_output, right_values, staging / right_source_name,
                  origin, reports["turn_right"], True),
         ])
+        records[-2]["sha256"] = digest(staging / left_output)
+        records[-1]["sha256"] = digest(staging / right_output)
         recipe = copy.deepcopy(base_manifest["recipe"])
         recipe["turning_extension"] = audit
         recipe["base_pool_manifest_sha256"] = digest(base_pool / "manifest.json")

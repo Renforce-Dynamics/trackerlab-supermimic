@@ -15,6 +15,10 @@ SCRIPTS = REPO / "scripts/rls/supermimic"
 WRAPPER = SCRIPTS / "run_g1_stealth_full_body.sh"
 
 
+def recorded_calls(case):
+    return calls(case) if (case.root / "calls").exists() else []
+
+
 @pytest.fixture(params=["fullbody", "fullbody-contact", "fullbody-sole-speed"])
 def fullbody_case(case, request):
     configure(case)
@@ -358,7 +362,7 @@ def test_fullbody_trainer_failure_is_terminal_without_extra_attempts(fullbody_ca
     case = fullbody_case
     case.env["TEST_FAIL_AT"] = "5500"
     run_to_exit(case, expected=42)
-    assert [r["mode"] for r in calls(case)] == ["budget", "preflight", "train"]
+    assert [r["mode"] for r in recorded_calls(case)] == ["budget", "preflight", "train"]
     assert (case.run / "controller.phase").read_text().strip() == "failed:training_to_5500"
     assert not calls(case, "evaluate")
     assert not (case.run / "completed_iterations").exists()
@@ -403,17 +407,112 @@ def test_contact_optional_timing_stays_within_original_budget(fullbody_case, sta
     assert_inputs_preserved(case)
 
 
-@pytest.mark.parametrize("descriptor", [8, 9, 10])
-def test_fullbody_held_lease_prevents_workloads_and_gpu_probe(fullbody_case, descriptor):
+@pytest.mark.parametrize("descriptor,phase", [
+    (9, "waiting_for_repository_gpu_lock"),
+    (10, "waiting_for_shared_scheduler_lease"),
+])
+def test_fullbody_held_lease_waits_then_runs_after_release(fullbody_case, descriptor, phase):
     case = fullbody_case
     (case.root / f"held-{descriptor}").touch()
     with running_runner(case) as process:
-        _, errors = process.communicate(timeout=10)
-        assert process.returncode == 75, errors
+        wait_for_file(case.root / f"observed-held-{descriptor}", process)
+        assert (case.run / "controller.phase").read_text().strip() == phase
+        assert (case.run / "controller.pid").read_text().strip()
+        assert (case.run / "code.receipt").read_text().strip() == "fake-code-pin"
+        assert (case.run / "input.receipt").is_file()
+        assert not (case.root / "calls").exists()
+        (case.root / f"held-{descriptor}").unlink()
+        _, errors = process.communicate(timeout=60)
+        assert process.returncode == 0, errors
+    assert (case.run / "controller.exit").read_text().strip() == "0"
+    assert [row["mode"] for row in calls(case)][:3] == ["budget", "preflight", "train"]
     assert (case.root / f"observed-held-{descriptor}").is_file()
-    assert not (case.root / "calls").exists()
+    events = (case.root / "events").read_text().splitlines()
+    assert events.index("acquired:8") < events.index("acquired:9") < (
+        events.index("acquired:10")) < events.index("gpu-probe")
+    assert_inputs_preserved(case)
+
+
+def test_fullbody_controller_lock_rejects_duplicate_without_overwriting_receipts(fullbody_case):
+    case = fullbody_case
+    case.env["TEST_CHILD_MODE"] = "wait"
+    with running_runner(case) as process:
+        wait_for_file(case.root / "child-started", process)
+        receipts = {
+            name: (case.run / name).read_bytes()
+            for name in ("controller.phase", "controller.pid", "code.receipt", "input.receipt")
+        }
+        (case.root / "held-8").touch()
+        duplicate = subprocess.Popen(case.command, cwd=case.root, env=case.env, text=True,
+                                     stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        output, errors = duplicate.communicate(timeout=10)
+        assert duplicate.returncode == 75, (output, errors)
+        for name, content in receipts.items():
+            assert (case.run / name).read_bytes() == content
+        assert not (case.run / "controller.exit").exists()
+        (case.root / "held-8").unlink()
+        (case.run / "STOP").write_text("owner stop\n", encoding="ascii")
+        assert_stopped(case, process)
+    assert [row["mode"] for row in calls(case)] == ["budget", "preflight", "train"]
+    assert_inputs_preserved(case)
+
+
+@pytest.mark.parametrize("descriptor,phase", [
+    (9, "waiting_for_repository_gpu_lock"),
+    (10, "waiting_for_shared_scheduler_lease"),
+])
+def test_fullbody_owner_stop_during_resource_wait_prevents_training(fullbody_case, descriptor, phase):
+    case = fullbody_case
+    (case.root / f"held-{descriptor}").touch()
+    with running_runner(case) as process:
+        wait_for_file(case.root / f"observed-held-{descriptor}", process)
+        assert (case.run / "controller.phase").read_text().strip() == phase
+        (case.run / "STOP").write_text("owner stop\n", encoding="ascii")
+        assert_stopped(case, process)
+    assert recorded_calls(case) == []
+    assert (case.run / "controller.pid").read_text().strip()
+    assert (case.run / "controller.exit").read_text().strip() == "0"
+    assert_inputs_preserved(case)
+
+
+@pytest.mark.parametrize("descriptor,phase", [
+    (9, "waiting_for_repository_gpu_lock"),
+    (10, "waiting_for_shared_scheduler_lease"),
+])
+def test_fullbody_resource_lock_error_is_terminal_with_receipts(fullbody_case, descriptor, phase):
+    case = fullbody_case
+    (case.root / f"error-{descriptor}").touch()
+    run_to_exit(case, expected=69)
+    assert recorded_calls(case) == []
+    assert (case.run / "controller.exit").read_text().strip() == "69"
+    assert (case.run / "controller.phase").read_text().strip() == f"failed:{phase}"
+    assert (case.run / "controller.pid").read_text().strip()
+    assert (case.run / "code.receipt").read_text().strip() == "fake-code-pin"
+    assert (case.run / "input.receipt").is_file()
     assert "gpu-probe" not in (case.root / "events").read_text()
     assert_inputs_preserved(case)
+
+
+@pytest.mark.parametrize("descriptor,phase", [
+    (9, "waiting_for_repository_gpu_lock"),
+    (10, "waiting_for_shared_scheduler_lease"),
+])
+@pytest.mark.parametrize("relative", ["entry 10000.pt", "pool/train.json"])
+def test_fullbody_input_mutation_during_resource_wait_prevents_workloads(
+        fullbody_case, descriptor, phase, relative):
+    case = fullbody_case
+    (case.root / f"held-{descriptor}").touch()
+    with running_runner(case) as process:
+        wait_for_file(case.root / f"observed-held-{descriptor}", process)
+        assert (case.run / "controller.phase").read_text().strip() == phase
+        (case.root / relative).write_text("changed\n", encoding="ascii")
+        (case.root / f"held-{descriptor}").unlink()
+        _, errors = process.communicate(timeout=10)
+        assert process.returncode != 0, errors
+    assert recorded_calls(case) == []
+    assert (case.run / "controller.exit").read_text().strip() != "0"
+    assert (case.run / "controller.phase").read_text().startswith("failed:")
+    assert not (case.run / "training").exists()
 
 
 def test_fullbody_owner_stop_during_gpu_wait_prevents_training(fullbody_case):
@@ -427,6 +526,7 @@ nvidia-smi() { : > "$TEST_ROOT/gpu-wait-observed"; printf '12345\n'; }
         (case.run / "STOP").write_text("owner stop\n", encoding="ascii")
         assert_stopped(case, process)
     assert [r["mode"] for r in calls(case)] == ["budget"]
+    assert (case.run / "gpu_wait.log").is_file()
     assert_inputs_preserved(case)
 
 

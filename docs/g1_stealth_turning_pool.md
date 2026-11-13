@@ -13,6 +13,11 @@ by a named G1 left/right reflection. The reflection changes world `y` to `-y`,
 swaps corresponding left/right joints and applies the signs implied by the
 G1 joint axes. It does not alter time sampling or root speed.
 
+The preparation command also requires the original BVH, the retarget origin
+manifest and the selected full-body pool. The generator bundles those source
+bytes and their SHA-256 records into `turning-reference-audit.json`, so a
+later verifier can reproduce the chronological donor and the mirrored clip.
+
 Each turn clip is passed through the existing full-body solver with the
 reviewed selected crouched aiming pose. The solver keeps the arms at that
 pose while fitting root height, waist and feet. The output pool is accepted

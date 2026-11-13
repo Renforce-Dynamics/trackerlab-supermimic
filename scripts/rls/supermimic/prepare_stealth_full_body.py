@@ -30,9 +30,9 @@ from trackerTask.supermimic.terrain import generate, robot_parameters
 
 
 SCHEMA = "g1-stealth-full-body-style-v1"
+TURNING_SCHEMA = "g1-stealth-full-body-turning-v1"
 ROLES = ("forward", "backward", "idle")
-REQUIRED_ROLES = frozenset(ROLES)
-OPTIONAL_ROLES = frozenset(("turn_left", "turn_right"))
+TURNING_ROLES = (*ROLES, "turn_left", "turn_right")
 
 
 def digest(path):
@@ -266,10 +266,11 @@ def verify_full_body_pool(pool):
     if digest(path) != auxiliary.get("sha256"):
         raise ValueError("Full-body audit bytes differ from the manifest")
     style = json.loads(path.read_text(encoding="utf-8"))
-    if (style.get("schema") != SCHEMA or style.get("passed") is not True
+    schema = style.get("schema")
+    if (schema not in (SCHEMA, TURNING_SCHEMA) or style.get("passed") is not True
             or style.get("criteria") != CRITERIA
             or style.get("idle_stance") != STAGGERED_IDLE
-            or manifest.get("recipe", {}).get("purpose") != SCHEMA
+            or manifest.get("recipe", {}).get("purpose") != schema
             or manifest["recipe"].get("criteria") != CRITERIA
             or manifest["recipe"].get("idle_stance") != STAGGERED_IDLE):
         raise ValueError("Full-body reference schema or criteria differ")
@@ -288,10 +289,13 @@ def verify_full_body_pool(pool):
     _, _, motors = robot_parameters("g1")
     train = [row for row in manifest["files"] if row["split"] == "train"]
     train_roles = [row.get("clip_role") for row in train]
-    if (len(train_roles) != len(set(train_roles))
-            or not REQUIRED_ROLES.issubset(train_roles)
-            or set(train_roles) - REQUIRED_ROLES - OPTIONAL_ROLES):
-        raise ValueError("Require the forward, backward and idle roles, with optional turn roles")
+    expected_roles = TURNING_ROLES if schema == TURNING_SCHEMA else ROLES
+    if (len(train_roles) != len(expected_roles) or set(train_roles) != set(expected_roles)
+            or set(style["sources"]) != set(expected_roles)):
+        raise ValueError("Full-body reference roles differ from the declared schema")
+    if schema == TURNING_SCHEMA:
+        from prepare_stealth_turning_pool import verify_turning_extension
+        verify_turning_extension(pool, manifest, style)
     results = {}
     for row in train:
         role = row["clip_role"]
@@ -306,7 +310,10 @@ def verify_full_body_pool(pool):
                 raise ValueError("Idle stance must bind the selected-pose hold")
             assess = assess_staggered_idle
         else:
-            if binding.get("kind") not in ("chronological", "mirrored_chronological"):
+            expected_kind = ("mirrored_chronological"
+                             if schema == TURNING_SCHEMA and role == "turn_right"
+                             else "chronological")
+            if binding.get("kind") != expected_kind:
                 raise ValueError("Moving references must retain a chronological donor")
             assess = assess_reference
         results[role] = assess(
@@ -319,7 +326,7 @@ def verify_full_body_pool(pool):
     if not holdout or holdout != style.get("heldout"):
         raise ValueError("Independent heldout data changed")
     return {
-        "schema": SCHEMA, "passed": True, "manifest_sha256": digest(pool / "manifest.json"),
+        "schema": schema, "passed": True, "manifest_sha256": digest(pool / "manifest.json"),
         "target_clearance_m": float(reference[2]), "criteria": CRITERIA, "checks": results,
         "runtime_joint_override": False, "visual_policy_acceptance": False,
     }

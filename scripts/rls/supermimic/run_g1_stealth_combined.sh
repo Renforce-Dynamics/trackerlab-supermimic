@@ -84,15 +84,12 @@ case "$recipe" in
 esac
 test "$(git rev-parse HEAD)" = "$pin"
 test -z "$(git status --porcelain)"
-test ! -e "$run/controller.phase"
 test -x "$python"
 mkdir -p "$run" "$repo/logs"
 exec 8>"$run/controller.lock"
-flock -n 8
-exec 9>"$repo/logs/.supermimic-terrain-gpu0.lock"
-flock -n 9
-exec 10>>/root/gpufree-data/ultra_ipingpong/queue/.runner.flock
-flock -n 10
+flock -n -E 75 8
+test ! -e "$run/controller.phase"
+controller_pid=$BASHPID
 phase=initializing
 set_phase() { phase=$1; printf '%s\n' "$phase" > "$run/controller.phase"; }
 finish() {
@@ -109,7 +106,22 @@ check_stop() {
         exit 0
     fi
 }
-printf '%s\n' "$BASHPID" > "$run/controller.pid"
+wait_for_lock() {
+    local descriptor=$1 lock_phase=$2 lock_status
+    set_phase "$lock_phase"
+    while true; do
+        check_stop
+        if flock -n -E 75 "$descriptor"; then
+            break
+        else
+            lock_status=$?
+            if [ "$lock_status" -ne 75 ]; then exit "$lock_status"; fi
+        fi
+        sleep 1
+    done
+    check_stop
+}
+printf '%s\n' "$controller_pid" > "$run/controller.pid"
 printf '%s\n' "$pin" > "$run/code.receipt"
 sha256sum "$initial" "$pool/manifest.json" "$pool/train.json" "$config" > "$run/input.receipt"
 if [ "${#aim_options[@]}" -gt 0 ]; then sha256sum "$pool/aim-style-reference.json" >> "$run/input.receipt"; fi
@@ -117,6 +129,17 @@ if [ "$recipe" = fullbody ] || [ "$recipe" = fullbody-contact ] || [ "$recipe" =
     sha256sum "$pool/full-body-style.json" >> "$run/input.receipt"
 fi
 if [ -n "$resume" ]; then sha256sum "$resume" >> "$run/input.receipt"; fi
+check_stop
+exec 9>"$repo/logs/.supermimic-terrain-gpu0.lock"
+wait_for_lock 9 waiting_for_repository_gpu_lock
+exec 10>>/root/gpufree-data/ultra_ipingpong/queue/.runner.flock
+wait_for_lock 10 waiting_for_shared_scheduler_lease
+verify_inputs() {
+    test "$(git rev-parse HEAD)" = "$(cat "$run/code.receipt")"
+    test -z "$(git status --porcelain)"
+    sha256sum -c "$run/input.receipt" > "$run/input-verified.receipt"
+}
+verify_inputs
 plan_options=()
 if [ -n "$resume" ]; then plan_options=(--resume "$resume"); fi
 budget=$(CUDA_VISIBLE_DEVICES='' "$python" scripts/rls/supermimic/combined_training_budget.py \
